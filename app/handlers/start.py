@@ -759,8 +759,17 @@ async def complete_registration(
         try:
             promo_service = PromoCodeService()
             result = await promo_service.activate_promocode(db, user.id, pending_promocode)
-            if not result.get("success"):
-                logger.info(f"Промокод не активирован: {result}")
+            if result.get("success"):
+                await message.answer(texts.PROMOCODE_SUCCESS.format(description=result["description"]))
+            else:
+                error_messages = {
+                    "not_found": texts.PROMOCODE_INVALID,
+                    "expired": texts.PROMOCODE_EXPIRED,
+                    "used": texts.PROMOCODE_USED,
+                    "already_used_by_user": texts.PROMOCODE_USED,
+                    "server_error": getattr(texts, 'ERROR', '❌ Ошибка сервера')
+                }
+                await message.answer(error_messages.get(result.get("error"), texts.PROMOCODE_INVALID))
         except Exception as e:
             logger.error(f"Ошибка активации промокода после регистрации: {e}")
     
