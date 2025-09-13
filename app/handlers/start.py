@@ -404,7 +404,9 @@ async def process_referral_code_input(
     promo = await get_promocode_by_code(db, referral_or_promo_code)
     if promo:
         data['pending_promocode'] = referral_or_promo_code
+        data['promo_ack_sent'] = True
         await state.set_data(data)
+        await message.answer("✅ Промокод принят! Он будет применён после регистрации.")
         logger.info(f"✅ Промокод принят и сохранён до завершения регистрации")
         await complete_registration(message, state, db)
         return
@@ -561,12 +563,13 @@ async def complete_registration_from_callback(
     
     # Активируем сохранённый промокод, если он есть
     pending_promocode = data.get('pending_promocode') if data else None
+    promo_ack_sent = data.get('promo_ack_sent') if data else None
     if pending_promocode:
         try:
             promo_service = PromoCodeService()
             result = await promo_service.activate_promocode(db, user.id, pending_promocode)
-            if result.get("success"):
-                await message.answer(texts.PROMOCODE_SUCCESS.format(description=result["description"]))
+            if result.get("success") and not promo_ack_sent:
+                await callback.message.answer(texts.PROMOCODE_SUCCESS.format(description=result["description"]))
             else:
                 error_messages = {
                     "not_found": texts.PROMOCODE_INVALID,
@@ -575,7 +578,8 @@ async def complete_registration_from_callback(
                     "already_used_by_user": texts.PROMOCODE_USED,
                     "server_error": getattr(texts, 'ERROR', '❌ Ошибка сервера')
                 }
-                await message.answer(error_messages.get(result.get("error"), texts.PROMOCODE_INVALID))
+                if result.get("error"):
+                    await callback.message.answer(error_messages.get(result.get("error"), texts.PROMOCODE_INVALID))
         except Exception as e:
             logger.error(f"Ошибка активации промокода после регистрации: {e}")
     
