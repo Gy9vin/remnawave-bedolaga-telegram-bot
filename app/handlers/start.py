@@ -56,7 +56,6 @@ async def handle_potential_referral_code(
             data = await state.get_data() or {}
             data['pending_promocode'] = potential_code
             await state.set_data(data)
-            await message.answer("✅ Промокод принят! Он будет применён после регистрации.")
             logger.info(f"✅ Промокод {potential_code} сохранён до завершения регистрации для пользователя {message.from_user.id}")
 
             if current_state != RegistrationStates.waiting_for_referral_code.state:
@@ -407,7 +406,6 @@ async def process_referral_code_input(
     if promo:
         data['pending_promocode'] = referral_or_promo_code
         await state.set_data(data)
-        await message.answer("✅ Промокод принят! Он будет применён после регистрации.")
         logger.info(f"✅ Промокод принят и сохранён до завершения регистрации")
         await complete_registration(message, state, db)
         return
