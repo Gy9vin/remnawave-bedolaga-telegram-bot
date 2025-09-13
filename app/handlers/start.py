@@ -583,38 +583,6 @@ async def complete_registration_from_callback(
     
     await state.clear()
 
-    # Если был промокод, сразу показываем меню, минуя приветствие
-    if pending_promocode:
-        logger.info("Пропускаем приветственное сообщение, промокод был введён — показываем меню")
-        try:
-            await db.refresh(user, ['subscription'])
-        except Exception as e:
-            logger.warning(f"Не удалось обновить подписку пользователя перед показом меню (callback): {e}")
-        has_active_subscription = user.subscription is not None
-        subscription_is_active = False
-        if user.subscription:
-            subscription_is_active = user.subscription.is_active
-        menu_text = await get_main_menu_text(user, texts, db)
-        try:
-            await callback.message.answer(
-                menu_text,
-                reply_markup=get_main_menu_keyboard(
-                    language=user.language,
-                    is_admin=settings.is_admin(user.telegram_id),
-                    has_had_paid_subscription=user.has_had_paid_subscription,
-                    has_active_subscription=has_active_subscription,
-                    subscription_is_active=subscription_is_active,
-                    balance_kopeks=user.balance_kopeks
-                ),
-                parse_mode="HTML"
-            )
-            logger.info(f"✅ Главное меню показано пользователю {user.telegram_id}")
-        except Exception as e:
-            logger.error(f"Ошибка при показе главного меню: {e}")
-            await callback.message.answer(f"Добро пожаловать, {user.full_name}!")
-        logger.info(f"✅ Регистрация завершена для пользователя: {user.telegram_id}")
-        return
-
     offer_text = None
     try:
         from app.database.crud.welcome_text import get_welcome_text_for_user
@@ -634,6 +602,11 @@ async def complete_registration_from_callback(
     else:
         logger.info(f"ℹ️ Приветственные сообщения отключены, показываем главное меню для пользователя {user.telegram_id}")
         
+        try:
+            await db.refresh(user, ['subscription'])
+        except Exception as e:
+            logger.warning(f"Не удалось обновить подписку пользователя перед показом меню (callback): {e}")
+
         has_active_subscription = user.subscription is not None
         subscription_is_active = False
         
@@ -793,38 +766,6 @@ async def complete_registration(
     
     await state.clear()
 
-    # Если был промокод, сразу показываем меню, минуя приветствие
-    if pending_promocode:
-        logger.info("Пропускаем приветственное сообщение, промокод был введён — показываем меню")
-        try:
-            await db.refresh(user, ['subscription'])
-        except Exception as e:
-            logger.warning(f"Не удалось обновить подписку пользователя перед показом меню (message): {e}")
-        has_active_subscription = user.subscription is not None
-        subscription_is_active = False
-        if user.subscription:
-            subscription_is_active = user.subscription.is_active
-        menu_text = await get_main_menu_text(user, texts, db)
-        try:
-            await message.answer(
-                menu_text,
-                reply_markup=get_main_menu_keyboard(
-                    language=user.language,
-                    is_admin=settings.is_admin(user.telegram_id),
-                    has_had_paid_subscription=user.has_had_paid_subscription,
-                    has_active_subscription=has_active_subscription,
-                    subscription_is_active=subscription_is_active,
-                    balance_kopeks=user.balance_kopeks
-                ),
-                parse_mode="HTML"
-            )
-            logger.info(f"✅ Главное меню показано пользователю {user.telegram_id}")
-        except Exception as e:
-            logger.error(f"Ошибка при показе главного меню: {e}")
-            await message.answer(f"Добро пожаловать, {user.full_name}!")
-        logger.info(f"✅ Регистрация завершена для пользователя: {user.telegram_id}")
-        return
-
     offer_text = None
     try:
         from app.database.crud.welcome_text import get_welcome_text_for_user
@@ -844,6 +785,11 @@ async def complete_registration(
     else:
         logger.info(f"ℹ️ Приветственные сообщения отключены, показываем главное меню для пользователя {user.telegram_id}")
         
+        try:
+            await db.refresh(user, ['subscription'])
+        except Exception as e:
+            logger.warning(f"Не удалось обновить подписку пользователя перед показом меню (message): {e}")
+
         has_active_subscription = user.subscription is not None
         subscription_is_active = False
         
