@@ -35,7 +35,6 @@ async def handle_potential_referral_code(
     
     if current_state not in [
         RegistrationStates.waiting_for_rules_accept.state,
-        RegistrationStates.waiting_for_referral_code.state,
         None 
     ]:
         return False
@@ -564,20 +563,10 @@ async def complete_registration_from_callback(
     pending_promocode = data.get('pending_promocode') if data else None
     if pending_promocode:
         try:
-            texts = get_texts(language)
             promo_service = PromoCodeService()
             result = await promo_service.activate_promocode(db, user.id, pending_promocode)
-            if result.get("success"):
-                await callback.message.answer(texts.PROMOCODE_SUCCESS.format(description=result["description"]))
-            else:
-                error_messages = {
-                    "not_found": texts.PROMOCODE_INVALID,
-                    "expired": texts.PROMOCODE_EXPIRED,
-                    "used": texts.PROMOCODE_USED,
-                    "already_used_by_user": texts.PROMOCODE_USED,
-                    "server_error": getattr(texts, 'ERROR', '❌ Ошибка сервера')
-                }
-                await callback.message.answer(error_messages.get(result.get("error"), texts.PROMOCODE_INVALID))
+            if not result.get("success"):
+                logger.info(f"Промокод не активирован: {result}")
         except Exception as e:
             logger.error(f"Ошибка активации промокода после регистрации: {e}")
     
@@ -748,20 +737,10 @@ async def complete_registration(
     pending_promocode = data.get('pending_promocode') if data else None
     if pending_promocode:
         try:
-            texts = get_texts(language)
             promo_service = PromoCodeService()
             result = await promo_service.activate_promocode(db, user.id, pending_promocode)
-            if result.get("success"):
-                await message.answer(texts.PROMOCODE_SUCCESS.format(description=result["description"]))
-            else:
-                error_messages = {
-                    "not_found": texts.PROMOCODE_INVALID,
-                    "expired": texts.PROMOCODE_EXPIRED,
-                    "used": texts.PROMOCODE_USED,
-                    "already_used_by_user": texts.PROMOCODE_USED,
-                    "server_error": getattr(texts, 'ERROR', '❌ Ошибка сервера')
-                }
-                await message.answer(error_messages.get(result.get("error"), texts.PROMOCODE_INVALID))
+            if not result.get("success"):
+                logger.info(f"Промокод не активирован: {result}")
         except Exception as e:
             logger.error(f"Ошибка активации промокода после регистрации: {e}")
     
@@ -949,10 +928,7 @@ def register_handlers(dp: Dispatcher):
     
     dp.message.register(
         handle_potential_referral_code,
-        StateFilter(
-            RegistrationStates.waiting_for_rules_accept,
-            RegistrationStates.waiting_for_referral_code
-        )
+        StateFilter(RegistrationStates.waiting_for_rules_accept)
     )
     logger.info("✅ Зарегистрирован handle_potential_referral_code")
     
