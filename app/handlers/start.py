@@ -585,8 +585,12 @@ async def complete_registration_from_callback(
     
     await state.clear()
 
-    from app.database.crud.welcome_text import get_welcome_text_for_user
-    offer_text = await get_welcome_text_for_user(db, callback.from_user)
+    offer_text = None
+    try:
+        from app.database.crud.welcome_text import get_welcome_text_for_user
+        offer_text = await get_welcome_text_for_user(db, callback.from_user)
+    except Exception as e:
+        logger.error(f"Ошибка получения приветственного сообщения: {e}")
 
     if offer_text:
         try:
@@ -759,8 +763,12 @@ async def complete_registration(
     
     await state.clear()
 
-    from app.database.crud.welcome_text import get_welcome_text_for_user
-    offer_text = await get_welcome_text_for_user(db, message.from_user)
+    offer_text = None
+    try:
+        from app.database.crud.welcome_text import get_welcome_text_for_user
+        offer_text = await get_welcome_text_for_user(db, message.from_user)
+    except Exception as e:
+        logger.error(f"Ошибка получения приветственного сообщения: {e}")
 
     if offer_text:
         try:
