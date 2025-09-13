@@ -586,6 +586,10 @@ async def complete_registration_from_callback(
     # Если был промокод, сразу показываем меню, минуя приветствие
     if pending_promocode:
         logger.info("Пропускаем приветственное сообщение, промокод был введён — показываем меню")
+        try:
+            await db.refresh(user, ['subscription'])
+        except Exception as e:
+            logger.warning(f"Не удалось обновить подписку пользователя перед показом меню (callback): {e}")
         has_active_subscription = user.subscription is not None
         subscription_is_active = False
         if user.subscription:
@@ -792,6 +796,10 @@ async def complete_registration(
     # Если был промокод, сразу показываем меню, минуя приветствие
     if pending_promocode:
         logger.info("Пропускаем приветственное сообщение, промокод был введён — показываем меню")
+        try:
+            await db.refresh(user, ['subscription'])
+        except Exception as e:
+            logger.warning(f"Не удалось обновить подписку пользователя перед показом меню (message): {e}")
         has_active_subscription = user.subscription is not None
         subscription_is_active = False
         if user.subscription:
