@@ -5702,8 +5702,8 @@ async def subscription_purchase_endpoint(
     subscription = result.get('subscription')
     transaction = result.get('transaction')
     was_trial_conversion = bool(result.get('was_trial_conversion'))
-    period_days = getattr(getattr(pricing, 'selection', None), 'period', None)
-    period_days = getattr(period_days, 'days', None) if period_days else None
+    # Прямой доступ к period_days — всегда существует в pricing.selection.period.days
+    period_days = pricing.selection.period.days
 
     if subscription is not None:
         try:
@@ -5711,7 +5711,8 @@ async def subscription_purchase_endpoint(
         except Exception:  # pragma: no cover - defensive refresh safeguard
             pass
 
-    if subscription and transaction and period_days:
+    # Отправляем уведомление админам о покупке подписки
+    if subscription and transaction:
         await with_admin_notification_service(
             lambda service: service.send_subscription_purchase_notification(
                 db,

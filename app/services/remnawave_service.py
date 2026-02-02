@@ -1244,7 +1244,7 @@ class RemnaWaveService:
                     if not telegram_id:
                         continue
 
-                    if (i + 1) % 10 == 0:
+                    if (i + 1) % 500 == 0:
                         logger.info(f'🔄 Обрабатываем пользователя {i + 1}/{len(unique_panel_users)}: {telegram_id}')
 
                     db_user = bot_users_by_telegram_id.get(telegram_id)
