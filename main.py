@@ -38,6 +38,7 @@ from app.services.reporting_service import reporting_service
 from app.services.system_settings_service import bot_configuration_service
 from app.services.traffic_monitoring_service import traffic_monitoring_scheduler
 from app.services.version_service import version_service
+from app.services.webhook_service import webhook_service
 from app.utils.log_handlers import ExcludePaymentFilter, LevelFilterHandler
 from app.utils.payment_logger import configure_payment_logger
 from app.utils.startup_timeline import StartupTimeline
@@ -911,6 +912,13 @@ async def main():
                 logger.info('✅ Сессия бота закрыта')
             except Exception as e:
                 logger.error(f'Ошибка закрытия сессии бота: {e}')
+
+        logger.info('ℹ️ Закрытие webhook сервиса...')
+        try:
+            await webhook_service.close()
+            logger.info('✅ Webhook сервис закрыт')
+        except Exception as e:
+            logger.error(f'Ошибка закрытия webhook сервиса: {e}')
 
         logger.info('✅ Завершение работы бота завершено')
 

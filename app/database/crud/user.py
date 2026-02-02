@@ -81,7 +81,6 @@ async def get_user_by_id(db: AsyncSession, user_id: int) -> User | None:
         .options(
             selectinload(User.subscription),
             selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
-            selectinload(User.referrer),
             selectinload(User.promo_group),
         )
         .where(User.id == user_id)
@@ -101,7 +100,6 @@ async def get_user_by_telegram_id(db: AsyncSession, telegram_id: int) -> User | 
         .options(
             selectinload(User.subscription),
             selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
-            selectinload(User.referrer),
             selectinload(User.promo_group),
         )
         .where(User.telegram_id == telegram_id)
@@ -126,7 +124,6 @@ async def get_user_by_username(db: AsyncSession, username: str) -> User | None:
         .options(
             selectinload(User.subscription),
             selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
-            selectinload(User.referrer),
             selectinload(User.promo_group),
         )
         .where(func.lower(User.username) == normalized)
@@ -147,7 +144,6 @@ async def get_user_by_referral_code(db: AsyncSession, referral_code: str) -> Use
         .options(
             selectinload(User.subscription),
             selectinload(User.promo_group),
-            selectinload(User.referrer),
         )
         .where(User.referral_code == referral_code)
     )
@@ -166,7 +162,6 @@ async def get_user_by_remnawave_uuid(db: AsyncSession, remnawave_uuid: str) -> U
         .options(
             selectinload(User.subscription),
             selectinload(User.promo_group),
-            selectinload(User.referrer),
         )
         .where(User.remnawave_uuid == remnawave_uuid)
     )
@@ -702,7 +697,6 @@ async def get_users_list(
     query = select(User).options(
         selectinload(User.subscription),
         selectinload(User.promo_group),
-        selectinload(User.referrer),
     )
 
     if status:
@@ -862,7 +856,6 @@ async def get_referrals(db: AsyncSession, user_id: int) -> list[User]:
         .options(
             selectinload(User.subscription),
             selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
-            selectinload(User.referrer),
             selectinload(User.promo_group),
         )
         .where(User.referred_by_id == user_id)
@@ -887,7 +880,6 @@ async def get_users_for_promo_segment(db: AsyncSession, segment: str) -> list[Us
         .options(
             selectinload(User.subscription),
             selectinload(User.promo_group),
-            selectinload(User.referrer),
         )
         .where(User.status == UserStatus.ACTIVE.value)
     )
@@ -949,7 +941,6 @@ async def get_inactive_users(db: AsyncSession, months: int = 3) -> list[User]:
         .options(
             selectinload(User.subscription),
             selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
-            selectinload(User.referrer),
             selectinload(User.promo_group),
         )
         .where(and_(User.last_activity < threshold_date, User.status == UserStatus.ACTIVE.value))
