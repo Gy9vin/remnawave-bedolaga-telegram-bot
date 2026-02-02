@@ -14,6 +14,7 @@ from app.localization.texts import get_texts
 from app.services.payment_service import PaymentService
 from app.states import BalanceStates
 from app.utils.decorators import error_handler
+from app.utils.payment_checks import check_topup_restriction
 
 
 logger = logging.getLogger(__name__)
@@ -141,20 +142,9 @@ async def process_cloudpayments_payment_amount(
     texts = get_texts(db_user.language)
 
     # Проверка ограничения на пополнение
-    if getattr(db_user, 'restriction_topup', False):
-        reason = getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором'
-        support_url = settings.get_support_contact_url()
-        keyboard = []
-        if support_url:
-            keyboard.append([InlineKeyboardButton(text='🆘 Обжаловать', url=support_url)])
-        keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_balance')])
-
-        await message.answer(
-            f'🚫 <b>Пополнение ограничено</b>\n\n{reason}\n\n'
-            'Если вы считаете это ошибкой, вы можете обжаловать решение.',
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
-            parse_mode='HTML',
-        )
+    is_restricted, msg, kb = await check_topup_restriction(db_user, texts)
+    if is_restricted:
+        await message.answer(msg, reply_markup=kb, parse_mode='HTML')
         await state.clear()
         return
 
@@ -205,19 +195,9 @@ async def start_cloudpayments_payment(
     texts = get_texts(db_user.language)
 
     # Проверка ограничения на пополнение
-    if getattr(db_user, 'restriction_topup', False):
-        reason = getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором'
-        support_url = settings.get_support_contact_url()
-        keyboard = []
-        if support_url:
-            keyboard.append([InlineKeyboardButton(text='🆘 Обжаловать', url=support_url)])
-        keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_balance')])
-
-        await callback.message.edit_text(
-            f'🚫 <b>Пополнение ограничено</b>\n\n{reason}\n\n'
-            'Если вы считаете это ошибкой, вы можете обжаловать решение.',
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
-        )
+    is_restricted, msg, kb = await check_topup_restriction(db_user, texts)
+    if is_restricted:
+        await callback.message.edit_text(msg, reply_markup=kb)
         await callback.answer()
         return
 

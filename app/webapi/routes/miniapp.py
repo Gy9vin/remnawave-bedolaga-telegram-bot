@@ -72,6 +72,7 @@ from app.services.subscription_purchase_service import (
     PurchaseBalanceError,
     PurchaseValidationError,
     purchase_service,
+    validate_user_can_purchase,
 )
 from app.services.subscription_renewal_service import (
     SubscriptionRenewalChargeError,
@@ -5683,6 +5684,14 @@ async def subscription_purchase_endpoint(
         ) from error
 
     pricing = await purchase_service.calculate_pricing(db, context, selection)
+
+    # Проверка возможности покупки (черный список, ограничения)
+    validation = await validate_user_can_purchase(user)
+    if not validation.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={'code': validation.error_code, 'message': validation.error_message},
+        )
 
     try:
         result = await purchase_service.submit_purchase(db, context, pricing)

@@ -256,6 +256,76 @@ class PurchaseOptionsContext:
     payload: dict[str, Any]
 
 
+@dataclass
+class PurchaseValidationResult:
+    """Результат валидации возможности покупки подписки."""
+
+    can_purchase: bool
+    error_message: str | None = None
+    error_code: str | None = None  # 'blacklisted', 'restricted'
+
+
+async def validate_user_can_purchase(
+    user: User,
+    telegram_id: int | None = None,
+    username: str | None = None,
+) -> PurchaseValidationResult:
+    """
+    Проверяет, может ли пользователь совершить покупку подписки.
+
+    Выполняет проверки:
+    1. Находится ли пользователь в черном списке (BlacklistService)
+    2. Есть ли у пользователя ограничение на покупку/продление (restriction_subscription)
+
+    Args:
+        user: Объект пользователя из БД
+        telegram_id: Telegram ID пользователя (опционально, если не указан - берется из user)
+        username: Username пользователя (опционально, если не указан - берется из user)
+
+    Returns:
+        PurchaseValidationResult с результатом валидации
+    """
+    from app.services.blacklist_service import blacklist_service
+
+    # Определяем telegram_id и username
+    effective_telegram_id = telegram_id or getattr(user, 'telegram_id', None)
+    effective_username = username or getattr(user, 'username', None)
+
+    # Проверка черного списка
+    if effective_telegram_id:
+        is_blacklisted, blacklist_reason = await blacklist_service.is_user_blacklisted(
+            effective_telegram_id, effective_username
+        )
+
+        if is_blacklisted:
+            logger.warning(
+                'User %s is blacklisted: %s',
+                effective_telegram_id,
+                blacklist_reason,
+            )
+            return PurchaseValidationResult(
+                can_purchase=False,
+                error_message=blacklist_reason or 'Пользователь находится в черном списке',
+                error_code='blacklisted',
+            )
+
+    # Проверка ограничения на покупку/продление подписки
+    if getattr(user, 'restriction_subscription', False):
+        reason = getattr(user, 'restriction_reason', None) or 'Действие ограничено администратором'
+        logger.warning(
+            'User %s has subscription restriction: %s',
+            effective_telegram_id or getattr(user, 'id', 'unknown'),
+            reason,
+        )
+        return PurchaseValidationResult(
+            can_purchase=False,
+            error_message=reason,
+            error_code='restricted',
+        )
+
+    return PurchaseValidationResult(can_purchase=True)
+
+
 class PurchaseValidationError(Exception):
     def __init__(self, message: str, code: str = 'invalid_selection') -> None:
         super().__init__(message)

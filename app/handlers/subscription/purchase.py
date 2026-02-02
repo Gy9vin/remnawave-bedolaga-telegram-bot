@@ -2459,6 +2459,45 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
     # Используем пересчитанную цену
     validation_total_price = calculated_total_before_promo
 
+    # ===== НОВЫЙ КОД: Параллельный вызов сервиса для проверки =====
+    try:
+        from app.services.subscription_purchase_service import MiniAppSubscriptionPurchaseService
+
+        purchase_service = MiniAppSubscriptionPurchaseService()
+
+        # Вызываем сервис
+        pricing_result = await purchase_service.calculate_pricing(
+            db=db,
+            user=db_user,
+            period_days=data['period_days'],
+            traffic_gb=data.get('traffic_gb'),
+            selected_countries=data.get('selected_countries'),
+            device_count=data.get('device_count'),
+        )
+
+        final_price_new = pricing_result.final_total
+
+        # КРИТИЧНО: Сравнение результатов
+        if final_price != final_price_new:
+            logger.error(
+                f'🚨 PRICE MISMATCH! '
+                f'Old={final_price} (handlers), New={final_price_new} (service), '
+                f'Diff={abs(final_price - final_price_new)}, '
+                f'user_id={db_user.telegram_id}, '
+                f'period={data["period_days"]}, '
+                f'traffic={data.get("traffic_gb")}, '
+                f'countries={data.get("selected_countries")}, '
+                f'devices={data.get("device_count")}'
+            )
+            # ПОКА используем старую цену
+        else:
+            logger.info(f'✅ Price match OK: {final_price_new} kopeks')
+
+    except Exception as e:
+        logger.error(f'Error calling purchase_service.calculate_pricing: {e}')
+        # Продолжаем со старой ценой
+    # ===== КОНЕЦ НОВОГО КОДА =====
+
     logger.info(f'Расчет покупки подписки на {data["period_days"]} дней ({months_in_period} мес):')
     base_log = f'   Период: {base_price_original / 100}₽'
     if base_discount_total and base_discount_total > 0:
@@ -2750,6 +2789,11 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                 reset_traffic=True,
                 reset_reason='покупка подписки (повторная попытка)',
             )
+
+        # ===== TODO: После проверки цены добавим параллельный вызов submit_purchase =====
+        # Сейчас проверяем только расчёт цены
+        # На следующем этапе добавим вызов purchase_service.submit_purchase()
+        # ===== КОНЕЦ TODO =====
 
         transaction = await create_transaction(
             db=db,

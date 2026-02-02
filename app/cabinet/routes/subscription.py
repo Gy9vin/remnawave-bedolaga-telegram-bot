@@ -32,6 +32,7 @@ from app.services.subscription_purchase_service import (
     MiniAppSubscriptionPurchaseService,
     PurchaseBalanceError,
     PurchaseValidationError,
+    validate_user_can_purchase,
 )
 from app.services.subscription_service import SubscriptionService
 from app.services.system_settings_service import bot_configuration_service
@@ -324,6 +325,14 @@ async def renew_subscription(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Renew subscription (pay from balance)."""
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Продление подписки невозможно',
+        )
+
     await db.refresh(user, ['subscription'])
 
     if not user.subscription:
@@ -580,6 +589,14 @@ async def purchase_traffic(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Purchase additional traffic."""
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Покупка трафика невозможна',
+        )
+
     from app.database.crud.subscription import add_subscription_traffic
     from app.database.crud.tariff import get_tariff_by_id
     from app.utils.pricing_utils import calculate_prorated_price
@@ -1033,6 +1050,14 @@ async def activate_trial(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Activate trial subscription."""
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Активация триала невозможна',
+        )
+
     await db.refresh(user, ['subscription'])
 
     # Check if user already has an active subscription
@@ -1443,6 +1468,14 @@ async def submit_purchase(
     db: AsyncSession = Depends(get_cabinet_db),
 ) -> dict[str, Any]:
     """Submit subscription purchase (deduct from balance, classic mode only)."""
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Покупка подписки невозможна',
+        )
+
     # This endpoint is for classic mode only, tariffs mode uses /purchase-tariff
     if settings.is_tariffs_mode():
         raise HTTPException(
@@ -1580,6 +1613,14 @@ async def purchase_tariff(
     db: AsyncSession = Depends(get_cabinet_db),
 ) -> dict[str, Any]:
     """Purchase a tariff (for tariffs mode)."""
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Покупка тарифа невозможна',
+        )
+
     try:
         # Check tariffs mode
         if not settings.is_tariffs_mode():
@@ -1981,6 +2022,14 @@ async def purchase_devices(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Purchase additional device slots for subscription."""
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Покупка устройств невозможна',
+        )
+
     try:
         await db.refresh(user, ['subscription'])
         subscription = user.subscription

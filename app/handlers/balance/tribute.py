@@ -6,6 +6,7 @@ from app.config import settings
 from app.database.models import User
 from app.localization.texts import get_texts
 from app.utils.decorators import error_handler
+from app.utils.payment_checks import check_topup_restriction
 
 
 logger = logging.getLogger(__name__)
@@ -19,18 +20,11 @@ async def start_tribute_payment(
     texts = get_texts(db_user.language)
 
     # Проверка ограничения на пополнение
-    if getattr(db_user, 'restriction_topup', False):
-        reason = getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором'
-        support_url = settings.get_support_contact_url()
-        keyboard = []
-        if support_url:
-            keyboard.append([types.InlineKeyboardButton(text='🆘 Обжаловать', url=support_url)])
-        keyboard.append([types.InlineKeyboardButton(text=texts.BACK, callback_data='menu_balance')])
-
+    restriction_result = check_topup_restriction(db_user, back_callback_data='menu_balance')
+    if restriction_result.is_restricted:
         await callback.message.edit_text(
-            f'🚫 <b>Пополнение ограничено</b>\n\n{reason}\n\n'
-            'Если вы считаете это ошибкой, вы можете обжаловать решение.',
-            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard),
+            restriction_result.message,
+            reply_markup=restriction_result.keyboard,
         )
         await callback.answer()
         return
