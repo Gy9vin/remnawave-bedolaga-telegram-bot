@@ -996,7 +996,9 @@ class User(Base):
     email_change_code = Column(String(6), nullable=True)  # 6-digit verification code
     email_change_expires = Column(DateTime, nullable=True)  # Code expiration
     broadcasts = relationship('BroadcastHistory', back_populates='admin')
-    referrals = relationship('User', backref='referrer', remote_side=[id], foreign_keys='User.referred_by_id')
+    referrals = relationship(
+        'User', backref='referrer', remote_side=[id], foreign_keys='User.referred_by_id', post_update=True
+    )
     subscription = relationship('Subscription', back_populates='user', uselist=False)
     transactions = relationship('Transaction', back_populates='user')
     referral_earnings = relationship('ReferralEarning', foreign_keys='ReferralEarning.user_id', back_populates='user')
