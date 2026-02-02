@@ -38,7 +38,7 @@ async def get_subscription_by_user_id(db: AsyncSession, user_id: int) -> Subscri
     subscription = result.scalar_one_or_none()
 
     if subscription:
-        logger.info(
+        logger.debug(
             f'🔍 Загружена подписка {subscription.id} для пользователя {user_id}, статус: {subscription.status}'
         )
         subscription = await check_and_update_subscription_status(db, subscription)
@@ -1464,7 +1464,7 @@ async def expire_subscription(db: AsyncSession, subscription: Subscription) -> S
 async def check_and_update_subscription_status(db: AsyncSession, subscription: Subscription) -> Subscription:
     current_time = datetime.utcnow()
 
-    logger.info(
+    logger.debug(
         '🔍 Проверка статуса подписки %s, текущий статус: %s, дата окончания: %s, текущее время: %s',
         subscription.id,
         subscription.status,
