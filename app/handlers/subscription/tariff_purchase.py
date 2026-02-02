@@ -2242,6 +2242,19 @@ async def confirm_tariff_switch(
         except Exception as e:
             logger.error(f'Ошибка обновления Remnawave при переключении тарифа: {e}')
 
+        # Гарантированный сброс устройств при смене тарифа
+        await db.refresh(db_user)
+        if db_user.remnawave_uuid:
+            try:
+                from app.services.remnawave_service import RemnaWaveService
+
+                service = RemnaWaveService()
+                async with service.get_api_client() as api:
+                    await api.reset_user_devices(db_user.remnawave_uuid)
+                    logger.info(f'🔧 Сброшены устройства при смене тарифа для user_id={db_user.id}')
+            except Exception as e:
+                logger.error(f'Ошибка сброса устройств при смене тарифа: {e}')
+
         # Создаем транзакцию
         await create_transaction(
             db,
@@ -2262,6 +2275,7 @@ async def confirm_tariff_switch(
                 days_for_new_tariff,  # Итоговый срок подписки
                 was_trial_conversion=False,
                 amount_kopeks=final_price,
+                purchase_type='tariff_switch',
             )
         except Exception as e:
             logger.error(f'Ошибка отправки уведомления админу: {e}')
@@ -2395,7 +2409,7 @@ async def confirm_daily_tariff_switch(
         await db.commit()
         await db.refresh(subscription)
 
-        # Обновляем пользователя в Remnawave
+        # Обновляем пользователя в Remnawave (create_remnawave_user также сбрасывает устройства)
         try:
             subscription_service = SubscriptionService()
             await subscription_service.create_remnawave_user(
@@ -2406,6 +2420,19 @@ async def confirm_daily_tariff_switch(
             )
         except Exception as e:
             logger.error(f'Ошибка обновления Remnawave: {e}')
+
+        # Гарантированный сброс устройств при смене тарифа
+        await db.refresh(db_user)
+        if db_user.remnawave_uuid:
+            try:
+                from app.services.remnawave_service import RemnaWaveService
+
+                service = RemnaWaveService()
+                async with service.get_api_client() as api:
+                    await api.reset_user_devices(db_user.remnawave_uuid)
+                    logger.info(f'🔧 Сброшены устройства при смене на суточный тариф для user_id={db_user.id}')
+            except Exception as e:
+                logger.error(f'Ошибка сброса устройств при смене тарифа: {e}')
 
         # Создаем транзакцию
         await create_transaction(
@@ -2427,6 +2454,7 @@ async def confirm_daily_tariff_switch(
                 1,  # 1 день
                 was_trial_conversion=False,
                 amount_kopeks=daily_price,
+                purchase_type='tariff_switch',
             )
         except Exception as e:
             logger.error(f'Ошибка отправки уведомления админу: {e}')
@@ -2972,6 +3000,19 @@ async def confirm_instant_switch(
         except Exception as e:
             logger.error(f'Ошибка обновления Remnawave при мгновенном переключении: {e}')
 
+        # Гарантированный сброс устройств при смене тарифа
+        await db.refresh(db_user)
+        if db_user.remnawave_uuid:
+            try:
+                from app.services.remnawave_service import RemnaWaveService
+
+                service = RemnaWaveService()
+                async with service.get_api_client() as api:
+                    await api.reset_user_devices(db_user.remnawave_uuid)
+                    logger.info(f'🔧 Сброшены устройства при мгновенном переключении тарифа для user_id={db_user.id}')
+            except Exception as e:
+                logger.error(f'Ошибка сброса устройств при переключении тарифа: {e}')
+
         # Создаем транзакцию если была оплата
         if is_upgrade and upgrade_cost > 0:
             await create_transaction(
@@ -2993,6 +3034,7 @@ async def confirm_instant_switch(
                     remaining_days,
                     was_trial_conversion=False,
                     amount_kopeks=upgrade_cost,
+                    purchase_type='tariff_switch',
                 )
             except Exception as e:
                 logger.error(f'Ошибка отправки уведомления админу: {e}')

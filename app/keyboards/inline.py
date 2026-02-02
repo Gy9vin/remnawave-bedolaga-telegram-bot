@@ -1966,7 +1966,11 @@ def get_change_devices_keyboard(
     else:
         max_devices = settings.MAX_DEVICES_LIMIT if settings.MAX_DEVICES_LIMIT > 0 else 20
 
-    start_range = max(1, min(current_devices - 3, max_devices - 6))
+    # Минимальное количество устройств: device_limit тарифа или 1
+    tariff_min_devices = (getattr(tariff, 'device_limit', 1) or 1) if tariff else 1
+    min_devices = max(1, tariff_min_devices)
+
+    start_range = max(min_devices, min(current_devices - 3, max_devices - 6))
     end_range = min(max_devices + 1, max(current_devices + 4, 7))
 
     for devices_count in range(start_range, end_range):
@@ -2065,7 +2069,7 @@ def get_reset_traffic_confirm_keyboard(
             [
                 InlineKeyboardButton(
                     text=texts.t('TOPUP_BALANCE_BUTTON', '💳 Пополнить баланс'),
-                    callback_data=f'topup_amount_{missing_kopeks}',
+                    callback_data='balance_topup',
                 )
             ]
         )

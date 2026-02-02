@@ -462,6 +462,31 @@ async def renew_subscription(
 
     await db.commit()
 
+    # Отправляем уведомление админам о продлении подписки
+    try:
+        from aiogram import Bot
+
+        from app.services.admin_notification_service import AdminNotificationService
+
+        if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
+            bot = Bot(token=settings.BOT_TOKEN)
+            try:
+                notification_service = AdminNotificationService(bot)
+                await notification_service.send_subscription_purchase_notification(
+                    db=db,
+                    user=user,
+                    subscription=user.subscription,
+                    transaction=None,
+                    period_days=request.period_days,
+                    was_trial_conversion=False,
+                    amount_kopeks=price_kopeks,
+                    purchase_type='renewal',
+                )
+            finally:
+                await bot.session.close()
+    except Exception as e:
+        logger.error(f'Failed to send admin notification for subscription renewal: {e}')
+
     response = {
         'message': 'Subscription renewed successfully',
         'new_end_date': user.subscription.end_date.isoformat(),
@@ -938,6 +963,28 @@ async def get_trial_info(
     requires_payment = bool(settings.TRIAL_PAYMENT_ENABLED)
     price_kopeks = settings.TRIAL_ACTIVATION_PRICE if requires_payment else 0
 
+    # Get trial parameters from tariff if configured (same logic as activate_trial)
+    try:
+        from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
+
+        trial_tariff = await get_trial_tariff(db)
+
+        if not trial_tariff:
+            trial_tariff_id = settings.get_trial_tariff_id()
+            if trial_tariff_id > 0:
+                trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
+                if trial_tariff and not trial_tariff.is_active:
+                    trial_tariff = None
+
+        if trial_tariff:
+            traffic_limit_gb = trial_tariff.traffic_limit_gb
+            device_limit = trial_tariff.device_limit
+            tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
+            if tariff_trial_days:
+                duration_days = tariff_trial_days
+    except Exception as e:
+        logger.error(f'Error getting trial tariff for info: {e}')
+
     # Check if user already has an active subscription
     if user.subscription:
         now = datetime.utcnow()
@@ -1026,25 +1073,32 @@ async def activate_trial(
     trial_squads = []
     tariff_id_for_trial = None
 
-    trial_tariff_id = settings.get_trial_tariff_id()
-    if trial_tariff_id:
-        try:
-            from app.database.crud.tariff import get_tariff_by_id
+    # First check for tariff with is_trial_available flag in DB (set via admin panel)
+    # Then fallback to TRIAL_TARIFF_ID from settings
+    trial_tariff = None
+    try:
+        from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
 
-            trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
-            if trial_tariff:
-                trial_traffic_limit = trial_tariff.traffic_limit_gb
-                trial_device_limit = trial_tariff.device_limit
-                trial_squads = trial_tariff.allowed_squads or []
-                tariff_id_for_trial = trial_tariff.id
-                tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
-                if tariff_trial_days:
-                    trial_duration = tariff_trial_days
-                logger.info(
-                    f'Using trial tariff {trial_tariff.name} (ID: {trial_tariff.id}) with squads: {trial_squads}'
-                )
-        except Exception as e:
-            logger.error(f'Error getting trial tariff: {e}')
+        trial_tariff = await get_trial_tariff(db)
+
+        if not trial_tariff:
+            trial_tariff_id = settings.get_trial_tariff_id()
+            if trial_tariff_id > 0:
+                trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
+                if trial_tariff and not trial_tariff.is_active:
+                    trial_tariff = None
+
+        if trial_tariff:
+            trial_traffic_limit = trial_tariff.traffic_limit_gb
+            trial_device_limit = trial_tariff.device_limit
+            trial_squads = trial_tariff.allowed_squads or []
+            tariff_id_for_trial = trial_tariff.id
+            tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
+            if tariff_trial_days:
+                trial_duration = tariff_trial_days
+            logger.info(f'Using trial tariff {trial_tariff.name} (ID: {trial_tariff.id}) with squads: {trial_squads}')
+    except Exception as e:
+        logger.error(f'Error getting trial tariff: {e}')
 
     # Create trial subscription
     subscription = await create_trial_subscription(
@@ -1438,6 +1492,32 @@ async def submit_purchase(
                 )
             except Exception as notif_error:
                 logger.warning(f'Failed to send subscription notification to {user.email}: {notif_error}')
+
+        # Отправляем уведомление админам о покупке подписки
+        try:
+            from aiogram import Bot
+
+            from app.services.admin_notification_service import AdminNotificationService
+
+            if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
+                bot = Bot(token=settings.BOT_TOKEN)
+                try:
+                    notification_service = AdminNotificationService(bot)
+                    is_new_subscription = result.get('was_trial_conversion') or not context.subscription
+                    await notification_service.send_subscription_purchase_notification(
+                        db=db,
+                        user=user,
+                        subscription=subscription,
+                        transaction=None,
+                        period_days=selection.period_days,
+                        was_trial_conversion=result.get('was_trial_conversion', False),
+                        amount_kopeks=pricing.final_total,
+                        purchase_type='renewal' if not is_new_subscription else None,
+                    )
+                finally:
+                    await bot.session.close()
+        except Exception as e:
+            logger.error(f'Failed to send admin notification for subscription purchase: {e}')
 
         return {
             'success': True,
@@ -1849,6 +1929,35 @@ async def purchase_tariff(
                 )
             except Exception as notif_error:
                 logger.warning(f'Failed to send subscription notification to {user.email}: {notif_error}')
+
+        # Отправляем уведомление админам о покупке/продлении тарифа
+        try:
+            from aiogram import Bot
+
+            from app.services.admin_notification_service import AdminNotificationService
+
+            if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
+                bot = Bot(token=settings.BOT_TOKEN)
+                try:
+                    notification_service = AdminNotificationService(bot)
+                    # Определяем тип покупки: новая подписка или продление
+                    was_new_subscription = (
+                        subscription.start_date and (datetime.utcnow() - subscription.start_date).total_seconds() < 60
+                    )
+                    await notification_service.send_subscription_purchase_notification(
+                        db=db,
+                        user=user,
+                        subscription=subscription,
+                        transaction=None,
+                        period_days=period_days,
+                        was_trial_conversion=False,
+                        amount_kopeks=price_kopeks,
+                        purchase_type='renewal' if not was_new_subscription else None,
+                    )
+                finally:
+                    await bot.session.close()
+        except Exception as e:
+            logger.error(f'Failed to send admin notification for tariff purchase: {e}')
 
         return response
 
@@ -3253,6 +3362,210 @@ async def delete_all_devices(
         )
 
 
+# ============ Device Reduction ============
+
+
+@router.get('/devices/reduction-info')
+async def get_device_reduction_info(
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> dict[str, Any]:
+    """Get info about device limit reduction availability."""
+    from app.services.remnawave_service import RemnaWaveService
+
+    await db.refresh(user, ['subscription'])
+
+    if not user.subscription:
+        return {
+            'available': False,
+            'reason': 'No subscription found',
+            'current_device_limit': 0,
+            'min_device_limit': 1,
+            'can_reduce': 0,
+            'connected_devices_count': 0,
+        }
+
+    subscription = user.subscription
+
+    # Check if it's a trial subscription
+    if subscription.is_trial:
+        return {
+            'available': False,
+            'reason': 'Device reduction is not available for trial subscriptions',
+            'current_device_limit': subscription.device_limit or 1,
+            'min_device_limit': 1,
+            'can_reduce': 0,
+            'connected_devices_count': 0,
+        }
+
+    # Get tariff info for min device limit
+    tariff = None
+    min_device_limit = 1
+    if subscription.tariff_id:
+        tariff = await get_tariff_by_id(db, subscription.tariff_id)
+        if tariff:
+            min_device_limit = getattr(tariff, 'device_limit', 1) or 1
+
+    current_device_limit = subscription.device_limit or 1
+
+    # Can't reduce below minimum
+    if current_device_limit <= min_device_limit:
+        return {
+            'available': False,
+            'reason': 'Already at minimum device limit for your tariff',
+            'current_device_limit': current_device_limit,
+            'min_device_limit': min_device_limit,
+            'can_reduce': 0,
+            'connected_devices_count': 0,
+        }
+
+    # Get connected devices count
+    connected_devices_count = 0
+    if user.remnawave_uuid:
+        try:
+            service = RemnaWaveService()
+            async with service.get_api_client() as api:
+                response = await api._make_request('GET', f'/api/hwid/devices/{user.remnawave_uuid}')
+                if response and 'response' in response:
+                    connected_devices_count = response['response'].get('total', 0)
+        except Exception as e:
+            logger.error(f'Error getting connected devices count: {e}')
+
+    can_reduce = current_device_limit - min_device_limit
+
+    return {
+        'available': True,
+        'current_device_limit': current_device_limit,
+        'min_device_limit': min_device_limit,
+        'can_reduce': can_reduce,
+        'connected_devices_count': connected_devices_count,
+    }
+
+
+@router.post('/devices/reduce')
+async def reduce_devices(
+    request: dict[str, int],
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> dict[str, Any]:
+    """Reduce device limit (no refund)."""
+    from app.services.remnawave_service import RemnaWaveService
+
+    new_device_limit = request.get('new_device_limit')
+    if not new_device_limit or new_device_limit < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Invalid new_device_limit',
+        )
+
+    await db.refresh(user, ['subscription'])
+
+    if not user.subscription:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='No subscription found',
+        )
+
+    subscription = user.subscription
+
+    if subscription.is_trial:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Device reduction is not available for trial subscriptions',
+        )
+
+    # Get tariff info for min device limit
+    tariff = None
+    min_device_limit = 1
+    if subscription.tariff_id:
+        tariff = await get_tariff_by_id(db, subscription.tariff_id)
+        if tariff:
+            min_device_limit = getattr(tariff, 'device_limit', 1) or 1
+
+    current_device_limit = subscription.device_limit or 1
+
+    # Validate new limit
+    if new_device_limit >= current_device_limit:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='New device limit must be less than current limit',
+        )
+
+    if new_device_limit < min_device_limit:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Cannot reduce below minimum device limit ({min_device_limit}) for your tariff',
+        )
+
+    # Get connected devices and remove excess (last connected ones)
+    connected_devices_count = 0
+    devices_removed_count = 0
+    if user.remnawave_uuid:
+        try:
+            service = RemnaWaveService()
+            async with service.get_api_client() as api:
+                response = await api._make_request('GET', f'/api/hwid/devices/{user.remnawave_uuid}')
+                if response and 'response' in response:
+                    devices_list = response['response'].get('devices', [])
+                    connected_devices_count = len(devices_list)
+
+                    # If connected devices exceed new limit, remove excess (last connected)
+                    if connected_devices_count > new_device_limit:
+                        devices_to_remove = connected_devices_count - new_device_limit
+                        logger.info(
+                            f'Removing {devices_to_remove} excess devices for user {user.id}: '
+                            f'had {connected_devices_count}, new limit {new_device_limit}'
+                        )
+
+                        # Sort by date (oldest first) and remove the last ones
+                        sorted_devices = sorted(
+                            devices_list,
+                            key=lambda d: d.get('updatedAt') or d.get('createdAt') or '',
+                        )
+                        devices_to_delete = sorted_devices[-devices_to_remove:]
+
+                        for device in devices_to_delete:
+                            device_hwid = device.get('hwid')
+                            if device_hwid:
+                                try:
+                                    delete_data = {'userUuid': user.remnawave_uuid, 'hwid': device_hwid}
+                                    await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+                                    devices_removed_count += 1
+                                    logger.info(f'Removed device {device_hwid} for user {user.id}')
+                                except Exception as del_error:
+                                    logger.error(f'Error removing device {device_hwid}: {del_error}')
+        except Exception as e:
+            logger.error(f'Error checking/removing devices: {e}')
+
+    old_device_limit = current_device_limit
+
+    # Update subscription
+    subscription.device_limit = new_device_limit
+    subscription.updated_at = datetime.utcnow()
+    await db.commit()
+
+    # Update RemnaWave
+    try:
+        subscription_service = SubscriptionService()
+        await subscription_service.update_remnawave_user(db, subscription)
+    except Exception as e:
+        logger.error(f'Error updating RemnaWave user: {e}')
+
+    logger.info(
+        f'User {user.id} reduced device limit from {old_device_limit} to {new_device_limit}'
+        + (f' (removed {devices_removed_count} devices)' if devices_removed_count > 0 else '')
+    )
+
+    return {
+        'success': True,
+        'message': 'Device limit reduced successfully'
+        + (f' ({devices_removed_count} devices removed)' if devices_removed_count > 0 else ''),
+        'old_device_limit': old_device_limit,
+        'new_device_limit': new_device_limit,
+        'devices_removed': devices_removed_count,
+    }
+
+
 # ============ Tariff Switch ============
 
 
@@ -3574,12 +3887,50 @@ async def switch_tariff(
     except Exception as e:
         logger.error(f'Failed to sync tariff switch with RemnaWave: {e}')
 
+    # Reset all devices on tariff switch
+    devices_reset = False
+    if user.remnawave_uuid:
+        try:
+            service = RemnaWaveService()
+            async with service.get_api_client() as api:
+                await api.reset_user_devices(user.remnawave_uuid)
+                devices_reset = True
+                logger.info(f'Reset all devices for user {user.id} on tariff switch')
+        except Exception as e:
+            logger.error(f'Failed to reset devices on tariff switch: {e}')
+
     await db.refresh(user)
     await db.refresh(user.subscription)
 
+    # Отправляем уведомление админам о смене тарифа
+    try:
+        from aiogram import Bot
+
+        from app.services.admin_notification_service import AdminNotificationService
+
+        if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
+            bot = Bot(token=settings.BOT_TOKEN)
+            try:
+                notification_service = AdminNotificationService(bot)
+                await notification_service.send_subscription_purchase_notification(
+                    db=db,
+                    user=user,
+                    subscription=user.subscription,
+                    transaction=None,
+                    period_days=remaining_days if remaining_days > 0 else new_period_days,
+                    was_trial_conversion=False,
+                    amount_kopeks=upgrade_cost,
+                    purchase_type='tariff_switch',
+                )
+            finally:
+                await bot.session.close()
+    except Exception as e:
+        logger.error(f'Failed to send admin notification for tariff switch: {e}')
+
     return {
         'success': True,
-        'message': f"Switched from '{old_tariff_name}' to '{new_tariff.name}'",
+        'message': f"Switched from '{old_tariff_name}' to '{new_tariff.name}'"
+        + (' (devices reset)' if devices_reset else ''),
         'subscription': _subscription_to_response(user.subscription),
         'old_tariff_name': old_tariff_name,
         'new_tariff_id': new_tariff.id,

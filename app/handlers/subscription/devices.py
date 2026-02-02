@@ -186,18 +186,29 @@ async def handle_change_devices(callback: types.CallbackQuery, db_user: User, db
     if tariff:
         price_per_device = tariff_device_price
         price_text = texts.format_price(price_per_device)
+        tariff_min_devices = getattr(tariff, 'device_limit', 1) or 1
+
+        # Добавляем информацию о минимальном лимите если он больше 1
+        min_devices_info = ''
+        if tariff_min_devices > 1:
+            min_devices_info = texts.t(
+                'CHANGE_DEVICES_MIN_LIMIT_INFO',
+                '\nМинимум для тарифа: {min_devices} устройств\n',
+            ).format(min_devices=tariff_min_devices)
+
         prompt_text = texts.t(
             'CHANGE_DEVICES_PROMPT_TARIFF',
             (
                 '📱 <b>Изменение количества устройств</b>\n\n'
                 'Текущий лимит: {current_devices} устройств\n'
                 'Цена за доп. устройство: {price}/мес\n'
+                '{min_devices_info}'
                 'Выберите новое количество устройств:\n\n'
                 '💡 <b>Важно:</b>\n'
                 '• При увеличении - доплата пропорционально оставшемуся времени\n'
                 '• При уменьшении - возврат средств не производится'
             ),
-        ).format(current_devices=current_devices, price=price_text)
+        ).format(current_devices=current_devices, price=price_text, min_devices_info=min_devices_info)
     else:
         prompt_text = texts.t(
             'CHANGE_DEVICES_PROMPT',
@@ -272,6 +283,18 @@ async def confirm_change_devices(callback: types.CallbackQuery, db_user: User, d
                 'DEVICES_LIMIT_EXCEEDED',
                 '⚠️ Превышен максимальный лимит устройств ({limit})',
             ).format(limit=settings.MAX_DEVICES_LIMIT),
+            show_alert=True,
+        )
+        return
+
+    # Проверяем минимальное количество устройств на тарифе
+    tariff_min_devices = (getattr(tariff, 'device_limit', 1) or 1) if tariff else 1
+    if new_devices_count < tariff_min_devices:
+        await callback.answer(
+            texts.t(
+                'DEVICES_MIN_LIMIT_REACHED',
+                '⚠️ Минимальное количество устройств для вашего тарифа: {limit}',
+            ).format(limit=tariff_min_devices),
             show_alert=True,
         )
         return
@@ -473,9 +496,37 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
     subscription = db_user.subscription
     current_devices = subscription.device_limit
 
-    if not settings.is_devices_selection_enabled():
+    # Проверяем тариф подписки
+    tariff = None
+    if subscription.tariff_id:
+        from app.database.crud.tariff import get_tariff_by_id
+
+        tariff = await get_tariff_by_id(db, subscription.tariff_id)
+
+    # Для тарифов - проверяем разрешено ли изменение устройств
+    if tariff:
+        tariff_device_price = getattr(tariff, 'device_price_kopeks', None)
+        if tariff_device_price is None or tariff_device_price <= 0:
+            await callback.answer(
+                texts.t('TARIFF_DEVICES_DISABLED', '⚠️ Изменение устройств недоступно для вашего тарифа'),
+                show_alert=True,
+            )
+            return
+    elif not settings.is_devices_selection_enabled():
         await callback.answer(
             texts.t('DEVICES_SELECTION_DISABLED', '⚠️ Изменение количества устройств недоступно'),
+            show_alert=True,
+        )
+        return
+
+    # Проверяем минимальное количество устройств на тарифе
+    tariff_min_devices = (getattr(tariff, 'device_limit', 1) or 1) if tariff else 1
+    if new_devices_count < tariff_min_devices:
+        await callback.answer(
+            texts.t(
+                'DEVICES_MIN_LIMIT_REACHED',
+                '⚠️ Минимальное количество устройств для вашего тарифа: {limit}',
+            ).format(limit=tariff_min_devices),
             show_alert=True,
         )
         return
@@ -510,7 +561,7 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
         subscription_service = SubscriptionService()
         await subscription_service.update_remnawave_user(db, subscription)
 
-        # При уменьшении лимита - сбросить лишние устройства
+        # При уменьшении лимита - удалить лишние устройства (последние подключённые)
         devices_reset_count = 0
         if new_devices_count < current_devices and db_user.remnawave_uuid:
             try:
@@ -521,16 +572,34 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
                         devices_list = response['response'].get('devices', [])
                         connected_count = len(devices_list)
 
-                        # Если подключённых устройств больше чем новый лимит - сбросить все
+                        # Если подключённых устройств больше чем новый лимит - удалить лишние
                         if connected_count > new_devices_count:
+                            devices_to_remove = connected_count - new_devices_count
                             logger.info(
-                                f'🔧 Сброс устройств при уменьшении лимита: '
-                                f'подключено {connected_count}, новый лимит {new_devices_count}'
+                                f'🔧 Удаление лишних устройств при уменьшении лимита: '
+                                f'подключено {connected_count}, новый лимит {new_devices_count}, '
+                                f'удаляем {devices_to_remove}'
                             )
-                            await api.reset_user_devices(db_user.remnawave_uuid)
-                            devices_reset_count = connected_count
+
+                            # Сортируем по дате (последние в конце) и удаляем последние
+                            sorted_devices = sorted(
+                                devices_list,
+                                key=lambda d: d.get('updatedAt') or d.get('createdAt') or '',
+                            )
+                            devices_to_delete = sorted_devices[-devices_to_remove:]
+
+                            for device in devices_to_delete:
+                                device_hwid = device.get('hwid')
+                                if device_hwid:
+                                    try:
+                                        delete_data = {'userUuid': db_user.remnawave_uuid, 'hwid': device_hwid}
+                                        await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+                                        devices_reset_count += 1
+                                        logger.info(f'✅ Удалено устройство {device_hwid}')
+                                    except Exception as del_error:
+                                        logger.error(f'Ошибка удаления устройства {device_hwid}: {del_error}')
             except Exception as reset_error:
-                logger.error(f'Ошибка сброса устройств при уменьшении лимита: {reset_error}')
+                logger.error(f'Ошибка удаления устройств при уменьшении лимита: {reset_error}')
 
         await db.refresh(db_user)
         await db.refresh(subscription)
@@ -570,9 +639,9 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
             ).format(old=current_devices, new=new_devices_count)
             if devices_reset_count > 0:
                 success_text += texts.t(
-                    'DEVICE_CHANGE_DEVICES_RESET',
-                    '\n🔄 Сброшено устройств: {count}\n💡 Подключите заново нужные устройства (до {limit} шт.)\n\n',
-                ).format(count=devices_reset_count, limit=new_devices_count)
+                    'DEVICE_CHANGE_DEVICES_REMOVED',
+                    '\n🗑 Удалено устройств: {count}\n',
+                ).format(count=devices_reset_count)
             success_text += texts.t(
                 'DEVICE_CHANGE_NO_REFUND_INFO',
                 'ℹ️ Возврат средств не производится',
@@ -1120,6 +1189,18 @@ async def confirm_add_devices(callback: types.CallbackQuery, db_user: User, db: 
 
         await db.refresh(db_user)
         await db.refresh(subscription)
+
+        # Отправляем уведомление админам о докупке устройств
+        try:
+            from app.services.admin_notification_service import AdminNotificationService
+
+            notification_service = AdminNotificationService(callback.bot)
+            old_device_limit = subscription.device_limit - devices_count
+            await notification_service.send_subscription_update_notification(
+                db, db_user, subscription, 'devices', old_device_limit, subscription.device_limit, price
+            )
+        except Exception as e:
+            logger.error(f'Ошибка отправки уведомления о докупке устройств: {e}')
 
         success_text = (
             '✅ Устройства успешно добавлены!\n\n'
