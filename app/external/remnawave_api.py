@@ -425,7 +425,7 @@ class RemnaWaveAPI:
             data['description'] = description
         if tag:
             data['tag'] = tag
-        if active_internal_squads is not None:
+        if active_internal_squads:
             data['activeInternalSquads'] = active_internal_squads
 
         logger.debug('Создание пользователя в панели: %s', data)
