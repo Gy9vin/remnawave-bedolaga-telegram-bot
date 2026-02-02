@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database.crud.promo_group import get_promo_group_by_id
+from app.database.crud.server_squad import get_random_active_squad_uuid
 from app.database.crud.subscription import (
     create_paid_subscription,
     create_trial_subscription,
@@ -411,6 +412,13 @@ async def create_user_subscription(
             else:
                 device_limit = settings.DEFAULT_DEVICE_LIMIT
 
+        # Определяем скводы для платной подписки
+        connected_squads = payload.connected_squads
+        if not connected_squads:
+            # Авто-назначение платного сквода если не указан
+            auto_squad = await get_random_active_squad_uuid(db)
+            connected_squads = [auto_squad] if auto_squad else []
+
         if existing:
             subscription = await replace_subscription(
                 db,
@@ -418,7 +426,7 @@ async def create_user_subscription(
                 duration_days=payload.duration_days,
                 traffic_limit_gb=payload.traffic_limit_gb or settings.DEFAULT_TRAFFIC_LIMIT_GB,
                 device_limit=device_limit,
-                connected_squads=payload.connected_squads or [],
+                connected_squads=connected_squads,
                 is_trial=False,
                 update_server_counters=True,
             )
@@ -429,7 +437,7 @@ async def create_user_subscription(
                 duration_days=payload.duration_days,
                 traffic_limit_gb=payload.traffic_limit_gb or settings.DEFAULT_TRAFFIC_LIMIT_GB,
                 device_limit=device_limit,
-                connected_squads=payload.connected_squads or [],
+                connected_squads=connected_squads,
                 update_server_counters=True,
             )
 
