@@ -15,7 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 def format_referrer_info(user: User) -> str:
-    """Return formatted referrer info for admin notifications."""
+    """Return formatted referrer info for admin notifications.
+
+    Пытается получить данные реферера, но при ошибке lazy loading
+    (MissingGreenlet) безопасно возвращает только ID.
+    """
+    from sqlalchemy.exc import MissingGreenlet
 
     referred_by_id = getattr(user, 'referred_by_id', None)
 
@@ -23,25 +28,29 @@ def format_referrer_info(user: User) -> str:
         return 'Нет'
 
     try:
-        # Проверяем, является ли referrer обычным объектом или InstrumentedList
+        # Пытаемся получить referrer relationship
         referrer = getattr(user, 'referrer', None)
 
-        # Если referrer это InstrumentedList или None, то возвращаем информацию по ID
         if referrer is None:
-            return f'ID {referred_by_id} (не найден)'
+            return f'ID {referred_by_id}'
 
-        # Пытаемся получить атрибуты referrer, если они доступны
+        # Пытаемся получить атрибуты referrer
         referrer_username = getattr(referrer, 'username', None)
         referrer_telegram_id = getattr(referrer, 'telegram_id', None)
 
         if referrer_username:
             return f'@{referrer_username} (ID: {referred_by_id})'
 
-        return f'ID {referrer_telegram_id or referred_by_id}'
+        if referrer_telegram_id:
+            return f'ID {referrer_telegram_id}'
 
+        return f'ID {referred_by_id}'
+
+    except MissingGreenlet:
+        # Lazy loading вне async контекста — возвращаем только ID
+        return f'ID {referred_by_id}'
     except (AttributeError, TypeError):
-        # Если возникла ошибка при обращении к атрибутам, просто возвращаем ID
-        return f'ID {referred_by_id} (ошибка загрузки)'
+        return f'ID {referred_by_id}'
 
 
 async def generate_unique_referral_code(db: AsyncSession, telegram_id: int) -> str:
