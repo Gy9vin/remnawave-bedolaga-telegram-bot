@@ -2476,7 +2476,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
             'period_days': data['period_days'],
             'traffic_gb': data.get('traffic_gb'),
             'countries': data.get('selected_countries'),
-            'devices': data.get('device_count'),
+            'devices': data.get('devices'),  # ИСПРАВЛЕНО: был device_count
         }
 
         # 3. Парсим selection из payload
