@@ -2529,8 +2529,9 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
             message += f' (скидка {servers_discount_percent}%: -{total_servers_discount / 100}₽)'
         logger.info(message)
     if total_devices_price > 0:
+        price_per_device = settings.PRICE_PER_DEVICE / 100
         message = (
-            f'   Устройства: {devices_price_per_month / 100}₽/мес × {months_in_period} = {total_devices_price / 100}₽'
+            f'   Устройства: {additional_devices} доп. × {price_per_device}₽/мес × {months_in_period} = {total_devices_price / 100}₽'
         )
         if devices_discount_total > 0:
             message += f' (скидка {devices_discount_percent}%: -{devices_discount_total / 100}₽)'
