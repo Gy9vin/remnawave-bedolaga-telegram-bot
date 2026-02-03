@@ -22,12 +22,10 @@ logger = logging.getLogger(__name__)
 
 @error_handler
 async def start_yookassa_payment(callback: types.CallbackQuery, db_user: User, state: FSMContext):
-    texts = get_texts(db_user.language)
-
     # Проверка ограничения на пополнение
-    is_restricted, msg, kb = await check_topup_restriction(db_user, texts)
-    if is_restricted:
-        await callback.message.edit_text(msg, reply_markup=kb)
+    restriction_result = check_topup_restriction(db_user)
+    if restriction_result.is_restricted:
+        await callback.message.edit_text(restriction_result.message, reply_markup=restriction_result.keyboard)
         await callback.answer()
         return
 
@@ -76,12 +74,10 @@ async def start_yookassa_payment(callback: types.CallbackQuery, db_user: User, s
 
 @error_handler
 async def start_yookassa_sbp_payment(callback: types.CallbackQuery, db_user: User, state: FSMContext):
-    texts = get_texts(db_user.language)
-
     # Проверка ограничения на пополнение
-    is_restricted, msg, kb = await check_topup_restriction(db_user, texts)
-    if is_restricted:
-        await callback.message.edit_text(msg, reply_markup=kb)
+    restriction_result = check_topup_restriction(db_user)
+    if restriction_result.is_restricted:
+        await callback.message.edit_text(restriction_result.message, reply_markup=restriction_result.keyboard)
         await callback.answer()
         return
 
@@ -135,9 +131,9 @@ async def process_yookassa_payment_amount(
     texts = get_texts(db_user.language)
 
     # Проверка ограничения на пополнение
-    is_restricted, msg, kb = await check_topup_restriction(db_user, texts)
-    if is_restricted:
-        await message.answer(msg, reply_markup=kb, parse_mode='HTML')
+    restriction_result = check_topup_restriction(db_user)
+    if restriction_result.is_restricted:
+        await message.answer(restriction_result.message, reply_markup=restriction_result.keyboard, parse_mode='HTML')
         await state.clear()
         return
 
@@ -157,8 +153,6 @@ async def process_yookassa_payment_amount(
         except Exception as e:
             logger.error(f'Ошибка при отправке сообщения о блокировке: {e}')
         return
-
-    texts = get_texts(db_user.language)
 
     if not settings.is_yookassa_enabled():
         await message.answer('❌ Оплата через YooKassa временно недоступна')
@@ -291,9 +285,9 @@ async def process_yookassa_sbp_payment_amount(
     texts = get_texts(db_user.language)
 
     # Проверка ограничения на пополнение
-    is_restricted, msg, kb = await check_topup_restriction(db_user, texts)
-    if is_restricted:
-        await message.answer(msg, reply_markup=kb, parse_mode='HTML')
+    restriction_result = check_topup_restriction(db_user)
+    if restriction_result.is_restricted:
+        await message.answer(restriction_result.message, reply_markup=restriction_result.keyboard, parse_mode='HTML')
         await state.clear()
         return
 
@@ -313,8 +307,6 @@ async def process_yookassa_sbp_payment_amount(
         except Exception as e:
             logger.error(f'Ошибка при отправке сообщения о блокировке: {e}')
         return
-
-    texts = get_texts(db_user.language)
 
     if not settings.is_yookassa_enabled() or not settings.YOOKASSA_SBP_ENABLED:
         await message.answer('❌ Оплата через СБП временно недоступна')

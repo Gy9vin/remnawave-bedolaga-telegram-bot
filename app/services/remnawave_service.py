@@ -1230,11 +1230,12 @@ class RemnaWaveService:
             )
             existing_subscriptions = existing_subscriptions_result.scalars().all()
 
-            # Создадим словарь для быстрого доступа к подпискам
-            {sub.user_id: sub for sub in existing_subscriptions}
+            # Создадим словарь для быстрого доступа к подпискам (O(1) вместо N SQL-запросов!)
+            subscriptions_by_user_id = {sub.user_id: sub for sub in existing_subscriptions}
+            logger.info(f'📊 Загружено подписок для быстрого доступа: {len(subscriptions_by_user_id)}')
 
             # Для оптимизации коммитим изменения каждые N пользователей
-            batch_size = 50
+            batch_size = 500  # Увеличено с 50 для снижения количества коммитов
             pending_uuid_mutations: list[_UUIDMapMutation] = []
 
             for i, panel_user in enumerate(unique_panel_users):
@@ -1284,9 +1285,9 @@ class RemnaWaveService:
                                 stats['created'] += 1
                                 logger.info(f'✅ Создан пользователь {telegram_id} с подпиской')
                             else:
-                                # Обновляем данные существующего пользователя
-                                # Но теперь мы уже загрузили подписку с пользователем, нет необходимости перезагружать
-                                await self._update_subscription_from_panel_data(db, db_user, panel_user)
+                                # Обновляем данные существующего пользователя используя предзагруженную подписку
+                                existing_sub = subscriptions_by_user_id.get(db_user.id)
+                                await self._update_subscription_from_panel_data(db, db_user, panel_user, existing_sub)
                                 stats['updated'] += 1
                                 logger.info(f'♻️ Обновлена подписка существующего пользователя {telegram_id}')
 
@@ -1309,13 +1310,10 @@ class RemnaWaveService:
                             bot_users_by_uuid,
                         )
 
-                        # Используем async запрос вместо доступа к relationship,
-                        # чтобы избежать lazy-load в async контексте
-                        from app.database.crud.subscription import get_subscription_by_user_id as _get_sub
-
-                        existing_sub = await _get_sub(db, db_user.id)
+                        # Используем предзагруженный словарь вместо SQL-запроса (устранение N+1 query!)
+                        existing_sub = subscriptions_by_user_id.get(db_user.id)
                         if existing_sub:
-                            await self._update_subscription_from_panel_data(db, db_user, panel_user)
+                            await self._update_subscription_from_panel_data(db, db_user, panel_user, existing_sub)
                         else:
                             await self._create_subscription_from_panel_data(db, db_user, panel_user)
 
@@ -1391,13 +1389,10 @@ class RemnaWaveService:
                             if panel_uuid and not db_user.remnawave_uuid:
                                 db_user.remnawave_uuid = panel_uuid
 
-                            # Используем async запрос вместо доступа к relationship,
-                            # чтобы избежать lazy-load (greenlet_spawn) в async контексте
-                            from app.database.crud.subscription import get_subscription_by_user_id as _get_sub_email
-
-                            existing_sub = await _get_sub_email(db, db_user.id)
+                            # Используем предзагруженный словарь вместо SQL-запроса (устранение N+1 query!)
+                            existing_sub = subscriptions_by_user_id.get(db_user.id)
                             if existing_sub:
-                                await self._update_subscription_from_panel_data(db, db_user, panel_user)
+                                await self._update_subscription_from_panel_data(db, db_user, panel_user, existing_sub)
                             else:
                                 await self._create_subscription_from_panel_data(db, db_user, panel_user)
 
@@ -1425,13 +1420,11 @@ class RemnaWaveService:
                 processed_count = 0
                 cleanup_uuid_mutations: list[_UUIDMapMutation] = []
 
-                # Собираем список пользователей для деактивации
+                # Собираем список пользователей для деактивации (используем словарь вместо hasattr)
                 users_to_deactivate = [
                     (telegram_id, db_user)
                     for telegram_id, db_user in bot_users_by_telegram_id.items()
-                    if telegram_id not in panel_telegram_ids
-                    and hasattr(db_user, 'subscription')
-                    and db_user.subscription
+                    if telegram_id not in panel_telegram_ids and subscriptions_by_user_id.get(db_user.id) is not None
                 ]
 
                 if users_to_deactivate:
@@ -1452,7 +1445,11 @@ class RemnaWaveService:
                         try:
                             logger.info(f'🗑️ Деактивация подписки пользователя {telegram_id} (нет в панели)')
 
-                            subscription = db_user.subscription
+                            # Используем предзагруженный словарь вместо lazy-load
+                            subscription = subscriptions_by_user_id.get(db_user.id)
+                            if not subscription:
+                                logger.warning(f'⚠️ Подписка не найдена для пользователя {telegram_id}, пропускаем')
+                                continue
 
                             if db_user.remnawave_uuid and hwid_api_client:
                                 try:
@@ -1658,14 +1655,17 @@ class RemnaWaveService:
             except Exception as basic_error:
                 logger.error(f'❌ Ошибка создания базовой подписки: {basic_error}')
 
-    async def _update_subscription_from_panel_data(self, db: AsyncSession, user, panel_user):
+    async def _update_subscription_from_panel_data(
+        self, db: AsyncSession, user, panel_user, subscription: Optional['Subscription'] = None
+    ):
         try:
-            from app.database.crud.subscription import get_subscription_by_user_id
             from app.database.models import SubscriptionStatus
 
-            # Всегда используем async CRUD запрос для получения подписки,
-            # чтобы избежать lazy-load (greenlet_spawn) в async контексте
-            subscription = await get_subscription_by_user_id(db, user.id)
+            # Используем переданную подписку или загружаем из БД (для обратной совместимости)
+            if subscription is None:
+                from app.database.crud.subscription import get_subscription_by_user_id
+
+                subscription = await get_subscription_by_user_id(db, user.id)
 
             if not subscription:
                 await self._create_subscription_from_panel_data(db, user, panel_user)

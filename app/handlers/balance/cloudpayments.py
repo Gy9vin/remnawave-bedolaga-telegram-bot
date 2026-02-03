@@ -142,9 +142,9 @@ async def process_cloudpayments_payment_amount(
     texts = get_texts(db_user.language)
 
     # Проверка ограничения на пополнение
-    is_restricted, msg, kb = await check_topup_restriction(db_user, texts)
-    if is_restricted:
-        await message.answer(msg, reply_markup=kb, parse_mode='HTML')
+    restriction_result = check_topup_restriction(db_user)
+    if restriction_result.is_restricted:
+        await message.answer(restriction_result.message, reply_markup=restriction_result.keyboard, parse_mode='HTML')
         await state.clear()
         return
 
@@ -195,9 +195,9 @@ async def start_cloudpayments_payment(
     texts = get_texts(db_user.language)
 
     # Проверка ограничения на пополнение
-    is_restricted, msg, kb = await check_topup_restriction(db_user, texts)
-    if is_restricted:
-        await callback.message.edit_text(msg, reply_markup=kb)
+    restriction_result = check_topup_restriction(db_user)
+    if restriction_result.is_restricted:
+        await callback.message.edit_text(restriction_result.message, reply_markup=restriction_result.keyboard)
         await callback.answer()
         return
 

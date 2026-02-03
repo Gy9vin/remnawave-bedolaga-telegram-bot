@@ -2461,19 +2461,29 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
 
     # ===== НОВЫЙ КОД: Параллельный вызов сервиса для проверки =====
     try:
-        from app.services.subscription_purchase_service import MiniAppSubscriptionPurchaseService
+        from app.services.subscription_purchase_service import (
+            MiniAppSubscriptionPurchaseService,
+            PurchaseValidationError,
+        )
 
         purchase_service = MiniAppSubscriptionPurchaseService()
 
-        # Вызываем сервис
-        pricing_result = await purchase_service.calculate_pricing(
-            db=db,
-            user=db_user,
-            period_days=data['period_days'],
-            traffic_gb=data.get('traffic_gb'),
-            selected_countries=data.get('selected_countries'),
-            device_count=data.get('device_count'),
-        )
+        # 1. Строим контекст с опциями покупки
+        context = await purchase_service.build_options(db, db_user)
+
+        # 2. Формируем selection_payload из данных FSM
+        selection_payload = {
+            'period_days': data['period_days'],
+            'traffic_gb': data.get('traffic_gb'),
+            'countries': data.get('selected_countries'),
+            'devices': data.get('device_count'),
+        }
+
+        # 3. Парсим selection из payload
+        selection = purchase_service.parse_selection(context, selection_payload)
+
+        # 4. Вызываем calculate_pricing с правильными параметрами
+        pricing_result = await purchase_service.calculate_pricing(db, context, selection)
 
         final_price_new = pricing_result.final_total
 
@@ -2493,6 +2503,9 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
         else:
             logger.info(f'✅ Price match OK: {final_price_new} kopeks')
 
+    except PurchaseValidationError as e:
+        logger.warning(f'PurchaseValidationError in calculate_pricing: {e}')
+        # Продолжаем со старой ценой
     except Exception as e:
         logger.error(f'Error calling purchase_service.calculate_pricing: {e}')
         # Продолжаем со старой ценой
