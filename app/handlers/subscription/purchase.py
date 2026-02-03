@@ -737,18 +737,13 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
     texts = get_texts(db_user.language)
 
     # Проверка ограничения на покупку/продление подписки
-    if getattr(db_user, 'restriction_subscription', False):
-        reason = getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором'
-        support_url = settings.get_support_contact_url()
-        keyboard = []
-        if support_url:
-            keyboard.append([types.InlineKeyboardButton(text='🆘 Обжаловать', url=support_url)])
-        keyboard.append([types.InlineKeyboardButton(text=texts.BACK, callback_data='subscription')])
+    from app.utils.payment_checks import check_subscription_restriction
 
+    restriction_result = check_subscription_restriction(db_user, back_callback_data='subscription')
+    if restriction_result.is_restricted:
         await callback.message.edit_text(
-            f'🚫 <b>Активация подписки ограничена</b>\n\n{reason}\n\n'
-            'Если вы считаете это ошибкой, вы можете обжаловать решение.',
-            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard),
+            restriction_result.message,
+            reply_markup=restriction_result.keyboard,
         )
         await callback.answer()
         return
@@ -2247,19 +2242,13 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
         return
 
     # Проверка ограничения на покупку/продление подписки
-    if getattr(db_user, 'restriction_subscription', False):
-        reason = getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором'
-        texts = get_texts(db_user.language)
-        support_url = settings.get_support_contact_url()
-        keyboard = []
-        if support_url:
-            keyboard.append([types.InlineKeyboardButton(text='🆘 Обжаловать', url=support_url)])
-        keyboard.append([types.InlineKeyboardButton(text=texts.BACK, callback_data='subscription')])
+    from app.utils.payment_checks import check_subscription_restriction
 
+    restriction_result = check_subscription_restriction(db_user, back_callback_data='subscription')
+    if restriction_result.is_restricted:
         await callback.message.edit_text(
-            f'🚫 <b>Покупка/продление подписки ограничено</b>\n\n{reason}\n\n'
-            'Если вы считаете это ошибкой, вы можете обжаловать решение.',
-            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard),
+            restriction_result.message,
+            reply_markup=restriction_result.keyboard,
         )
         await callback.answer()
         return

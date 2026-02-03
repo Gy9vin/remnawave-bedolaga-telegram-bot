@@ -35,6 +35,21 @@ class TopupRestrictionResult:
     keyboard: types.InlineKeyboardMarkup | None = None
 
 
+@dataclass
+class SubscriptionRestrictionResult:
+    """Результат проверки ограничения на покупку/продление подписки.
+
+    Attributes:
+        is_restricted: True если покупка/продление заблокированы.
+        message: Сообщение для пользователя (None если не заблокировано).
+        keyboard: Клавиатура с кнопками (None если не заблокировано).
+    """
+
+    is_restricted: bool
+    message: str | None = None
+    keyboard: types.InlineKeyboardMarkup | None = None
+
+
 def check_topup_restriction(
     db_user: User,
     back_callback_data: str = 'menu_balance',
@@ -97,6 +112,74 @@ def check_topup_restriction(
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
     return TopupRestrictionResult(
+        is_restricted=True,
+        message=message,
+        keyboard=keyboard,
+    )
+
+
+def check_subscription_restriction(
+    db_user: User,
+    back_callback_data: str = 'subscription',
+) -> SubscriptionRestrictionResult:
+    """Проверяет ограничение пользователя на покупку/продление подписки.
+
+    Проверяет флаг restriction_subscription у пользователя и формирует
+    локализованное сообщение с клавиатурой, если ограничение активно.
+
+    Args:
+        db_user: Пользователь из базы данных.
+        back_callback_data: Callback data для кнопки "Назад".
+            По умолчанию 'subscription'.
+
+    Returns:
+        SubscriptionRestrictionResult с полями:
+            - is_restricted: True если покупка/продление заблокированы
+            - message: HTML-сообщение для пользователя
+            - keyboard: InlineKeyboardMarkup с кнопками
+
+    Example:
+        result = check_subscription_restriction(db_user)
+        if result.is_restricted:
+            await callback.message.edit_text(
+                result.message,
+                reply_markup=result.keyboard,
+            )
+            await callback.answer()
+            return
+    """
+    if not getattr(db_user, 'restriction_subscription', False):
+        return SubscriptionRestrictionResult(is_restricted=False)
+
+    texts = get_texts(db_user.language)
+
+    # Причина ограничения
+    default_reason = texts.t(
+        'USER_RESTRICTION_DEFAULT_REASON',
+        'Действие ограничено администратором',
+    )
+    reason = getattr(db_user, 'restriction_reason', None) or default_reason
+
+    # Формируем сообщение
+    message = texts.t(
+        'USER_RESTRICTION_SUBSCRIPTION_BLOCKED',
+        '🚫 <b>Покупка/продление подписки ограничено</b>\n\n{reason}\n\nЕсли вы считаете это ошибкой, вы можете обжаловать решение.',
+    ).format(reason=reason)
+
+    # Формируем клавиатуру
+    keyboard_rows: list[list[types.InlineKeyboardButton]] = []
+
+    support_url = settings.get_support_contact_url()
+    if support_url:
+        appeal_text = texts.t('USER_RESTRICTION_APPEAL_BUTTON', '🆘 Обжаловать')
+        keyboard_rows.append([types.InlineKeyboardButton(text=appeal_text, url=support_url)])
+
+    back_text = texts.t('BACK', '⬅️ Назад')
+    keyboard_rows.append([types.InlineKeyboardButton(text=back_text, callback_data=back_callback_data)])
+
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+    return SubscriptionRestrictionResult(
         is_restricted=True,
         message=message,
         keyboard=keyboard,
