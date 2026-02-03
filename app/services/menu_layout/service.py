@@ -868,6 +868,18 @@ class MenuLayoutService:
             if not context.has_autopay:
                 return False
 
+        # channel_enabled - проверка что CHANNEL_LINK настроен
+        if conditions.get('channel_enabled') is True:
+            channel_link = settings.CHANNEL_LINK
+            if not channel_link or not channel_link.strip():
+                return False
+
+        # cabinet_enabled - проверка что MiniApp URL настроен
+        if conditions.get('cabinet_enabled') is True:
+            miniapp_url = settings.get_main_menu_miniapp_url()
+            if not miniapp_url or not miniapp_url.strip():
+                return False
+
         return True
 
     @classmethod
@@ -1033,9 +1045,27 @@ class MenuLayoutService:
 
         # Строим кнопку в зависимости от типа
         if button_type == 'url':
-            return InlineKeyboardButton(text=text, url=action)
+            # Для динамических URL-кнопок подставляем значение из настроек
+            actual_url = action
+            if action == 'dynamic':
+                builtin_id = button_config.get('builtin_id', '')
+                if builtin_id == 'channel_info':
+                    actual_url = settings.CHANNEL_LINK
+                    if not actual_url or not actual_url.strip():
+                        return None  # Кнопка не показывается если URL не настроен
+
+            return InlineKeyboardButton(text=text, url=actual_url)
         if button_type == 'mini_app':
-            return InlineKeyboardButton(text=text, web_app=types.WebAppInfo(url=action))
+            # Для динамических MiniApp-кнопок подставляем значение из настроек
+            actual_url = action
+            if action == 'dynamic':
+                builtin_id = button_config.get('builtin_id', '')
+                if builtin_id == 'cabinet':
+                    actual_url = settings.get_main_menu_miniapp_url()
+                    if not actual_url or not actual_url.strip():
+                        return None  # Кнопка не показывается если URL не настроен
+
+            return InlineKeyboardButton(text=text, web_app=types.WebAppInfo(url=actual_url))
         if button_type == 'callback':
             # Кастомная кнопка с callback_data
             return InlineKeyboardButton(text=text, callback_data=action)
