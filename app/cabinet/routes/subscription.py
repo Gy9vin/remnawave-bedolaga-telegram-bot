@@ -1446,6 +1446,31 @@ async def preview_purchase(
         pricing = await purchase_service.calculate_pricing(db, context, selection)
         preview = purchase_service.build_preview_payload(context, pricing)
 
+        # Save cart for auto-purchase after balance top-up (if insufficient balance)
+        if user.balance_kopeks < pricing.final_total:
+            try:
+                cart_data = {
+                    'cart_mode': 'subscription_purchase',
+                    'period_id': request.selection.period_id,
+                    'period_days': request.selection.period_days,
+                    'traffic_gb': request.selection.traffic_value,
+                    'countries': request.selection.servers,
+                    'devices': request.selection.devices,
+                    'total_price': pricing.final_total,
+                    'user_id': user.id,
+                    'saved_cart': True,
+                    'return_to_cart': True,
+                    'source': 'cabinet_preview',
+                }
+                logger.info(
+                    f'💰 Недостаточно баланса (preview): user={user.id}, balance={user.balance_kopeks}, need={pricing.final_total}'
+                )
+                logger.info(f'📦 Сохраняем корзину в preview для user {user.id}')
+                await user_cart_service.save_user_cart(user.id, cart_data)
+                logger.info(f'🛒 Cart saved in PREVIEW for user {user.id}, price={pricing.final_total}')
+            except Exception as cart_error:
+                logger.error(f'❌ Error saving cart in preview: {cart_error}', exc_info=True)
+
         return preview
 
     except PurchaseValidationError as e:
@@ -1468,6 +1493,10 @@ async def submit_purchase(
     db: AsyncSession = Depends(get_cabinet_db),
 ) -> dict[str, Any]:
     """Submit subscription purchase (deduct from balance, classic mode only)."""
+    logger.info(
+        f'🎯 Cabinet /purchase вызван: user_id={user.id}, telegram_id={user.telegram_id}, balance={user.balance_kopeks}'
+    )
+
     # Проверка blacklist и ограничений на покупку
     validation_result = await validate_user_can_purchase(user)
     if not validation_result.can_purchase:
@@ -1497,6 +1526,40 @@ async def submit_purchase(
 
         selection = purchase_service.parse_selection(context, selection_dict)
         pricing = await purchase_service.calculate_pricing(db, context, selection)
+
+        # Save cart BEFORE attempting purchase (for auto-purchase on balance top-up)
+        logger.info(
+            f'💰 Расчёт завершён: user={user.id}, balance={user.balance_kopeks}, total={pricing.final_total}, period={request.selection.period_days}d'
+        )
+        try:
+            cart_data = {
+                'cart_mode': 'subscription_purchase',
+                'period_id': request.selection.period_id,
+                'period_days': request.selection.period_days,
+                'traffic_gb': request.selection.traffic_value,
+                'countries': request.selection.servers,
+                'devices': request.selection.devices,
+                'total_price': pricing.final_total,
+                'user_id': user.id,
+                'saved_cart': True,
+                'return_to_cart': True,
+                'source': 'cabinet',
+            }
+            logger.info(f'📦 Сохраняем корзину для user {user.id}: {cart_data}')
+            await user_cart_service.save_user_cart(user.id, cart_data)
+            logger.info(
+                f'🛒 Cart saved BEFORE purchase attempt (cabinet /purchase) user {user.id}, price={pricing.final_total}'
+            )
+
+            # Проверка что корзина сохранилась
+            saved_cart = await user_cart_service.get_user_cart(user.id)
+            if saved_cart:
+                logger.info(f'✅ Корзина проверена и найдена для user {user.id}')
+            else:
+                logger.error(f'❌ ОШИБКА: Корзина НЕ найдена сразу после сохранения для user {user.id}')
+        except Exception as cart_error:
+            logger.error(f'❌ Error saving cart BEFORE purchase (cabinet /purchase): {cart_error}', exc_info=True)
+
         result = await purchase_service.submit_purchase(db, context, pricing)
 
         subscription = result['subscription']
@@ -1565,27 +1628,8 @@ async def submit_purchase(
             detail=str(e),
         )
     except PurchaseBalanceError as e:
-        # Save cart for auto-purchase after balance top-up
-        try:
-            total_price = pricing.final_total if 'pricing' in locals() else 0
-            cart_data = {
-                'cart_mode': 'subscription_purchase',
-                'period_id': request.selection.period_id,
-                'period_days': request.selection.period_days,
-                'traffic_gb': request.selection.traffic_value,  # _prepare_auto_purchase expects traffic_gb
-                'countries': request.selection.servers,  # _prepare_auto_purchase expects countries
-                'devices': request.selection.devices,
-                'total_price': total_price,
-                'user_id': user.id,
-                'saved_cart': True,
-                'return_to_cart': True,
-                'source': 'cabinet',
-            }
-            await user_cart_service.save_user_cart(user.id, cart_data)
-            logger.info(f'Cart saved for auto-purchase (cabinet /purchase) user {user.id}')
-        except Exception as cart_error:
-            logger.error(f'Error saving cart for auto-purchase (cabinet /purchase): {cart_error}')
-
+        # Cart was already saved before purchase attempt
+        logger.info(f'💰 Insufficient balance for user {user.id}, cart already saved')
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={
