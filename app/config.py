@@ -286,6 +286,10 @@ class Settings(BaseSettings):
     MIN_BALANCE_FOR_AUTOPAY_KOPEKS: int = 10000
     SUBSCRIPTION_RENEWAL_BALANCE_THRESHOLD_KOPEKS: int = 20000
 
+    # Автопродление подписки перед истечением (за N минут до конца)
+    AUTO_RENEW_BEFORE_EXPIRY_ENABLED: bool = True
+    AUTO_RENEW_CHECK_MINUTES: int = 15  # За сколько минут до конца проверять
+
     MONITORING_INTERVAL: int = 60
     INACTIVE_USER_DELETE_MONTHS: int = 3
 

@@ -218,6 +218,7 @@ class MonitoringService:
                 await self._check_expired_subscription_followups(db)
                 if settings.ENABLE_AUTOPAY:
                     await self._process_autopayments(db)
+                await self._process_auto_renew_before_expiry(db)
                 await self._cleanup_inactive_users(db)
                 await self._sync_with_remnawave(db)
 
@@ -1076,6 +1077,248 @@ class MonitoringService:
         except Exception as e:
             logger.error(f'Ошибка обработки автоплатежей: {e}')
 
+    async def _process_auto_renew_before_expiry(self, db: AsyncSession):
+        """Автопродление подписок за N минут до истечения.
+
+        Находит подписки, которые истекают в ближайшие AUTO_RENEW_CHECK_MINUTES минут,
+        и автоматически продлевает их на 30 дней если у пользователя достаточно баланса.
+        Если баланса недостаточно — отправляет уведомление.
+        """
+        if not settings.AUTO_RENEW_BEFORE_EXPIRY_ENABLED:
+            return
+
+        try:
+            current_time = datetime.utcnow()
+            check_minutes = settings.AUTO_RENEW_CHECK_MINUTES
+            threshold_time = current_time + timedelta(minutes=check_minutes)
+
+            # Находим подписки, которые истекают в ближайшие N минут
+            result = await db.execute(
+                select(Subscription)
+                .options(
+                    selectinload(Subscription.user).options(
+                        selectinload(User.promo_group),
+                        selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
+                    ),
+                    selectinload(Subscription.tariff),
+                )
+                .where(
+                    and_(
+                        Subscription.status == SubscriptionStatus.ACTIVE.value,
+                        Subscription.is_trial == False,
+                        Subscription.end_date > current_time,
+                        Subscription.end_date <= threshold_time,
+                        Subscription.auto_renewed_before_expiry == False,
+                    )
+                )
+            )
+            subscriptions_to_process = result.scalars().all()
+
+            if not subscriptions_to_process:
+                return
+
+            renewed_count = 0
+            failed_count = 0
+            notified_count = 0
+
+            for subscription in subscriptions_to_process:
+                user = subscription.user
+                if not user:
+                    continue
+
+                user_identifier = user.telegram_id or f'email:{user.id}'
+
+                # Защита от дубликатов — проверяем последние транзакции за 60 секунд
+                recent_transaction = await self._check_recent_renewal_transaction(db, user.id, 60)
+                if recent_transaction:
+                    logger.debug(f'⏭️ Пропускаем автопродление для {user_identifier}: найдена недавняя транзакция')
+                    # Устанавливаем флаг чтобы не проверять повторно
+                    subscription.auto_renewed_before_expiry = True
+                    await db.commit()
+                    continue
+
+                # Рассчитываем стоимость продления
+                renewal_cost = await self.subscription_service.calculate_renewal_price(subscription, 30, db, user=user)
+                promo_discount_percent = self._get_user_promo_offer_discount_percent(user)
+                charge_amount = renewal_cost
+                promo_discount_value = 0
+
+                if renewal_cost > 0 and promo_discount_percent > 0:
+                    charge_amount, promo_discount_value = apply_percentage_discount(
+                        renewal_cost,
+                        promo_discount_percent,
+                    )
+
+                # Ключ для защиты от повторных уведомлений
+                renew_key = f'auto_renew_expiry_{user.id}_{subscription.id}'
+                if renew_key in self._notified_users:
+                    continue
+
+                if user.balance_kopeks >= charge_amount:
+                    # Достаточно баланса — продлеваем
+                    success = await subtract_user_balance(
+                        db, user, charge_amount, 'Автопродление подписки перед истечением'
+                    )
+
+                    if success:
+                        await extend_subscription(db, subscription, 30)
+
+                        # Сбрасываем флаг после успешного продления
+                        subscription.auto_renewed_before_expiry = True
+                        await db.commit()
+
+                        # Обновляем RemnaWave
+                        await self.subscription_service.update_remnawave_user(
+                            db,
+                            subscription,
+                            reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
+                            reset_reason='автопродление подписки перед истечением',
+                        )
+
+                        if promo_discount_value > 0:
+                            await self._consume_user_promo_offer_discount(db, user)
+
+                        # Отправляем уведомление об успешном продлении
+                        if user.telegram_id and self.bot:
+                            await self._send_autopay_success_notification(user, charge_amount, 30)
+                        elif not user.telegram_id:
+                            await notification_delivery_service.notify_autopay_success(
+                                user=user,
+                                amount_kopeks=charge_amount,
+                                new_expires_at=subscription.end_date,
+                            )
+
+                        renewed_count += 1
+                        self._notified_users.add(renew_key)
+                        logger.info(
+                            '⏰ Автопродление перед истечением для %s успешно (списано %s копеек)',
+                            user_identifier,
+                            charge_amount,
+                        )
+                    else:
+                        failed_count += 1
+                        subscription.auto_renewed_before_expiry = True
+                        await db.commit()
+                        logger.warning(f'⏰ Ошибка списания для автопродления перед истечением у {user_identifier}')
+                else:
+                    # Недостаточно баланса — отправляем уведомление
+                    subscription.auto_renewed_before_expiry = True
+                    await db.commit()
+
+                    if user.telegram_id and self.bot:
+                        await self._send_auto_renew_insufficient_balance_notification(
+                            user, user.balance_kopeks, charge_amount, check_minutes
+                        )
+                        notified_count += 1
+                    elif not user.telegram_id:
+                        await notification_delivery_service.notify_autopay_failed(
+                            user=user,
+                            reason=f'Недостаточно средств для автопродления. Требуется: {charge_amount / 100:.0f}₽',
+                        )
+                        notified_count += 1
+
+                    self._notified_users.add(renew_key)
+                    logger.info(
+                        '⏰ Уведомление о недостатке баланса для %s (баланс: %s, требуется: %s)',
+                        user_identifier,
+                        user.balance_kopeks,
+                        charge_amount,
+                    )
+
+            if renewed_count > 0 or failed_count > 0 or notified_count > 0:
+                await self._log_monitoring_event(
+                    db,
+                    'auto_renew_before_expiry',
+                    f'Автопродление перед истечением: продлено {renewed_count}, ошибок {failed_count}, уведомлено {notified_count}',
+                    {
+                        'renewed': renewed_count,
+                        'failed': failed_count,
+                        'notified': notified_count,
+                        'check_minutes': check_minutes,
+                    },
+                )
+
+        except Exception as e:
+            logger.error(f'Ошибка автопродления перед истечением: {e}')
+
+    async def _check_recent_renewal_transaction(self, db: AsyncSession, user_id: int, seconds: int) -> bool:
+        """Проверяет наличие транзакции продления за последние N секунд."""
+        from app.database.models import Transaction
+
+        cutoff_time = datetime.utcnow() - timedelta(seconds=seconds)
+
+        result = await db.execute(
+            select(Transaction)
+            .where(
+                and_(
+                    Transaction.user_id == user_id,
+                    Transaction.created_at >= cutoff_time,
+                    Transaction.description.ilike('%продлен%'),
+                )
+            )
+            .limit(1)
+        )
+        return result.scalars().first() is not None
+
+    async def _send_auto_renew_insufficient_balance_notification(
+        self, user: User, balance: int, required: int, minutes: int
+    ) -> bool:
+        """Отправляет уведомление о недостатке баланса для автопродления."""
+        try:
+            texts = get_texts(user.language)
+
+            message = f"""
+🚨 <b>Подписка заканчивается через {minutes} минут!</b>
+
+Недостаточно средств для автопродления.
+
+💰 <b>Баланс:</b> {texts.format_price(balance)}
+💎 <b>Требуется:</b> {texts.format_price(required)}
+
+Пополните баланс, чтобы продлить подписку.
+"""
+
+            from aiogram.types import InlineKeyboardMarkup
+
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [build_miniapp_or_callback_button(
+                        text='💳 Пополнить баланс',
+                        callback_data='balance_topup',
+                        miniapp_path='/balance',
+                    )],
+                    [build_miniapp_or_callback_button(
+                        text='📱 Моя подписка',
+                        callback_data='menu_subscription',
+                        miniapp_path='/subscription',
+                    )],
+                ]
+            )
+
+            await self._send_message_with_logo(
+                chat_id=user.telegram_id,
+                text=message,
+                parse_mode='HTML',
+                reply_markup=keyboard,
+            )
+            return True
+
+        except (TelegramForbiddenError, TelegramBadRequest) as exc:
+            if not self._handle_unreachable_user(user, exc, 'уведомление о недостатке баланса'):
+                logger.error(
+                    'Ошибка Telegram API при отправке уведомления о недостатке баланса пользователю %s: %s',
+                    user.telegram_id,
+                    exc,
+                )
+            return False
+        except Exception as e:
+            logger.error(
+                'Ошибка отправки уведомления о недостатке баланса пользователю %s: %s',
+                user.telegram_id,
+                e,
+            )
+            return False
+
     async def _send_subscription_expired_notification(self, user: User) -> bool:
         try:
             message = """
@@ -1090,8 +1333,16 @@ class MonitoringService:
 
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [build_miniapp_or_callback_button(text='💎 Купить подписку', callback_data='menu_buy')],
-                    [build_miniapp_or_callback_button(text='💳 Пополнить баланс', callback_data='balance_topup')],
+                    [build_miniapp_or_callback_button(
+                        text='💎 Купить подписку',
+                        callback_data='menu_buy',
+                        miniapp_path='/subscription',
+                    )],
+                    [build_miniapp_or_callback_button(
+                        text='💳 Пополнить баланс',
+                        callback_data='balance_topup',
+                        miniapp_path='/balance',
+                    )],
                 ]
             )
 
