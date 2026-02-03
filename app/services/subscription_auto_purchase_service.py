@@ -27,7 +27,7 @@ from app.services.subscription_purchase_service import (
 )
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
-from app.utils.pricing_utils import format_period_description
+from app.utils.pricing_utils import apply_percentage_discount, format_period_description
 from app.utils.timezone import format_local_datetime
 
 
@@ -141,14 +141,6 @@ def _safe_int(value: object | None, default: int = 0) -> int:
         return default
 
 
-def _apply_promo_discount_for_tariff(price: int, discount_percent: int) -> int:
-    """Применяет скидку промогруппы к цене тарифа."""
-    if discount_percent <= 0:
-        return price
-    discount = int(price * discount_percent / 100)
-    return max(0, price - discount)
-
-
 async def _get_tariff_price_for_period(
     db: AsyncSession,
     user: User,
@@ -187,7 +179,7 @@ async def _get_tariff_price_for_period(
     personal_discount = get_user_active_promo_discount_percent(user)
     discount_percent = max(discount_percent, personal_discount)
 
-    final_price = _apply_promo_discount_for_tariff(base_price, discount_percent)
+    final_price, _ = apply_percentage_discount(base_price, discount_percent)
     return final_price
 
 
@@ -636,7 +628,7 @@ async def _auto_purchase_tariff(
         )
         return False
 
-    final_price = _apply_promo_discount_for_tariff(base_price, discount_percent)
+    final_price, _ = apply_percentage_discount(base_price, discount_percent)
 
     # Проверяем есть ли уже подписка (нужно до расчёта цены для учёта доп. устройств)
     existing_subscription = await get_subscription_by_user_id(db, user.id)

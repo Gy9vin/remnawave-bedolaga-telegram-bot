@@ -2297,13 +2297,8 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
         logger.info(
             f'💰 Покупка подписки на {pricing_result.selection.period.days} дней ({pricing_result.months} мес):'
         )
-        logger.info(f'   Базовая цена: {pricing_result.base_total / 100}₽')
-        if pricing_result.traffic_total > 0:
-            logger.info(f'   Трафик: {pricing_result.traffic_total / 100}₽')
-        if pricing_result.server_total > 0:
-            logger.info(f'   Серверы: {pricing_result.server_total / 100}₽')
-        if pricing_result.devices_total > 0:
-            logger.info(f'   Устройства: {pricing_result.devices_total / 100}₽')
+        logger.info(f'   Базовая цена: {pricing_result.base_original_total / 100}₽')
+        logger.info(f'   С учётом скидки: {pricing_result.discounted_total / 100}₽')
         if pricing_result.promo_discount_value > 0:
             logger.info(
                 f'   🎯 Промо-предложение: -{pricing_result.promo_discount_value / 100}₽ ({pricing_result.promo_discount_percent}%%)'
