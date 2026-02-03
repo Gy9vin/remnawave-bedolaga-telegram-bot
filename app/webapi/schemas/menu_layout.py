@@ -75,10 +75,6 @@ class ButtonConditions(BaseModel):
     is_trial_user: bool | None = Field(default=None, description='Пользователь на пробном периоде')
     has_autopay: bool | None = Field(default=None, description='Автоплатёж включён')
 
-    # Условия для динамических кнопок
-    channel_enabled: bool | None = Field(default=None, description='CHANNEL_LINK настроен')
-    cabinet_enabled: bool | None = Field(default=None, description='MiniApp URL настроен (MINIAPP_CUSTOM_URL)')
-
     model_config = ConfigDict(extra='forbid')
 
 

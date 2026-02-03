@@ -77,12 +77,6 @@ DEFAULT_MENU_CONFIG: dict[str, Any] = {
             'max_per_row': 2,
         },
         {
-            'id': 'channel_cabinet_row',
-            'buttons': ['channel_info', 'cabinet'],
-            'conditions': None,
-            'max_per_row': 2,
-        },
-        {
             'id': 'admin_row',
             'buttons': ['admin_panel'],
             'conditions': {'is_admin': True},
@@ -268,39 +262,6 @@ DEFAULT_MENU_CONFIG: dict[str, Any] = {
             'conditions': None,
             'dynamic_text': False,
         },
-        'channel_info': {
-            'type': 'url',
-            'builtin_id': 'channel_info',
-            'text': {
-                'ru': '📢 Информационный канал',
-                'en': '📢 Information Channel',
-                'ua': '📢 Інформаційний канал',
-                'zh': '📢 信息频道',
-            },
-            'action': 'dynamic',  # Берётся из CHANNEL_LINK
-            'enabled': True,
-            'visibility': 'all',
-            'conditions': {'channel_enabled': True},
-            'dynamic_text': False,
-            'open_mode': 'callback',
-        },
-        'cabinet': {
-            'type': 'mini_app',
-            'builtin_id': 'cabinet',
-            'text': {
-                'ru': '🏠 Личный кабинет',
-                'en': '🏠 Personal Cabinet',
-                'ua': '🏠 Особистий кабінет',
-                'zh': '🏠 个人账户',
-            },
-            'action': 'dynamic',  # Берётся из MINIAPP_CUSTOM_URL
-            'enabled': True,
-            'visibility': 'all',
-            'conditions': {'cabinet_enabled': True},
-            'dynamic_text': False,
-            'open_mode': 'direct',
-            'webapp_url': 'dynamic',
-        },
     },
 }
 
@@ -426,33 +387,6 @@ BUILTIN_BUTTONS_INFO: list[dict[str, Any]] = [
         'callback_data': 'moderator_panel',
         'default_conditions': {'is_moderator': True},
         'supports_dynamic_text': False,
-    },
-    {
-        'id': 'channel_info',
-        'default_text': {
-            'ru': '📢 Информационный канал',
-            'en': '📢 Information Channel',
-            'ua': '📢 Інформаційний канал',
-            'zh': '📢 信息频道',
-        },
-        'callback_data': 'dynamic',  # URL берётся из CHANNEL_LINK
-        'default_conditions': {'channel_enabled': True},
-        'supports_dynamic_text': False,
-        'button_type': 'url',
-    },
-    {
-        'id': 'cabinet',
-        'default_text': {
-            'ru': '🏠 Личный кабинет',
-            'en': '🏠 Personal Cabinet',
-            'ua': '🏠 Особистий кабінет',
-            'zh': '🏠 个人账户',
-        },
-        'callback_data': 'dynamic',  # URL берётся из MINIAPP_CUSTOM_URL
-        'default_conditions': {'cabinet_enabled': True},
-        'supports_dynamic_text': False,
-        'button_type': 'mini_app',
-        'supports_direct_open': True,
     },
 ]
 
