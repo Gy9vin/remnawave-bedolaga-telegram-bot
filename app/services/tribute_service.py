@@ -198,7 +198,7 @@ class TributeService:
                 break
 
         except Exception as e:
-            logger.error(f'⌘ Ошибка обработки успешного Tribute платежа: {e}', exc_info=True)
+            logger.error(f'Ошибка обработки успешного Tribute платежа: {e}', exc_info=True)
 
     async def _handle_failed_payment(self, payment_data: dict[str, Any]):
         try:
@@ -466,7 +466,7 @@ class TributeService:
                 return True
 
         except Exception as e:
-            logger.error(f'⌘ Ошибка принудительной обработки: {e}', exc_info=True)
+            logger.error(f'Ошибка принудительной обработки: {e}', exc_info=True)
             return False
 
     async def get_payment_status(self, payment_id: str) -> dict[str, Any] | None:
