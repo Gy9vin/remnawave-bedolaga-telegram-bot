@@ -431,7 +431,20 @@ class MiniAppSubscriptionPurchaseService:
             except (TypeError, ValueError):
                 continue
 
-        default_connected = list(getattr(subscription, 'connected_squads', []) or [])
+        # Получаем текущие connected_squads
+        current_connected = list(getattr(subscription, 'connected_squads', []) or [])
+
+        # ФИКС: Фильтруем trial-only серверы из текущих подключений
+        # При конверсии Trial → Paid нужно исключить триальные сквады
+        default_connected = []
+        for uuid in current_connected:
+            if uuid in server_catalog:
+                server = server_catalog[uuid]
+                # Исключаем trial-only серверы (is_trial_eligible=True)
+                if not getattr(server, 'is_trial_eligible', False):
+                    default_connected.append(uuid)
+
+        # Если после фильтрации пусто, выбираем первый доступный платный сервер
         if not default_connected:
             for server in available_servers:
                 if getattr(server, 'is_available', True) and not getattr(server, 'is_full', False):

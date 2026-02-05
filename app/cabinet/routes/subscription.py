@@ -981,26 +981,28 @@ async def get_trial_info(
     price_kopeks = settings.TRIAL_ACTIVATION_PRICE if requires_payment else 0
 
     # Get trial parameters from tariff if configured (same logic as activate_trial)
-    try:
-        from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
+    # ФИКС: Проверяем режим тарифов перед использованием тарифа
+    if settings.is_tariffs_mode():
+        try:
+            from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
 
-        trial_tariff = await get_trial_tariff(db)
+            trial_tariff = await get_trial_tariff(db)
 
-        if not trial_tariff:
-            trial_tariff_id = settings.get_trial_tariff_id()
-            if trial_tariff_id > 0:
-                trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
-                if trial_tariff and not trial_tariff.is_active:
-                    trial_tariff = None
+            if not trial_tariff:
+                trial_tariff_id = settings.get_trial_tariff_id()
+                if trial_tariff_id > 0:
+                    trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
+                    if trial_tariff and not trial_tariff.is_active:
+                        trial_tariff = None
 
-        if trial_tariff:
-            traffic_limit_gb = trial_tariff.traffic_limit_gb
-            device_limit = trial_tariff.device_limit
-            tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
-            if tariff_trial_days:
-                duration_days = tariff_trial_days
-    except Exception as e:
-        logger.error(f'Error getting trial tariff for info: {e}')
+            if trial_tariff:
+                traffic_limit_gb = trial_tariff.traffic_limit_gb
+                device_limit = trial_tariff.device_limit
+                tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
+                if tariff_trial_days:
+                    duration_days = tariff_trial_days
+        except Exception as e:
+            logger.error(f'Error getting trial tariff for info: {e}')
 
     # Check if user already has an active subscription
     if user.subscription:
@@ -1100,30 +1102,34 @@ async def activate_trial(
 
     # First check for tariff with is_trial_available flag in DB (set via admin panel)
     # Then fallback to TRIAL_TARIFF_ID from settings
+    # ФИКС: Используем тариф только в режиме тарифов
     trial_tariff = None
-    try:
-        from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
+    if settings.is_tariffs_mode():
+        try:
+            from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
 
-        trial_tariff = await get_trial_tariff(db)
+            trial_tariff = await get_trial_tariff(db)
 
-        if not trial_tariff:
-            trial_tariff_id = settings.get_trial_tariff_id()
-            if trial_tariff_id > 0:
-                trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
-                if trial_tariff and not trial_tariff.is_active:
-                    trial_tariff = None
+            if not trial_tariff:
+                trial_tariff_id = settings.get_trial_tariff_id()
+                if trial_tariff_id > 0:
+                    trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
+                    if trial_tariff and not trial_tariff.is_active:
+                        trial_tariff = None
 
-        if trial_tariff:
-            trial_traffic_limit = trial_tariff.traffic_limit_gb
-            trial_device_limit = trial_tariff.device_limit
-            trial_squads = trial_tariff.allowed_squads or []
-            tariff_id_for_trial = trial_tariff.id
-            tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
-            if tariff_trial_days:
-                trial_duration = tariff_trial_days
-            logger.info(f'Using trial tariff {trial_tariff.name} (ID: {trial_tariff.id}) with squads: {trial_squads}')
-    except Exception as e:
-        logger.error(f'Error getting trial tariff: {e}')
+            if trial_tariff:
+                trial_traffic_limit = trial_tariff.traffic_limit_gb
+                trial_device_limit = trial_tariff.device_limit
+                trial_squads = trial_tariff.allowed_squads or []
+                tariff_id_for_trial = trial_tariff.id
+                tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
+                if tariff_trial_days:
+                    trial_duration = tariff_trial_days
+                logger.info(
+                    f'Using trial tariff {trial_tariff.name} (ID: {trial_tariff.id}) with squads: {trial_squads}'
+                )
+        except Exception as e:
+            logger.error(f'Error getting trial tariff: {e}')
 
     # Create trial subscription
     subscription = await create_trial_subscription(
@@ -1614,6 +1620,14 @@ async def submit_purchase(
                     await bot.session.close()
         except Exception as e:
             logger.error(f'Failed to send admin notification for subscription purchase: {e}')
+
+        # ФИКС: Загружаем tariff перед вызовом _subscription_to_response
+        # чтобы избежать lazy loading и ошибки greenlet_spawn
+        if subscription.tariff_id:
+            try:
+                await db.refresh(subscription, ['tariff'])
+            except Exception as refresh_error:
+                logger.warning(f'Failed to preload tariff for subscription {subscription.id}: {refresh_error}')
 
         return {
             'success': True,
