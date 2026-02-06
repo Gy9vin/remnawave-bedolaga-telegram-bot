@@ -28,6 +28,7 @@ from app.keyboards.admin import (
     get_admin_messages_keyboard,
     get_broadcast_button_config,
     get_broadcast_button_labels,
+    get_broadcast_button_url,
     get_broadcast_history_keyboard,
     get_broadcast_media_keyboard,
     get_broadcast_target_keyboard,
@@ -35,6 +36,7 @@ from app.keyboards.admin import (
     get_media_confirm_keyboard,
     get_pinned_message_keyboard,
     get_updated_message_buttons_selector_keyboard_with_media,
+    is_broadcast_url_button_available,
 )
 from app.localization.texts import get_texts
 from app.services.pinned_message_service import (
@@ -105,14 +107,34 @@ def create_broadcast_keyboard(selected_buttons: list, language: str = 'ru') -> t
         for button_key in row:
             if button_key not in selected_buttons:
                 continue
+
+            # Пропускаем URL-кнопки, если URL не настроен
+            if not is_broadcast_url_button_available(button_key):
+                continue
+
             button_config = button_config_map[button_key]
-            if settings.is_text_main_menu_mode() and button_key in TEXT_MENU_MINIAPP_BUTTON_KEYS:
+
+            # URL-кнопки (channel, cabinet)
+            if 'url' in button_config:
+                url = get_broadcast_button_url(button_key)
+                if url:
+                    # Кнопка "Личный кабинет" должна открывать миниапп
+                    if button_key == 'cabinet':
+                        row_buttons.append(
+                            types.InlineKeyboardButton(text=button_config['text'], web_app=types.WebAppInfo(url=url))
+                        )
+                    # Остальные URL-кнопки (channel) открываются как обычные ссылки
+                    else:
+                        row_buttons.append(types.InlineKeyboardButton(text=button_config['text'], url=url))
+            # Callback-кнопки с поддержкой miniapp в text menu mode
+            elif settings.is_text_main_menu_mode() and button_key in TEXT_MENU_MINIAPP_BUTTON_KEYS:
                 row_buttons.append(
                     build_miniapp_or_callback_button(
                         text=button_config['text'],
                         callback_data=button_config['callback'],
                     )
                 )
+            # Обычные callback-кнопки
             else:
                 row_buttons.append(
                     types.InlineKeyboardButton(text=button_config['text'], callback_data=button_config['callback'])
@@ -610,8 +632,6 @@ async def show_messages_history(callback: types.CallbackQuery, db_user: User, db
                 broadcast.message_text[:100] + '...' if len(broadcast.message_text) > 100 else broadcast.message_text
             )
 
-            import html
-
             message_preview = html.escape(message_preview)
 
             text += f"""
@@ -938,6 +958,8 @@ async def show_button_selector_callback(callback: types.CallbackQuery, db_user: 
 🔗 <b>Подключиться</b> — поможет подключить приложение
 📱 <b>Подписка</b> — покажет состояние подписки
 🛠️ <b>Техподдержка</b> — свяжет с поддержкой
+📢 <b>Информационный канал</b> — ссылка на канал
+🏠 <b>Личный кабинет</b> — откроет личный кабинет
 
 🏠 <b>Кнопка "На главную"</b> включена по умолчанию, но вы можете отключить её при необходимости.{media_info}
 
@@ -991,6 +1013,8 @@ async def show_button_selector(message: types.Message, db_user: User, state: FSM
 🔗 <b>Подключиться</b> — поможет подключить приложение
 📱 <b>Подписка</b> — покажет состояние подписки
 🛠️ <b>Техподдержка</b> — свяжет с поддержкой
+📢 <b>Информационный канал</b> — ссылка на канал
+🏠 <b>Личный кабинет</b> — откроет личный кабинет
 
 🏠 <b>Кнопка "На главную"</b> включена по умолчанию, но вы можете отключить её при необходимости.
 
@@ -1067,7 +1091,7 @@ async def confirm_button_selection(callback: types.CallbackQuery, db_user: User,
 👥 <b>Получателей:</b> {user_count}
 
 📝 <b>Сообщение:</b>
-{message_text}{media_info}
+{html.escape(message_text)}{media_info}
 
 {buttons_info}
 

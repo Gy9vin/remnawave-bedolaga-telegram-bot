@@ -6380,6 +6380,44 @@ async def migrate_cloudpayments_transaction_id_to_bigint() -> bool:
         return False
 
 
+async def add_subscription_auto_renewed_before_expiry_column() -> bool:
+    """
+    Добавляет колонку auto_renewed_before_expiry в таблицу subscriptions.
+    Используется для защиты от повторного автопродления подписки перед истечением.
+    """
+    try:
+        if await check_column_exists('subscriptions', 'auto_renewed_before_expiry'):
+            logger.info('ℹ️ Колонка auto_renewed_before_expiry уже существует')
+            return True
+
+        db_type = await get_database_type()
+
+        async with engine.begin() as conn:
+            if db_type == 'sqlite':
+                await conn.execute(
+                    text('ALTER TABLE subscriptions ADD COLUMN auto_renewed_before_expiry BOOLEAN DEFAULT 0 NOT NULL')
+                )
+            elif db_type == 'postgresql':
+                await conn.execute(
+                    text(
+                        'ALTER TABLE subscriptions ADD COLUMN auto_renewed_before_expiry BOOLEAN DEFAULT FALSE NOT NULL'
+                    )
+                )
+            else:  # mysql
+                await conn.execute(
+                    text(
+                        'ALTER TABLE subscriptions ADD COLUMN auto_renewed_before_expiry BOOLEAN DEFAULT FALSE NOT NULL'
+                    )
+                )
+
+            logger.info('✅ Добавлена колонка subscriptions.auto_renewed_before_expiry')
+            return True
+
+    except Exception as error:
+        logger.error(f'❌ Ошибка добавления колонки auto_renewed_before_expiry: {error}')
+        return False
+
+
 async def run_universal_migration():
     logger.info('=== НАЧАЛО УНИВЕРСАЛЬНОЙ МИГРАЦИИ ===')
 
@@ -6981,6 +7019,13 @@ async def run_universal_migration():
             logger.info('✅ Колонка traffic_reset_at в subscriptions готова')
         else:
             logger.warning('⚠️ Проблемы с колонкой traffic_reset_at в subscriptions')
+
+        logger.info('=== ДОБАВЛЕНИЕ КОЛОНКИ АВТОПРОДЛЕНИЯ ПЕРЕД ИСТЕЧЕНИЕМ ===')
+        auto_renew_column_ready = await add_subscription_auto_renewed_before_expiry_column()
+        if auto_renew_column_ready:
+            logger.info('✅ Колонка auto_renewed_before_expiry в subscriptions готова')
+        else:
+            logger.warning('⚠️ Проблемы с колонкой auto_renewed_before_expiry в subscriptions')
 
         logger.info('=== ОБНОВЛЕНИЕ ВНЕШНИХ КЛЮЧЕЙ ===')
         fk_updated = await fix_foreign_keys_for_user_deletion()

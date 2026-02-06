@@ -1126,6 +1126,9 @@ class Subscription(Base):
     autopay_enabled = Column(Boolean, default=False)
     autopay_days_before = Column(Integer, default=3)
 
+    # Флаг для защиты от повторного автопродления перед истечением
+    auto_renewed_before_expiry = Column(Boolean, default=False, nullable=False)
+
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

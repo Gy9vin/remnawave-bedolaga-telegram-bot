@@ -534,7 +534,7 @@ async def sync_default_tariff_from_config(db: AsyncSession) -> Tariff | None:
             name='Стандартный',
             description='Базовый тарифный план',
             is_active=True,
-            is_trial_available=True,
+            is_trial_available=False,  # ФИКС: не использовать для триала (используем TRIAL_TRAFFIC_LIMIT_GB)
             traffic_limit_gb=settings.DEFAULT_TRAFFIC_LIMIT_GB,
             device_limit=settings.DEFAULT_DEVICE_LIMIT,
             tier_level=1,

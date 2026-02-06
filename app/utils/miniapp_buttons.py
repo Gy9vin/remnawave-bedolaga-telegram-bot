@@ -12,6 +12,7 @@ def build_miniapp_or_callback_button(
     *,
     callback_data: str,
     unavailable_callback: str = DEFAULT_UNAVAILABLE_CALLBACK,
+    miniapp_path: str | None = None,
 ) -> InlineKeyboardButton:
     """Create a button that opens the miniapp in text menu mode.
 
@@ -20,14 +21,29 @@ def build_miniapp_or_callback_button(
     If the miniapp URL is missing we fall back to a safe callback that shows
     an alert about the unavailable profile rather than opening disabled
     sections of the bot.
+
+    Args:
+        text: Button text
+        callback_data: Callback data for non-miniapp mode
+        unavailable_callback: Fallback callback if miniapp URL is not configured
+        miniapp_path: Optional path to append to miniapp URL (e.g., '/balance', '/subscription')
     """
 
     if settings.is_text_main_menu_mode():
         miniapp_url = settings.get_main_menu_miniapp_url()
         if miniapp_url:
+            # Append path if provided (e.g., /balance, /subscription)
+            if miniapp_path:
+                # Remove trailing slash from base URL and leading slash from path
+                base = miniapp_url.rstrip('/')
+                path = miniapp_path.lstrip('/')
+                full_url = f'{base}/{path}'
+            else:
+                full_url = miniapp_url
+
             return InlineKeyboardButton(
                 text=text,
-                web_app=types.WebAppInfo(url=miniapp_url),
+                web_app=types.WebAppInfo(url=full_url),
             )
         safe_callback = unavailable_callback or DEFAULT_UNAVAILABLE_CALLBACK
         return InlineKeyboardButton(text=text, callback_data=safe_callback)

@@ -14,6 +14,7 @@ from app.localization.texts import get_texts
 from app.services.payment_service import PaymentService
 from app.states import BalanceStates
 from app.utils.decorators import error_handler
+from app.utils.payment_checks import check_topup_restriction
 
 
 logger = logging.getLogger(__name__)
@@ -140,18 +141,12 @@ async def process_freekassa_payment_amount(
     texts = get_texts(db_user.language)
 
     # Проверка ограничения на пополнение
-    if getattr(db_user, 'restriction_topup', False):
-        reason = getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором'
-        support_url = settings.get_support_contact_url()
-        keyboard = []
-        if support_url:
-            keyboard.append([InlineKeyboardButton(text='🆘 Обжаловать', url=support_url)])
-        keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_balance')])
-
+    restriction_check = check_topup_restriction(db_user, back_callback_data='menu_balance')
+    if restriction_check.is_restricted:
         await message.answer(
-            f'🚫 <b>Пополнение ограничено</b>\n\n{reason}',
+            restriction_check.message,
             parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            reply_markup=restriction_check.keyboard,
         )
         await state.clear()
         return
@@ -204,18 +199,12 @@ async def start_freekassa_topup(
     texts = get_texts(db_user.language)
 
     # Проверка ограничения на пополнение
-    if getattr(db_user, 'restriction_topup', False):
-        reason = getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором'
-        support_url = settings.get_support_contact_url()
-        keyboard = []
-        if support_url:
-            keyboard.append([InlineKeyboardButton(text='🆘 Обжаловать', url=support_url)])
-        keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_balance')])
-
+    restriction_check = check_topup_restriction(db_user, back_callback_data='menu_balance')
+    if restriction_check.is_restricted:
         await callback.message.edit_text(
-            f'🚫 <b>Пополнение ограничено</b>\n\n{reason}',
+            restriction_check.message,
             parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            reply_markup=restriction_check.keyboard,
         )
         return
 
@@ -326,18 +315,12 @@ async def process_freekassa_quick_amount(
         return
 
     # Проверка ограничения на пополнение
-    if getattr(db_user, 'restriction_topup', False):
-        reason = getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором'
-        support_url = settings.get_support_contact_url()
-        keyboard = []
-        if support_url:
-            keyboard.append([InlineKeyboardButton(text='🆘 Обжаловать', url=support_url)])
-        keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_balance')])
-
+    restriction_check = check_topup_restriction(db_user, back_callback_data='menu_balance')
+    if restriction_check.is_restricted:
         await callback.message.edit_text(
-            f'🚫 <b>Пополнение ограничено</b>\n\n{reason}',
+            restriction_check.message,
             parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            reply_markup=restriction_check.keyboard,
         )
         return
 

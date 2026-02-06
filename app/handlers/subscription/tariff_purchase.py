@@ -14,54 +14,21 @@ from app.database.crud.tariff import get_tariff_by_id, get_tariffs_for_user
 from app.database.crud.transaction import create_transaction
 from app.database.crud.user import subtract_user_balance
 from app.database.models import Tariff, TransactionType, User
-from app.localization.texts import get_texts
+from app.localization.texts import Texts, get_texts
 from app.services.admin_notification_service import AdminNotificationService
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
 from app.utils.decorators import error_handler
+from app.utils.pricing_utils import apply_percentage_discount, format_period_description
 from app.utils.promo_offer import get_user_active_promo_discount_percent
 
 
 logger = logging.getLogger(__name__)
 
 
-def _format_traffic(gb: int) -> str:
-    """Форматирует трафик."""
-    if gb == 0:
-        return 'Безлимит'
-    return f'{gb} ГБ'
-
-
-def _format_price_kopeks(kopeks: int, compact: bool = False) -> str:
-    """Форматирует цену из копеек в рубли."""
-    rubles = kopeks / 100
-    if compact:
-        # Компактный формат - округляем до рублей
-        return f'{int(round(rubles))}₽'
-    if rubles == int(rubles):
-        return f'{int(rubles)} ₽'
-    return f'{rubles:.2f} ₽'
-
-
-def _format_period(days: int) -> str:
-    """Форматирует период."""
-    if days == 1:
-        return '1 день'
-    if days < 5:
-        return f'{days} дня'
-    if days < 21 or days % 10 >= 5 or days % 10 == 0:
-        return f'{days} дней'
-    if days % 10 == 1:
-        return f'{days} день'
-    return f'{days} дня'
-
-
-def _apply_promo_discount(price: int, discount_percent: int) -> int:
-    """Применяет скидку промогруппы к цене."""
-    if discount_percent <= 0:
-        return price
-    discount = int(price * discount_percent / 100)
-    return max(0, price - discount)
+def _format_traffic(gb: float) -> str:
+    """Форматирует трафик (wrapper для Texts.format_traffic)."""
+    return Texts.format_traffic(float(gb), is_limit=True)
 
 
 def _get_user_period_discount(db_user: User, period_days: int) -> int:
@@ -103,7 +70,7 @@ def format_tariffs_list_text(
         if is_daily:
             # Для суточных тарифов показываем цену за день
             daily_price = getattr(tariff, 'daily_price_kopeks', 0)
-            price_text = f'🔄 {_format_price_kopeks(daily_price, compact=True)}/день'
+            price_text = f'🔄 {settings.format_price(daily_price, round_kopeks=True)}/день'
         else:
             # Для периодных тарифов показываем минимальную цену
             prices = tariff.period_prices or {}
@@ -114,9 +81,9 @@ def format_tariffs_list_text(
                 if db_user:
                     discount_percent = _get_user_period_discount(db_user, int(min_period))
                 if discount_percent > 0:
-                    min_price = _apply_promo_discount(min_price, discount_percent)
+                    min_price, _ = apply_percentage_discount(min_price, discount_percent)
                     discount_icon = '🔥'
-                price_text = f'от {_format_price_kopeks(min_price, compact=True)}{discount_icon}'
+                price_text = f'от {settings.format_price(min_price, round_kopeks=True)}{discount_icon}'
 
         # Компактный формат: Название — 250ГБ/10📱 от 179₽🔥
         lines.append(f'<b>{tariff.name}</b> — {traffic}/{tariff.device_limit}📱 {price_text}')
@@ -166,12 +133,12 @@ def get_tariff_periods_keyboard(
             discount_percent = _get_user_period_discount(db_user, period)
 
         if discount_percent > 0:
-            price = _apply_promo_discount(price, discount_percent)
-            price_text = f'{_format_price_kopeks(price)} 🔥−{discount_percent}%'
+            price, _ = apply_percentage_discount(price, discount_percent)
+            price_text = f'{settings.format_price(price)} 🔥−{discount_percent}%'
         else:
-            price_text = _format_price_kopeks(price)
+            price_text = settings.format_price(price)
 
-        button_text = f'{_format_period(period)} — {price_text}'
+        button_text = f'{format_period_description(period)} — {price_text}'
         buttons.append([InlineKeyboardButton(text=button_text, callback_data=f'tariff_period:{tariff.id}:{period}')])
 
     buttons.append([InlineKeyboardButton(text=texts.BACK, callback_data='tariff_list')])
@@ -199,12 +166,12 @@ def get_tariff_periods_keyboard_with_traffic(
             discount_percent = _get_user_period_discount(db_user, period)
 
         if discount_percent > 0:
-            price = _apply_promo_discount(price, discount_percent)
-            price_text = f'{_format_price_kopeks(price)} 🔥−{discount_percent}%'
+            price, _ = apply_percentage_discount(price, discount_percent)
+            price_text = f'{settings.format_price(price)} 🔥−{discount_percent}%'
         else:
-            price_text = _format_price_kopeks(price)
+            price_text = settings.format_price(price)
 
-        button_text = f'{_format_period(period)} — {price_text}'
+        button_text = f'{format_period_description(period)} — {price_text}'
         # Используем другой callback для перехода к настройке трафика
         buttons.append(
             [InlineKeyboardButton(text=button_text, callback_data=f'tariff_period_traffic:{tariff.id}:{period}')]
@@ -428,7 +395,7 @@ def format_custom_tariff_preview(
 
     # Применяем скидку
     if discount_percent > 0:
-        total_price = _apply_promo_discount(total_price, discount_percent)
+        total_price, _ = apply_percentage_discount(total_price, discount_percent)
 
     traffic_display = f'{traffic_gb} ГБ' if traffic_gb > 0 else _format_traffic(tariff.traffic_limit_gb)
 
@@ -439,15 +406,15 @@ def format_custom_tariff_preview(
 
     if tariff.can_purchase_custom_days():
         text += f'📅 Дней: <b>{days}</b> (от {tariff.min_days} до {tariff.max_days})\n'
-        text += f'   💰 {_format_price_kopeks(period_price)}\n'
+        text += f'   💰 {settings.format_price(period_price)}\n'
     else:
         # Фиксированный период - показываем без возможности изменения
-        text += f'📅 Период: <b>{_format_period(days)}</b>\n'
-        text += f'   💰 {_format_price_kopeks(period_price)}\n'
+        text += f'📅 Период: <b>{format_period_description(days)}</b>\n'
+        text += f'   💰 {settings.format_price(period_price)}\n'
 
     if tariff.can_purchase_custom_traffic():
         text += f'📊 Трафик: <b>{traffic_gb} ГБ</b> (от {tariff.min_traffic_gb} до {tariff.max_traffic_gb})\n'
-        text += f'   💰 +{_format_price_kopeks(traffic_price)}\n'
+        text += f'   💰 +{settings.format_price(traffic_price)}\n'
     else:
         text += f'📊 Трафик: {traffic_display}\n'
 
@@ -457,15 +424,15 @@ def format_custom_tariff_preview(
         text += f'\n🎁 <b>Скидка: {discount_percent}%</b>\n'
 
     text += f"""
-<b>💰 Итого: {_format_price_kopeks(total_price)}</b>
+<b>💰 Итого: {settings.format_price(total_price)}</b>
 
-💳 Ваш баланс: {_format_price_kopeks(user_balance)}"""
+💳 Ваш баланс: {settings.format_price(user_balance)}"""
 
     if user_balance < total_price:
         missing = total_price - user_balance
-        text += f'\n⚠️ <b>Не хватает: {_format_price_kopeks(missing)}</b>'
+        text += f'\n⚠️ <b>Не хватает: {settings.format_price(missing)}</b>'
     else:
-        text += f'\nПосле оплаты: {_format_price_kopeks(user_balance - total_price)}'
+        text += f'\nПосле оплаты: {settings.format_price(user_balance - total_price)}'
 
     return text
 
@@ -545,8 +512,8 @@ async def select_tariff(
                 f'📊 Трафик: {traffic}\n'
                 f'📱 Устройств: {tariff.device_limit}\n'
                 f'🔄 Тип: <b>Суточный</b>\n\n'
-                f'💰 <b>Цена: {_format_price_kopeks(daily_price)}/день</b>\n\n'
-                f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n\n'
+                f'💰 <b>Цена: {settings.format_price(daily_price)}/день</b>\n\n'
+                f'💳 Ваш баланс: {settings.format_price(user_balance)}\n\n'
                 f'ℹ️ Средства будут списываться автоматически раз в сутки.\n'
                 f'Вы можете приостановить подписку в любой момент.',
                 reply_markup=get_daily_tariff_confirm_keyboard(tariff_id, db_user.language),
@@ -577,9 +544,9 @@ async def select_tariff(
                 f'❌ <b>Недостаточно средств</b>\n\n'
                 f'📦 Тариф: <b>{tariff.name}</b>\n'
                 f'🔄 Тип: Суточный\n'
-                f'💰 Цена: {_format_price_kopeks(daily_price)}/день\n\n'
-                f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{_format_price_kopeks(missing)}</b>\n\n'
+                f'💰 Цена: {settings.format_price(daily_price)}/день\n\n'
+                f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+                f'⚠️ Не хватает: <b>{settings.format_price(missing)}</b>\n\n'
                 f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет оформлена автоматически.</i>',
                 reply_markup=get_daily_tariff_insufficient_balance_keyboard(tariff_id, db_user.language),
                 parse_mode='HTML',
@@ -798,7 +765,7 @@ async def handle_custom_confirm(
 
     # Применяем скидку к цене периода (не к трафику)
     if discount_percent > 0:
-        period_price = _apply_promo_discount(period_price, discount_percent)
+        period_price, _ = apply_percentage_discount(period_price, discount_percent)
         total_price = period_price + traffic_price
 
     # Проверяем баланс
@@ -914,8 +881,8 @@ async def handle_custom_confirm(
             f'📦 Тариф: <b>{tariff.name}</b>\n'
             f'📊 Трафик: {traffic_display}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
-            f'📅 Период: {_format_period(custom_days)}\n'
-            f'💰 Списано: {_format_price_kopeks(total_price)}\n\n'
+            f'📅 Период: {format_period_description(custom_days)}\n'
+            f'💰 Списано: {settings.format_price(total_price)}\n\n'
             f'Перейдите в раздел «Подписка» для подключения.',
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -1017,7 +984,7 @@ async def select_tariff_period(
     # Получаем цену
     prices = tariff.period_prices or {}
     base_price = prices.get(str(period), 0)
-    final_price = _apply_promo_discount(base_price, discount_percent)
+    final_price, _ = apply_percentage_discount(base_price, discount_percent)
 
     # Проверяем баланс
     user_balance = db_user.balance_kopeks or 0
@@ -1028,18 +995,18 @@ async def select_tariff_period(
         # Показываем подтверждение
         discount_text = ''
         if discount_percent > 0:
-            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{_format_price_kopeks(base_price - final_price)})'
+            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{settings.format_price(base_price - final_price)})'
 
         await callback.message.edit_text(
             f'✅ <b>Подтверждение покупки</b>\n\n'
             f'📦 Тариф: <b>{tariff.name}</b>\n'
             f'📊 Трафик: {traffic}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
-            f'📅 Период: {_format_period(period)}\n'
+            f'📅 Период: {format_period_description(period)}\n'
             f'{discount_text}\n'
-            f'💰 <b>Итого: {_format_price_kopeks(final_price)}</b>\n\n'
-            f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-            f'После оплаты: {_format_price_kopeks(user_balance - final_price)}',
+            f'💰 <b>Итого: {settings.format_price(final_price)}</b>\n\n'
+            f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+            f'После оплаты: {settings.format_price(user_balance - final_price)}',
             reply_markup=get_tariff_confirm_keyboard(tariff_id, period, db_user.language),
             parse_mode='HTML',
         )
@@ -1068,10 +1035,10 @@ async def select_tariff_period(
         await callback.message.edit_text(
             f'❌ <b>Недостаточно средств</b>\n\n'
             f'📦 Тариф: <b>{tariff.name}</b>\n'
-            f'📅 Период: {_format_period(period)}\n'
-            f'💰 Стоимость: {_format_price_kopeks(final_price)}\n\n'
-            f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-            f'⚠️ Не хватает: <b>{_format_price_kopeks(missing)}</b>\n\n'
+            f'📅 Период: {format_period_description(period)}\n'
+            f'💰 Стоимость: {settings.format_price(final_price)}\n\n'
+            f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+            f'⚠️ Не хватает: <b>{settings.format_price(missing)}</b>\n\n'
             f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет оформлена автоматически.</i>',
             reply_markup=get_tariff_insufficient_balance_keyboard(tariff_id, period, db_user.language),
             parse_mode='HTML',
@@ -1109,7 +1076,7 @@ async def confirm_tariff_purchase(
     # Получаем цену
     prices = tariff.period_prices or {}
     base_price = prices.get(str(period), 0)
-    final_price = _apply_promo_discount(base_price, discount_percent)
+    final_price, _ = apply_percentage_discount(base_price, discount_percent)
 
     # Проверяем баланс
     user_balance = db_user.balance_kopeks or 0
@@ -1222,8 +1189,8 @@ async def confirm_tariff_purchase(
             f'📦 Тариф: <b>{tariff.name}</b>\n'
             f'📊 Трафик: {traffic}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
-            f'📅 Период: {_format_period(period)}\n'
-            f'💰 Списано: {_format_price_kopeks(final_price)}\n\n'
+            f'📅 Период: {format_period_description(period)}\n'
+            f'💰 Списано: {settings.format_price(final_price)}\n\n'
             f'Перейдите в раздел «Подписка» для подключения.',
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -1403,7 +1370,7 @@ async def confirm_daily_tariff_purchase(
             f'📊 Трафик: {traffic}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
             f'🔄 Тип: Суточный\n'
-            f'💰 Списано: {_format_price_kopeks(daily_price)}\n\n'
+            f'💰 Списано: {settings.format_price(daily_price)}\n\n'
             f'ℹ️ Следующее списание через 24 часа.\n'
             f'Перейдите в раздел «Подписка» для подключения.',
             reply_markup=InlineKeyboardMarkup(
@@ -1444,12 +1411,12 @@ def get_tariff_extend_keyboard(
             discount_percent = _get_user_period_discount(db_user, period)
 
         if discount_percent > 0:
-            price = _apply_promo_discount(price, discount_percent)
-            price_text = f'{_format_price_kopeks(price)} 🔥−{discount_percent}%'
+            price, _ = apply_percentage_discount(price, discount_percent)
+            price_text = f'{settings.format_price(price)} 🔥−{discount_percent}%'
         else:
-            price_text = _format_price_kopeks(price)
+            price_text = settings.format_price(price)
 
-        button_text = f'{_format_period(period)} — {price_text}'
+        button_text = f'{format_period_description(period)} — {price_text}'
         buttons.append([InlineKeyboardButton(text=button_text, callback_data=f'tariff_extend:{tariff.id}:{period}')])
 
     buttons.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')])
@@ -1544,7 +1511,7 @@ async def select_tariff_extend_period(
     # Получаем цену
     prices = tariff.period_prices or {}
     base_price = prices.get(str(period), 0)
-    final_price = _apply_promo_discount(base_price, discount_percent)
+    final_price, _ = apply_percentage_discount(base_price, discount_percent)
 
     # Проверяем баланс
     user_balance = db_user.balance_kopeks or 0
@@ -1554,18 +1521,18 @@ async def select_tariff_extend_period(
     if user_balance >= final_price:
         discount_text = ''
         if discount_percent > 0:
-            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{_format_price_kopeks(base_price - final_price)})'
+            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{settings.format_price(base_price - final_price)})'
 
         await callback.message.edit_text(
             f'✅ <b>Подтверждение продления</b>\n\n'
             f'📦 Тариф: <b>{tariff.name}</b>\n'
             f'📊 Трафик: {traffic}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
-            f'📅 Период: {_format_period(period)}\n'
+            f'📅 Период: {format_period_description(period)}\n'
             f'{discount_text}\n'
-            f'💰 <b>К оплате: {_format_price_kopeks(final_price)}</b>\n\n'
-            f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-            f'После оплаты: {_format_price_kopeks(user_balance - final_price)}',
+            f'💰 <b>К оплате: {settings.format_price(final_price)}</b>\n\n'
+            f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+            f'После оплаты: {settings.format_price(user_balance - final_price)}',
             reply_markup=get_tariff_extend_confirm_keyboard(tariff_id, period, db_user.language),
             parse_mode='HTML',
         )
@@ -1597,10 +1564,10 @@ async def select_tariff_extend_period(
         await callback.message.edit_text(
             f'❌ <b>Недостаточно средств</b>\n\n'
             f'📦 Тариф: <b>{tariff.name}</b>\n'
-            f'📅 Период: {_format_period(period)}\n'
-            f'💰 К оплате: {_format_price_kopeks(final_price)}\n\n'
-            f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-            f'⚠️ Не хватает: <b>{_format_price_kopeks(missing)}</b>\n\n'
+            f'📅 Период: {format_period_description(period)}\n'
+            f'💰 К оплате: {settings.format_price(final_price)}\n\n'
+            f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+            f'⚠️ Не хватает: <b>{settings.format_price(missing)}</b>\n\n'
             f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет продлена автоматически.</i>',
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -1647,7 +1614,7 @@ async def confirm_tariff_extend(
     # Получаем цену
     prices = tariff.period_prices or {}
     base_price = prices.get(str(period), 0)
-    final_price = _apply_promo_discount(base_price, discount_percent)
+    final_price, _ = apply_percentage_discount(base_price, discount_percent)
 
     # Проверяем баланс
     user_balance = db_user.balance_kopeks or 0
@@ -1725,8 +1692,8 @@ async def confirm_tariff_extend(
             f'📦 Тариф: <b>{tariff.name}</b>\n'
             f'📊 Трафик: {traffic}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
-            f'📅 Добавлено: {_format_period(period)}\n'
-            f'💰 Списано: {_format_price_kopeks(final_price)}',
+            f'📅 Добавлено: {format_period_description(period)}\n'
+            f'💰 Списано: {settings.format_price(final_price)}',
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text='📱 Моя подписка', callback_data='menu_subscription')],
@@ -1780,7 +1747,7 @@ def format_tariff_switch_list_text(
         if is_daily:
             # Для суточных тарифов показываем цену за день
             daily_price = getattr(tariff, 'daily_price_kopeks', 0)
-            price_text = f'🔄 {_format_price_kopeks(daily_price, compact=True)}/день'
+            price_text = f'🔄 {settings.format_price(daily_price, round_kopeks=True)}/день'
         else:
             prices = tariff.period_prices or {}
             if prices:
@@ -1790,9 +1757,9 @@ def format_tariff_switch_list_text(
                 if db_user:
                     discount_percent = _get_user_period_discount(db_user, int(min_period))
                 if discount_percent > 0:
-                    min_price = _apply_promo_discount(min_price, discount_percent)
+                    min_price, _ = apply_percentage_discount(min_price, discount_percent)
                     discount_icon = '🔥'
-                price_text = f'от {_format_price_kopeks(min_price, compact=True)}{discount_icon}'
+                price_text = f'от {settings.format_price(min_price, round_kopeks=True)}{discount_icon}'
 
         lines.append(f'<b>{tariff.name}</b> — {traffic}/{tariff.device_limit}📱 {price_text}')
 
@@ -1844,12 +1811,12 @@ def get_tariff_switch_periods_keyboard(
             discount_percent = _get_user_period_discount(db_user, period)
 
         if discount_percent > 0:
-            price = _apply_promo_discount(price, discount_percent)
-            price_text = f'{_format_price_kopeks(price)} 🔥−{discount_percent}%'
+            price, _ = apply_percentage_discount(price, discount_percent)
+            price_text = f'{settings.format_price(price)} 🔥−{discount_percent}%'
         else:
-            price_text = _format_price_kopeks(price)
+            price_text = settings.format_price(price)
 
-        button_text = f'{_format_period(period)} — {price_text}'
+        button_text = f'{format_period_description(period)} — {price_text}'
         buttons.append([InlineKeyboardButton(text=button_text, callback_data=f'tariff_sw_period:{tariff.id}:{period}')])
 
     buttons.append([InlineKeyboardButton(text=texts.BACK, callback_data='tariff_switch')])
@@ -2003,8 +1970,8 @@ async def select_tariff_switch(
                 f'📊 Трафик: {traffic}\n'
                 f'📱 Устройств: {tariff.device_limit}\n'
                 f'🔄 Тип: <b>Суточный</b>\n\n'
-                f'💰 <b>Цена: {_format_price_kopeks(daily_price)}/день</b>\n\n'
-                f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}'
+                f'💰 <b>Цена: {settings.format_price(daily_price)}/день</b>\n\n'
+                f'💳 Ваш баланс: {settings.format_price(user_balance)}'
                 f'{days_warning}\n\n'
                 f'ℹ️ Средства будут списываться автоматически раз в сутки.\n'
                 f'Вы можете приостановить подписку в любой момент.',
@@ -2026,9 +1993,9 @@ async def select_tariff_switch(
                 f'❌ <b>Недостаточно средств</b>\n\n'
                 f'📦 Тариф: <b>{tariff.name}</b>\n'
                 f'🔄 Тип: Суточный\n'
-                f'💰 Цена: {_format_price_kopeks(daily_price)}/день\n\n'
-                f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{_format_price_kopeks(missing)}</b>'
+                f'💰 Цена: {settings.format_price(daily_price)}/день\n\n'
+                f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+                f'⚠️ Не хватает: <b>{settings.format_price(missing)}</b>'
                 f'{days_warning}',
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
@@ -2090,7 +2057,7 @@ async def select_tariff_switch_period(
     # Получаем цену
     prices = tariff.period_prices or {}
     base_price = prices.get(str(period), 0)
-    final_price = _apply_promo_discount(base_price, discount_percent)
+    final_price, _ = apply_percentage_discount(base_price, discount_percent)
 
     # Проверяем баланс
     user_balance = db_user.balance_kopeks or 0
@@ -2115,7 +2082,7 @@ async def select_tariff_switch_period(
     if user_balance >= final_price:
         discount_text = ''
         if discount_percent > 0:
-            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{_format_price_kopeks(base_price - final_price)})'
+            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{settings.format_price(base_price - final_price)})'
 
         await callback.message.edit_text(
             f'✅ <b>Подтверждение переключения тарифа</b>\n\n'
@@ -2125,9 +2092,9 @@ async def select_tariff_switch_period(
             f'📱 Устройств: {tariff.device_limit}\n'
             f'{time_info}\n'
             f'{discount_text}\n'
-            f'💰 <b>К оплате: {_format_price_kopeks(final_price)}</b>\n\n'
-            f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-            f'После оплаты: {_format_price_kopeks(user_balance - final_price)}',
+            f'💰 <b>К оплате: {settings.format_price(final_price)}</b>\n\n'
+            f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+            f'После оплаты: {settings.format_price(user_balance - final_price)}',
             reply_markup=get_tariff_switch_confirm_keyboard(tariff_id, period, db_user.language),
             parse_mode='HTML',
         )
@@ -2136,10 +2103,10 @@ async def select_tariff_switch_period(
         await callback.message.edit_text(
             f'❌ <b>Недостаточно средств</b>\n\n'
             f'📦 Тариф: <b>{tariff.name}</b>\n'
-            f'📅 Период: {_format_period(period)}\n'
-            f'💰 К оплате: {_format_price_kopeks(final_price)}\n\n'
-            f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-            f'⚠️ Не хватает: <b>{_format_price_kopeks(missing)}</b>',
+            f'📅 Период: {format_period_description(period)}\n'
+            f'💰 К оплате: {settings.format_price(final_price)}\n\n'
+            f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+            f'⚠️ Не хватает: <b>{settings.format_price(missing)}</b>',
             reply_markup=get_tariff_switch_insufficient_balance_keyboard(tariff_id, period, db_user.language),
             parse_mode='HTML',
         )
@@ -2175,7 +2142,7 @@ async def confirm_tariff_switch(
     # Получаем цену
     prices = tariff.period_prices or {}
     base_price = prices.get(str(period), 0)
-    final_price = _apply_promo_discount(base_price, discount_percent)
+    final_price, _ = apply_percentage_discount(base_price, discount_percent)
 
     # Проверяем баланс
     user_balance = db_user.balance_kopeks or 0
@@ -2299,7 +2266,7 @@ async def confirm_tariff_switch(
             f'📦 Новый тариф: <b>{tariff.name}</b>\n'
             f'📊 Трафик: {traffic}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
-            f'💰 Списано: {_format_price_kopeks(final_price)}\n'
+            f'💰 Списано: {settings.format_price(final_price)}\n'
             f'{time_info}\n\n'
             f'Перейдите в раздел «Подписка» для просмотра деталей.',
             reply_markup=InlineKeyboardMarkup(
@@ -2469,7 +2436,7 @@ async def confirm_daily_tariff_switch(
             f'📊 Трафик: {traffic}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
             f'🔄 Тип: Суточный\n'
-            f'💰 Списано: {_format_price_kopeks(daily_price)}\n\n'
+            f'💰 Списано: {settings.format_price(daily_price)}\n\n'
             f'ℹ️ Следующее списание через 24 часа.',
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -2532,8 +2499,8 @@ def _calculate_instant_switch_cost(
         discount_percent = _get_user_period_discount(db_user, 30)
 
     if discount_percent > 0:
-        current_monthly = _apply_promo_discount(current_monthly, discount_percent)
-        new_monthly = _apply_promo_discount(new_monthly, discount_percent)
+        current_monthly, _ = apply_percentage_discount(current_monthly, discount_percent)
+        new_monthly, _ = apply_percentage_discount(new_monthly, discount_percent)
 
     price_diff = new_monthly - current_monthly
 
@@ -2573,7 +2540,7 @@ def format_instant_switch_list_text(
         cost, is_upgrade = _calculate_instant_switch_cost(current_tariff, tariff, remaining_days, db_user)
 
         if is_upgrade:
-            cost_text = f'⬆️ +{_format_price_kopeks(cost, compact=True)}'
+            cost_text = f'⬆️ +{settings.format_price(cost, round_kopeks=True)}'
         else:
             cost_text = '⬇️ Бесплатно'
 
@@ -2606,7 +2573,7 @@ def get_instant_switch_keyboard(
         cost, is_upgrade = _calculate_instant_switch_cost(current_tariff, tariff, remaining_days, db_user)
 
         if is_upgrade:
-            btn_text = f'{tariff.name} (+{_format_price_kopeks(cost, compact=True)})'
+            btn_text = f'{tariff.name} (+{settings.format_price(cost, round_kopeks=True)})'
         else:
             btn_text = f'{tariff.name} (бесплатно)'
 
@@ -2798,8 +2765,8 @@ async def preview_instant_switch(
                 f'   • Трафик: {traffic}\n'
                 f'   • Устройств: {new_tariff.device_limit}\n'
                 f'   • Тип: 🔄 Суточный\n\n'
-                f'💰 <b>Цена: {_format_price_kopeks(daily_price)}/день</b>\n\n'
-                f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}'
+                f'💰 <b>Цена: {settings.format_price(daily_price)}/день</b>\n\n'
+                f'💳 Ваш баланс: {settings.format_price(user_balance)}'
                 f'{daily_warning}\n\n'
                 f'ℹ️ Средства будут списываться автоматически раз в сутки.',
                 reply_markup=get_instant_switch_confirm_keyboard(tariff_id, db_user.language),
@@ -2811,9 +2778,9 @@ async def preview_instant_switch(
                 f'❌ <b>Недостаточно средств</b>\n\n'
                 f'📦 Тариф: <b>{new_tariff.name}</b>\n'
                 f'🔄 Тип: Суточный\n'
-                f'💰 Цена: {_format_price_kopeks(daily_price)}/день\n\n'
-                f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{_format_price_kopeks(missing)}</b>'
+                f'💰 Цена: {settings.format_price(daily_price)}/день\n\n'
+                f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+                f'⚠️ Не хватает: <b>{settings.format_price(missing)}</b>'
                 f'{daily_warning}',
                 reply_markup=get_instant_switch_insufficient_balance_keyboard(tariff_id, db_user.language),
                 parse_mode='HTML',
@@ -2841,9 +2808,9 @@ async def preview_instant_switch(
                 f'   • Трафик: {traffic}\n'
                 f'   • Устройств: {new_tariff.device_limit}\n\n'
                 f'⏰ Осталось дней: <b>{remaining_days}</b>\n'
-                f'💰 <b>Доплата: {_format_price_kopeks(upgrade_cost)}</b>\n\n'
-                f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-                f'После оплаты: {_format_price_kopeks(user_balance - upgrade_cost)}',
+                f'💰 <b>Доплата: {settings.format_price(upgrade_cost)}</b>\n\n'
+                f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+                f'После оплаты: {settings.format_price(user_balance - upgrade_cost)}',
                 reply_markup=get_instant_switch_confirm_keyboard(tariff_id, db_user.language),
                 parse_mode='HTML',
             )
@@ -2852,9 +2819,9 @@ async def preview_instant_switch(
             await callback.message.edit_text(
                 f'❌ <b>Недостаточно средств</b>\n\n'
                 f'📦 Новый тариф: <b>{new_tariff.name}</b>\n'
-                f'💰 Требуется доплата: {_format_price_kopeks(upgrade_cost)}\n\n'
-                f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{_format_price_kopeks(missing)}</b>',
+                f'💰 Требуется доплата: {settings.format_price(upgrade_cost)}\n\n'
+                f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+                f'⚠️ Не хватает: <b>{settings.format_price(missing)}</b>',
                 reply_markup=get_instant_switch_insufficient_balance_keyboard(tariff_id, db_user.language),
                 parse_mode='HTML',
             )
@@ -3052,7 +3019,7 @@ async def confirm_instant_switch(
                 f'📊 Трафик: {traffic}\n'
                 f'📱 Устройств: {new_tariff.device_limit}\n'
                 f'🔄 Тип: Суточный\n'
-                f'💰 Списано: {_format_price_kopeks(daily_price)}\n\n'
+                f'💰 Списано: {settings.format_price(daily_price)}\n\n'
                 f'ℹ️ Следующее списание через 24 часа.',
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
@@ -3064,7 +3031,7 @@ async def confirm_instant_switch(
             )
         else:
             if is_upgrade:
-                cost_text = f'💰 Списано: {_format_price_kopeks(upgrade_cost)}'
+                cost_text = f'💰 Списано: {settings.format_price(upgrade_cost)}'
             else:
                 cost_text = '💰 Бесплатно'
 
@@ -3126,9 +3093,9 @@ async def return_to_saved_tariff_cart(
                 f'❌ <b>Все еще недостаточно средств</b>\n\n'
                 f'📦 Тариф: <b>{tariff.name}</b>\n'
                 f'🔄 Тип: Суточный\n'
-                f'💰 Стоимость: {_format_price_kopeks(total_price)}\n\n'
-                f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{_format_price_kopeks(missing)}</b>',
+                f'💰 Стоимость: {settings.format_price(total_price)}\n\n'
+                f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+                f'⚠️ Не хватает: <b>{settings.format_price(missing)}</b>',
                 reply_markup=get_daily_tariff_insufficient_balance_keyboard(tariff_id, db_user.language),
                 parse_mode='HTML',
             )
@@ -3137,10 +3104,10 @@ async def return_to_saved_tariff_cart(
             await callback.message.edit_text(
                 f'❌ <b>Все еще недостаточно средств</b>\n\n'
                 f'📦 Тариф: <b>{tariff.name}</b>\n'
-                f'📅 Период: {_format_period(period)}\n'
-                f'💰 Стоимость: {_format_price_kopeks(total_price)}\n\n'
-                f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{_format_price_kopeks(missing)}</b>',
+                f'📅 Период: {format_period_description(period)}\n'
+                f'💰 Стоимость: {settings.format_price(total_price)}\n\n'
+                f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+                f'⚠️ Не хватает: <b>{settings.format_price(missing)}</b>',
                 reply_markup=get_tariff_insufficient_balance_keyboard(tariff_id, period, db_user.language),
                 parse_mode='HTML',
             )
@@ -3149,10 +3116,10 @@ async def return_to_saved_tariff_cart(
             await callback.message.edit_text(
                 f'❌ <b>Все еще недостаточно средств</b>\n\n'
                 f'📦 Тариф: <b>{tariff.name}</b>\n'
-                f'📅 Период: {_format_period(period)}\n'
-                f'💰 Стоимость: {_format_price_kopeks(total_price)}\n\n'
-                f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{_format_price_kopeks(missing)}</b>',
+                f'📅 Период: {format_period_description(period)}\n'
+                f'💰 Стоимость: {settings.format_price(total_price)}\n\n'
+                f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+                f'⚠️ Не хватает: <b>{settings.format_price(missing)}</b>',
                 reply_markup=get_tariff_insufficient_balance_keyboard(tariff_id, period, db_user.language),
                 parse_mode='HTML',
             )
@@ -3171,9 +3138,9 @@ async def return_to_saved_tariff_cart(
             f'📊 Трафик: {traffic}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
             f'🔄 Тип: Суточный\n'
-            f'💰 <b>Стоимость в день: {_format_price_kopeks(daily_price)}</b>\n\n'
-            f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-            f'После оплаты: {_format_price_kopeks(user_balance - daily_price)}',
+            f'💰 <b>Стоимость в день: {settings.format_price(daily_price)}</b>\n\n'
+            f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+            f'После оплаты: {settings.format_price(user_balance - daily_price)}',
             reply_markup=get_daily_tariff_confirm_keyboard(tariff_id, db_user.language),
             parse_mode='HTML',
         )
@@ -3183,18 +3150,18 @@ async def return_to_saved_tariff_cart(
         discount_text = ''
         if discount_percent > 0:
             original_price = int(total_price / (1 - discount_percent / 100))
-            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{_format_price_kopeks(original_price - total_price)})'
+            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{settings.format_price(original_price - total_price)})'
 
         await callback.message.edit_text(
             f'✅ <b>Подтверждение продления</b>\n\n'
             f'📦 Тариф: <b>{tariff.name}</b>\n'
             f'📊 Трафик: {traffic}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
-            f'📅 Период: {_format_period(period)}\n'
+            f'📅 Период: {format_period_description(period)}\n'
             f'{discount_text}\n'
-            f'💰 <b>Итого: {_format_price_kopeks(total_price)}</b>\n\n'
-            f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-            f'После оплаты: {_format_price_kopeks(user_balance - total_price)}',
+            f'💰 <b>Итого: {settings.format_price(total_price)}</b>\n\n'
+            f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+            f'После оплаты: {settings.format_price(user_balance - total_price)}',
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -3213,18 +3180,18 @@ async def return_to_saved_tariff_cart(
         discount_text = ''
         if discount_percent > 0:
             original_price = int(total_price / (1 - discount_percent / 100))
-            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{_format_price_kopeks(original_price - total_price)})'
+            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{settings.format_price(original_price - total_price)})'
 
         await callback.message.edit_text(
             f'✅ <b>Подтверждение покупки</b>\n\n'
             f'📦 Тариф: <b>{tariff.name}</b>\n'
             f'📊 Трафик: {traffic}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
-            f'📅 Период: {_format_period(period)}\n'
+            f'📅 Период: {format_period_description(period)}\n'
             f'{discount_text}\n'
-            f'💰 <b>Итого: {_format_price_kopeks(total_price)}</b>\n\n'
-            f'💳 Ваш баланс: {_format_price_kopeks(user_balance)}\n'
-            f'После оплаты: {_format_price_kopeks(user_balance - total_price)}',
+            f'💰 <b>Итого: {settings.format_price(total_price)}</b>\n\n'
+            f'💳 Ваш баланс: {settings.format_price(user_balance)}\n'
+            f'После оплаты: {settings.format_price(user_balance - total_price)}',
             reply_markup=get_tariff_confirm_keyboard(tariff_id, period, db_user.language),
             parse_mode='HTML',
         )

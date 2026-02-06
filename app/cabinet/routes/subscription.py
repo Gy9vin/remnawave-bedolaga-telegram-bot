@@ -32,6 +32,7 @@ from app.services.subscription_purchase_service import (
     MiniAppSubscriptionPurchaseService,
     PurchaseBalanceError,
     PurchaseValidationError,
+    validate_user_can_purchase,
 )
 from app.services.subscription_service import SubscriptionService
 from app.services.system_settings_service import bot_configuration_service
@@ -389,6 +390,14 @@ async def renew_subscription(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Renew subscription (pay from balance)."""
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Продление подписки невозможно',
+        )
+
     await db.refresh(user, ['subscription'])
 
     if not user.subscription:
@@ -645,6 +654,14 @@ async def purchase_traffic(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Purchase additional traffic."""
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Покупка трафика невозможна',
+        )
+
     from app.database.crud.subscription import add_subscription_traffic
     from app.database.crud.tariff import get_tariff_by_id
     from app.utils.pricing_utils import calculate_prorated_price
@@ -1077,26 +1094,28 @@ async def get_trial_info(
     price_kopeks = settings.TRIAL_ACTIVATION_PRICE if requires_payment else 0
 
     # Get trial parameters from tariff if configured (same logic as activate_trial)
-    try:
-        from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
+    # ФИКС: Проверяем режим тарифов перед использованием тарифа
+    if settings.is_tariffs_mode():
+        try:
+            from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
 
-        trial_tariff = await get_trial_tariff(db)
+            trial_tariff = await get_trial_tariff(db)
 
-        if not trial_tariff:
-            trial_tariff_id = settings.get_trial_tariff_id()
-            if trial_tariff_id > 0:
-                trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
-                if trial_tariff and not trial_tariff.is_active:
-                    trial_tariff = None
+            if not trial_tariff:
+                trial_tariff_id = settings.get_trial_tariff_id()
+                if trial_tariff_id > 0:
+                    trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
+                    if trial_tariff and not trial_tariff.is_active:
+                        trial_tariff = None
 
-        if trial_tariff:
-            traffic_limit_gb = trial_tariff.traffic_limit_gb
-            device_limit = trial_tariff.device_limit
-            tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
-            if tariff_trial_days:
-                duration_days = tariff_trial_days
-    except Exception as e:
-        logger.error(f'Error getting trial tariff for info: {e}')
+            if trial_tariff:
+                traffic_limit_gb = trial_tariff.traffic_limit_gb
+                device_limit = trial_tariff.device_limit
+                tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
+                if tariff_trial_days:
+                    duration_days = tariff_trial_days
+        except Exception as e:
+            logger.error(f'Error getting trial tariff for info: {e}')
 
     # Check if user already has an active subscription
     if user.subscription:
@@ -1146,6 +1165,14 @@ async def activate_trial(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Activate trial subscription."""
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Активация триала невозможна',
+        )
+
     await db.refresh(user, ['subscription'])
 
     # Check if user already has an active subscription
@@ -1188,30 +1215,34 @@ async def activate_trial(
 
     # First check for tariff with is_trial_available flag in DB (set via admin panel)
     # Then fallback to TRIAL_TARIFF_ID from settings
+    # ФИКС: Используем тариф только в режиме тарифов
     trial_tariff = None
-    try:
-        from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
+    if settings.is_tariffs_mode():
+        try:
+            from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
 
-        trial_tariff = await get_trial_tariff(db)
+            trial_tariff = await get_trial_tariff(db)
 
-        if not trial_tariff:
-            trial_tariff_id = settings.get_trial_tariff_id()
-            if trial_tariff_id > 0:
-                trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
-                if trial_tariff and not trial_tariff.is_active:
-                    trial_tariff = None
+            if not trial_tariff:
+                trial_tariff_id = settings.get_trial_tariff_id()
+                if trial_tariff_id > 0:
+                    trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
+                    if trial_tariff and not trial_tariff.is_active:
+                        trial_tariff = None
 
-        if trial_tariff:
-            trial_traffic_limit = trial_tariff.traffic_limit_gb
-            trial_device_limit = trial_tariff.device_limit
-            trial_squads = trial_tariff.allowed_squads or []
-            tariff_id_for_trial = trial_tariff.id
-            tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
-            if tariff_trial_days:
-                trial_duration = tariff_trial_days
-            logger.info(f'Using trial tariff {trial_tariff.name} (ID: {trial_tariff.id}) with squads: {trial_squads}')
-    except Exception as e:
-        logger.error(f'Error getting trial tariff: {e}')
+            if trial_tariff:
+                trial_traffic_limit = trial_tariff.traffic_limit_gb
+                trial_device_limit = trial_tariff.device_limit
+                trial_squads = trial_tariff.allowed_squads or []
+                tariff_id_for_trial = trial_tariff.id
+                tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
+                if tariff_trial_days:
+                    trial_duration = tariff_trial_days
+                logger.info(
+                    f'Using trial tariff {trial_tariff.name} (ID: {trial_tariff.id}) with squads: {trial_squads}'
+                )
+        except Exception as e:
+            logger.error(f'Error getting trial tariff: {e}')
 
     # Create trial subscription
     subscription = await create_trial_subscription(
@@ -1554,6 +1585,31 @@ async def preview_purchase(
         pricing = await purchase_service.calculate_pricing(db, context, selection)
         preview = purchase_service.build_preview_payload(context, pricing)
 
+        # Save cart for auto-purchase after balance top-up (if insufficient balance)
+        if user.balance_kopeks < pricing.final_total:
+            try:
+                cart_data = {
+                    'cart_mode': 'subscription_purchase',
+                    'period_id': request.selection.period_id,
+                    'period_days': request.selection.period_days,
+                    'traffic_gb': request.selection.traffic_value,
+                    'countries': request.selection.servers,
+                    'devices': request.selection.devices,
+                    'total_price': pricing.final_total,
+                    'user_id': user.id,
+                    'saved_cart': True,
+                    'return_to_cart': True,
+                    'source': 'cabinet_preview',
+                }
+                logger.info(
+                    f'💰 Недостаточно баланса (preview): user={user.id}, balance={user.balance_kopeks}, need={pricing.final_total}'
+                )
+                logger.info(f'📦 Сохраняем корзину в preview для user {user.id}')
+                await user_cart_service.save_user_cart(user.id, cart_data)
+                logger.info(f'🛒 Cart saved in PREVIEW for user {user.id}, price={pricing.final_total}')
+            except Exception as cart_error:
+                logger.error(f'❌ Error saving cart in preview: {cart_error}', exc_info=True)
+
         return preview
 
     except PurchaseValidationError as e:
@@ -1576,6 +1632,18 @@ async def submit_purchase(
     db: AsyncSession = Depends(get_cabinet_db),
 ) -> dict[str, Any]:
     """Submit subscription purchase (deduct from balance, classic mode only)."""
+    logger.info(
+        f'🎯 Cabinet /purchase вызван: user_id={user.id}, telegram_id={user.telegram_id}, balance={user.balance_kopeks}'
+    )
+
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Покупка подписки невозможна',
+        )
+
     # This endpoint is for classic mode only, tariffs mode uses /purchase-tariff
     if settings.is_tariffs_mode():
         raise HTTPException(
@@ -1597,6 +1665,40 @@ async def submit_purchase(
 
         selection = purchase_service.parse_selection(context, selection_dict)
         pricing = await purchase_service.calculate_pricing(db, context, selection)
+
+        # Save cart BEFORE attempting purchase (for auto-purchase on balance top-up)
+        logger.info(
+            f'💰 Расчёт завершён: user={user.id}, balance={user.balance_kopeks}, total={pricing.final_total}, period={request.selection.period_days}d'
+        )
+        try:
+            cart_data = {
+                'cart_mode': 'subscription_purchase',
+                'period_id': request.selection.period_id,
+                'period_days': request.selection.period_days,
+                'traffic_gb': request.selection.traffic_value,
+                'countries': request.selection.servers,
+                'devices': request.selection.devices,
+                'total_price': pricing.final_total,
+                'user_id': user.id,
+                'saved_cart': True,
+                'return_to_cart': True,
+                'source': 'cabinet',
+            }
+            logger.info(f'📦 Сохраняем корзину для user {user.id}: {cart_data}')
+            await user_cart_service.save_user_cart(user.id, cart_data)
+            logger.info(
+                f'🛒 Cart saved BEFORE purchase attempt (cabinet /purchase) user {user.id}, price={pricing.final_total}'
+            )
+
+            # Проверка что корзина сохранилась
+            saved_cart = await user_cart_service.get_user_cart(user.id)
+            if saved_cart:
+                logger.info(f'✅ Корзина проверена и найдена для user {user.id}')
+            else:
+                logger.error(f'❌ ОШИБКА: Корзина НЕ найдена сразу после сохранения для user {user.id}')
+        except Exception as cart_error:
+            logger.error(f'❌ Error saving cart BEFORE purchase (cabinet /purchase): {cart_error}', exc_info=True)
+
         result = await purchase_service.submit_purchase(db, context, pricing)
 
         subscription = result['subscription']
@@ -1652,6 +1754,14 @@ async def submit_purchase(
         except Exception as e:
             logger.error(f'Failed to send admin notification for subscription purchase: {e}')
 
+        # ФИКС: Загружаем tariff перед вызовом _subscription_to_response
+        # чтобы избежать lazy loading и ошибки greenlet_spawn
+        if subscription.tariff_id:
+            try:
+                await db.refresh(subscription, ['tariff'])
+            except Exception as refresh_error:
+                logger.warning(f'Failed to preload tariff for subscription {subscription.id}: {refresh_error}')
+
         return {
             'success': True,
             'message': result['message'],
@@ -1665,27 +1775,8 @@ async def submit_purchase(
             detail=str(e),
         )
     except PurchaseBalanceError as e:
-        # Save cart for auto-purchase after balance top-up
-        try:
-            total_price = pricing.final_total if 'pricing' in locals() else 0
-            cart_data = {
-                'cart_mode': 'subscription_purchase',
-                'period_id': request.selection.period_id,
-                'period_days': request.selection.period_days,
-                'traffic_gb': request.selection.traffic_value,  # _prepare_auto_purchase expects traffic_gb
-                'countries': request.selection.servers,  # _prepare_auto_purchase expects countries
-                'devices': request.selection.devices,
-                'total_price': total_price,
-                'user_id': user.id,
-                'saved_cart': True,
-                'return_to_cart': True,
-                'source': 'cabinet',
-            }
-            await user_cart_service.save_user_cart(user.id, cart_data)
-            logger.info(f'Cart saved for auto-purchase (cabinet /purchase) user {user.id}')
-        except Exception as cart_error:
-            logger.error(f'Error saving cart for auto-purchase (cabinet /purchase): {cart_error}')
-
+        # Cart was already saved before purchase attempt
+        logger.info(f'💰 Insufficient balance for user {user.id}, cart already saved')
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={
@@ -1713,6 +1804,14 @@ async def purchase_tariff(
     db: AsyncSession = Depends(get_cabinet_db),
 ) -> dict[str, Any]:
     """Purchase a tariff (for tariffs mode)."""
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Покупка тарифа невозможна',
+        )
+
     try:
         # Check tariffs mode
         if not settings.is_tariffs_mode():
@@ -2114,6 +2213,14 @@ async def purchase_devices(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Purchase additional device slots for subscription."""
+    # Проверка blacklist и ограничений на покупку
+    validation_result = await validate_user_can_purchase(user)
+    if not validation_result.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=validation_result.error_message or 'Покупка устройств невозможна',
+        )
+
     try:
         await db.refresh(user, ['subscription'])
         subscription = user.subscription

@@ -72,6 +72,7 @@ from app.services.subscription_purchase_service import (
     PurchaseBalanceError,
     PurchaseValidationError,
     purchase_service,
+    validate_user_can_purchase,
 )
 from app.services.subscription_renewal_service import (
     SubscriptionRenewalChargeError,
@@ -5699,6 +5700,14 @@ async def subscription_purchase_endpoint(
 
     pricing = await purchase_service.calculate_pricing(db, context, selection)
 
+    # Проверка возможности покупки (черный список, ограничения)
+    validation = await validate_user_can_purchase(user)
+    if not validation.can_purchase:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={'code': validation.error_code, 'message': validation.error_message},
+        )
+
     try:
         result = await purchase_service.submit_purchase(db, context, pricing)
     except PurchaseBalanceError as error:
@@ -6538,6 +6547,10 @@ async def purchase_tariff_endpoint(
 ) -> MiniAppTariffPurchaseResponse:
     """Покупка или смена тарифа."""
     user = await _authorize_miniapp_user(payload.init_data, db)
+    user_id_display = user.telegram_id or user.email or f'#{user.id}'
+    logger.info(
+        f'🎯 MiniApp /subscription/tariff/purchase вызван: user={user_id_display}, balance={user.balance_kopeks}, tariff_id={payload.tariff_id}'
+    )
 
     if not settings.is_tariffs_mode():
         raise HTTPException(
@@ -6615,6 +6628,39 @@ async def purchase_tariff_endpoint(
                 pass
         if discount_percent > 0:
             price_kopeks = int(base_price_kopeks * (100 - discount_percent) / 100)
+
+    # Сохраняем корзину для автопокупки ПЕРЕД проверкой баланса
+    # Чтобы при недостатке средств корзина уже была заполнена
+    subscription = getattr(user, 'subscription', None)
+    logger.info(
+        f'💰 Расчёт завершён (miniapp): user={user_id_display}, balance={user.balance_kopeks}, price={price_kopeks}, tariff={tariff.name}'
+    )
+    try:
+        from app.services.user_cart_service import user_cart_service
+
+        cart_mode = 'extend' if subscription else 'purchase'
+        cart_data = {
+            'cart_mode': cart_mode,
+            'period_days': payload.period_days,
+            'total_price': price_kopeks,
+            'tariff_id': tariff.id,
+            'description': f'{"Продление" if subscription else "Покупка"} тарифа {tariff.name} на {payload.period_days} дней',
+        }
+        if subscription:
+            cart_data['subscription_id'] = subscription.id
+
+        logger.info(f'📦 Сохраняем корзину (miniapp) для user {user.id}: {cart_data}')
+        await user_cart_service.save_user_cart(user.id, cart_data)
+        logger.info(f'🛒 Корзина тарифа сохранена для автопокупки (miniapp) пользователя {user_id_display}')
+
+        # Проверка что корзина сохранилась
+        saved_cart = await user_cart_service.get_user_cart(user.id)
+        if saved_cart:
+            logger.info(f'✅ Корзина проверена и найдена (miniapp) для user {user.id}')
+        else:
+            logger.error(f'❌ ОШИБКА: Корзина НЕ найдена сразу после сохранения (miniapp) для user {user.id}')
+    except Exception as e:
+        logger.error(f'❌ Ошибка сохранения корзины тарифа (miniapp): {e}', exc_info=True)
 
     # Проверяем баланс
     if user.balance_kopeks < price_kopeks:
@@ -6711,7 +6757,7 @@ async def purchase_tariff_endpoint(
         reset_reason='покупка тарифа (miniapp)',
     )
 
-    # Сохраняем корзину для автопродления
+    # Обновляем корзину после успешной покупки (добавляем subscription_id)
     try:
         from app.services.user_cart_service import user_cart_service
 
@@ -6725,9 +6771,9 @@ async def purchase_tariff_endpoint(
         }
         await user_cart_service.save_user_cart(user.id, cart_data)
         user_id_display = user.telegram_id or user.email or f'#{user.id}'
-        logger.info(f'Корзина тарифа сохранена для автопродления (miniapp) пользователя {user_id_display}')
+        logger.info(f'🛒 Корзина обновлена после покупки (miniapp) пользователя {user_id_display}')
     except Exception as e:
-        logger.error(f'Ошибка сохранения корзины тарифа (miniapp): {e}')
+        logger.error(f'❌ Ошибка обновления корзины после покупки (miniapp): {e}')
 
     await db.refresh(user)
 
@@ -6754,14 +6800,6 @@ def _get_user_period_discount(user, period_days: int) -> int:
 
     personal_discount = get_user_active_promo_discount_percent(user) if user else 0
     return personal_discount
-
-
-def _apply_promo_discount(price: int, discount_percent: int) -> int:
-    """Применяет скидку к цене."""
-    if discount_percent <= 0:
-        return price
-    discount = int(price * discount_percent / 100)
-    return max(0, price - discount)
 
 
 def _calculate_tariff_switch_cost(
@@ -6798,8 +6836,8 @@ def _calculate_tariff_switch_cost(
                 pass
 
     if discount_percent > 0:
-        current_monthly = _apply_promo_discount(current_monthly, discount_percent)
-        new_monthly = _apply_promo_discount(new_monthly, discount_percent)
+        current_monthly, _ = apply_percentage_discount(current_monthly, discount_percent)
+        new_monthly, _ = apply_percentage_discount(new_monthly, discount_percent)
 
     price_diff = new_monthly - current_monthly
 

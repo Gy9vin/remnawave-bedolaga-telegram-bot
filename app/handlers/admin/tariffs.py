@@ -23,6 +23,7 @@ from app.database.models import Tariff, User
 from app.localization.texts import get_texts
 from app.states import AdminStates
 from app.utils.decorators import admin_required, error_handler
+from app.utils.pricing_utils import format_period_description
 
 
 logger = logging.getLogger(__name__)
@@ -30,32 +31,11 @@ logger = logging.getLogger(__name__)
 ITEMS_PER_PAGE = 10
 
 
-def _format_traffic(gb: int) -> str:
-    """Форматирует трафик."""
-    if gb == 0:
-        return 'Безлимит'
-    return f'{gb} ГБ'
+def _format_traffic(gb: float) -> str:
+    """Форматирует трафик (wrapper для texts.format_traffic)."""
+    from app.localization.texts import Texts
 
-
-def _format_price_kopeks(kopeks: int) -> str:
-    """Форматирует цену из копеек в рубли."""
-    rubles = kopeks / 100
-    if rubles == int(rubles):
-        return f'{int(rubles)} ₽'
-    return f'{rubles:.2f} ₽'
-
-
-def _format_period(days: int) -> str:
-    """Форматирует период."""
-    if days == 1:
-        return '1 день'
-    if days < 5:
-        return f'{days} дня'
-    if days < 21 or days % 10 >= 5 or days % 10 == 0:
-        return f'{days} дней'
-    if days % 10 == 1:
-        return f'{days} день'
-    return f'{days} дня'
+    return Texts.format_traffic(float(gb), is_limit=True)
 
 
 def _parse_period_prices(text: str) -> dict[str, int]:
@@ -95,7 +75,7 @@ def _format_period_prices_display(prices: dict[str, int]) -> str:
     for period_str in sorted(prices.keys(), key=int):
         period = int(period_str)
         price = prices[period_str]
-        lines.append(f'  • {_format_period(period)}: {_format_price_kopeks(price)}')
+        lines.append(f'  • {format_period_description(period)}: {settings.format_price(price)}')
 
     return '\n'.join(lines)
 
@@ -279,7 +259,7 @@ def _format_traffic_topup_packages(tariff: Tariff) -> str:
     lines = ['✅ Включено']
     for gb in sorted(packages.keys()):
         price = packages[gb]
-        lines.append(f'  • {gb} ГБ: {_format_price_kopeks(price)}')
+        lines.append(f'  • {gb} ГБ: {settings.format_price(price)}')
 
     return '\n'.join(lines)
 
@@ -315,7 +295,7 @@ def format_tariff_info(tariff: Tariff, language: str, subs_count: int = 0) -> st
     # Форматируем цену за устройство
     device_price = getattr(tariff, 'device_price_kopeks', None)
     if device_price is not None and device_price > 0:
-        device_price_display = _format_price_kopeks(device_price) + '/мес'
+        device_price_display = settings.format_price(device_price) + '/мес'
     else:
         device_price_display = 'Недоступно'
 
@@ -339,7 +319,7 @@ def format_tariff_info(tariff: Tariff, language: str, subs_count: int = 0) -> st
 
     # Формируем блок цен в зависимости от типа тарифа
     if is_daily:
-        price_block = f'<b>💰 Суточная цена:</b> {_format_price_kopeks(daily_price_kopeks)}/день'
+        price_block = f'<b>💰 Суточная цена:</b> {settings.format_price(daily_price_kopeks)}/день'
         tariff_type = '🔄 Суточный'
     else:
         price_block = f'<b>Цены:</b>\n{prices_display}'
@@ -620,7 +600,7 @@ async def start_edit_daily_price(
     await callback.message.edit_text(
         f'💰 <b>Редактирование суточной цены</b>\n\n'
         f'Тариф: {tariff.name}\n'
-        f'Текущая цена: {_format_price_kopeks(current_price)}/день\n\n'
+        f'Текущая цена: {settings.format_price(current_price)}/день\n\n'
         'Введите новую цену за день в рублях.\n'
         'Пример: <code>50</code> или <code>99.90</code>',
         reply_markup=InlineKeyboardMarkup(
@@ -699,7 +679,7 @@ async def process_daily_price_input(
         subs_count = await get_tariff_subscriptions_count(db, tariff_id)
 
         await message.answer(
-            f'✅ Суточная цена установлена: {_format_price_kopeks(price_kopeks)}/день\n\n'
+            f'✅ Суточная цена установлена: {settings.format_price(price_kopeks)}/день\n\n'
             + format_tariff_info(tariff, db_user.language, subs_count),
             reply_markup=get_tariff_view_keyboard(tariff, db_user.language),
             parse_mode='HTML',
@@ -1463,7 +1443,7 @@ async def start_edit_tariff_device_price(
 
     device_price = getattr(tariff, 'device_price_kopeks', None)
     if device_price is not None and device_price > 0:
-        current_price = _format_price_kopeks(device_price) + '/мес'
+        current_price = settings.format_price(device_price) + '/мес'
     else:
         current_price = 'Недоступно (докупка устройств запрещена)'
 
@@ -1783,7 +1763,7 @@ async def start_edit_tariff_traffic_topup(
         status = '✅ Включено'
         if packages:
             packages_display = '\n'.join(
-                f'  • {gb} ГБ: {_format_price_kopeks(price)}' for gb, price in sorted(packages.items())
+                f'  • {gb} ГБ: {settings.format_price(price)}' for gb, price in sorted(packages.items())
             )
         else:
             packages_display = '  Пакеты не настроены'
@@ -1872,7 +1852,7 @@ async def toggle_tariff_traffic_topup(
         status = '✅ Включено'
         if packages:
             packages_display = '\n'.join(
-                f'  • {gb} ГБ: {_format_price_kopeks(price)}' for gb, price in sorted(packages.items())
+                f'  • {gb} ГБ: {settings.format_price(price)}' for gb, price in sorted(packages.items())
             )
         else:
             packages_display = '  Пакеты не настроены'
@@ -1952,7 +1932,7 @@ async def start_edit_traffic_topup_packages(
 
     if packages:
         packages_display = '\n'.join(
-            f'  • {gb} ГБ: {_format_price_kopeks(price)}' for gb, price in sorted(packages.items())
+            f'  • {gb} ГБ: {settings.format_price(price)}' for gb, price in sorted(packages.items())
         )
     else:
         packages_display = '  Не настроены'
@@ -2022,7 +2002,7 @@ async def process_edit_traffic_topup_packages(
     # Показываем обновленное меню
     texts = get_texts(db_user.language)
     packages_display = '\n'.join(
-        f'  • {gb} ГБ: {_format_price_kopeks(price)}' for gb, price in sorted(packages.items())
+        f'  • {gb} ГБ: {settings.format_price(price)}' for gb, price in sorted(packages.items())
     )
     max_topup_traffic = getattr(tariff, 'max_topup_traffic_gb', 0) or 0
     max_limit_display = f'{max_topup_traffic} ГБ' if max_topup_traffic > 0 else 'Без ограничений'
@@ -2137,7 +2117,7 @@ async def process_edit_max_topup_traffic(
     packages = tariff.get_traffic_topup_packages() if hasattr(tariff, 'get_traffic_topup_packages') else {}
     if packages:
         packages_display = '\n'.join(
-            f'  • {gb} ГБ: {_format_price_kopeks(price)}' for gb, price in sorted(packages.items())
+            f'  • {gb} ГБ: {settings.format_price(price)}' for gb, price in sorted(packages.items())
         )
     else:
         packages_display = '  Пакеты не настроены'

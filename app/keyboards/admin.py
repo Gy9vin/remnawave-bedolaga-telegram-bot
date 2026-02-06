@@ -2,6 +2,7 @@ from typing import Any
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.config import settings
 from app.localization.texts import get_texts
 
 
@@ -2235,29 +2236,62 @@ BROADCAST_BUTTONS = {
         'text_key': 'ADMIN_BROADCAST_BUTTON_HOME',
         'callback': 'back_to_menu',
     },
+    'channel': {
+        'default_text': '📢 Информационный канал',
+        'text_key': 'ADMIN_BROADCAST_BUTTON_CHANNEL',
+        'url': 'dynamic',  # Берётся из settings.CHANNEL_LINK
+    },
+    'cabinet': {
+        'default_text': '🏠 Личный кабинет',
+        'text_key': 'ADMIN_BROADCAST_BUTTON_CABINET',
+        'url': 'dynamic',  # Берётся из settings.get_main_menu_miniapp_url()
+    },
 }
 
 BROADCAST_BUTTON_ROWS: tuple[tuple[str, ...], ...] = (
     ('balance', 'referrals'),
     ('promocode', 'connect'),
     ('subscription', 'support'),
+    ('channel', 'cabinet'),
     ('home',),
 )
 
 
 def get_broadcast_button_config(language: str) -> dict[str, dict[str, str]]:
     texts = get_texts(language)
-    return {
-        key: {
+    result = {}
+    for key, config in BROADCAST_BUTTONS.items():
+        button_data = {
             'text': texts.t(config['text_key'], config['default_text']),
-            'callback': config['callback'],
         }
-        for key, config in BROADCAST_BUTTONS.items()
-    }
+        if 'callback' in config:
+            button_data['callback'] = config['callback']
+        if 'url' in config:
+            button_data['url'] = config['url']
+        result[key] = button_data
+    return result
 
 
 def get_broadcast_button_labels(language: str) -> dict[str, str]:
     return {key: value['text'] for key, value in get_broadcast_button_config(language).items()}
+
+
+def is_broadcast_url_button_available(button_key: str) -> bool:
+    """Проверяет, доступна ли URL-кнопка (настроен ли соответствующий URL)."""
+    if button_key == 'channel':
+        return bool(settings.CHANNEL_LINK)
+    if button_key == 'cabinet':
+        return bool(settings.get_main_menu_miniapp_url())
+    return True
+
+
+def get_broadcast_button_url(button_key: str) -> str | None:
+    """Возвращает URL для кнопки, если она динамическая."""
+    if button_key == 'channel':
+        return settings.CHANNEL_LINK
+    if button_key == 'cabinet':
+        return settings.get_main_menu_miniapp_url()
+    return None
 
 
 def get_message_buttons_selector_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
@@ -2325,6 +2359,10 @@ def get_updated_message_buttons_selector_keyboard_with_media(
     for row in BROADCAST_BUTTON_ROWS:
         row_buttons: list[InlineKeyboardButton] = []
         for button_key in row:
+            # Пропускаем URL-кнопки, если соответствующий URL не настроен
+            if not is_broadcast_url_button_available(button_key):
+                continue
+
             button_config = button_config_map[button_key]
             base_text = button_config['text']
             if button_key in selected_buttons:

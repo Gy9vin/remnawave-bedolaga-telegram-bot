@@ -131,6 +131,7 @@ class AdminStates(StatesGroup):
     editing_user_traffic = State()
     editing_user_referrals = State()
     editing_user_referral_percent = State()
+    adding_single_referral = State()
 
     # Тестовое начисление реферального дохода
     test_referral_earning_input = State()
