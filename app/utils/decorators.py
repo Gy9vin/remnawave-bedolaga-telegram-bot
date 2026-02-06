@@ -9,7 +9,6 @@ from aiogram.fsm.context import FSMContext
 
 from app.config import settings
 from app.localization.texts import get_texts
-from app.middlewares.global_error import schedule_error_notification
 
 
 logger = logging.getLogger(__name__)
@@ -90,11 +89,12 @@ def error_handler(func: Callable) -> Callable:
                         await event.answer()
                     except TelegramBadRequest as answer_error:
                         if 'query is too old' not in str(answer_error).lower():
-                            logger.error(f'Ошибка при ответе на callback: {answer_error}')
+                            logger.error(f'Ошибка при ответе на callback в {func.__name__}: {answer_error}')
                 return None
 
             logger.error(f'Telegram API error в {func.__name__}: {e}')
-            await _send_error_message(args, kwargs, e)
+            # Уведомление отправляется в _send_error_message
+            await _send_error_message(args, kwargs, e, func.__name__)
 
         except Exception as e:
             logger.error(f'Ошибка в {func.__name__}: {e}', exc_info=True)
@@ -114,15 +114,6 @@ async def _send_error_message(args, kwargs, original_error, func_name: str = 'un
     event = _extract_event(args)
     db_user = kwargs.get('db_user')
 
-    # Отправляем уведомление в админский чат
-    bot = kwargs.get('bot') or (event.bot if event else None)
-    if bot:
-        user_info = 'Unknown'
-        if event and hasattr(event, 'from_user') and event.from_user:
-            user_info = f'@{event.from_user.username}' if event.from_user.username else f'ID:{event.from_user.id}'
-        context = f'Функция: {func_name}\nПользователь: {user_info}'
-        schedule_error_notification(bot, original_error, context)
-
     # Отправляем сообщение пользователю
     try:
         if not event:
@@ -139,9 +130,9 @@ async def _send_error_message(args, kwargs, original_error, func_name: str = 'un
         if 'query is too old' in str(e).lower():
             logger.warning('Не удалось отправить сообщение об ошибке - callback query устарел')
         else:
-            logger.error(f'Ошибка при отправке сообщения об ошибке: {e}')
+            logger.warning(f'Ошибка при отправке сообщения об ошибке: {e}')
     except Exception as e:
-        logger.error(f'Критическая ошибка при отправке сообщения об ошибке: {e}')
+        logger.warning(f'Критическая ошибка при отправке сообщения об ошибке: {e}')
 
 
 def state_cleanup(func: Callable) -> Callable:

@@ -223,8 +223,8 @@ class CloudPaymentsPaymentMixin:
             logger.error('Пользователь не найден: id=%s', payment.user_id)
             return False
 
-        # Add balance
-        await add_user_balance(db, user.id, amount_kopeks)
+        # Add balance (без автоматической транзакции - создадим ниже с external_id)
+        await add_user_balance(db, user, amount_kopeks, create_transaction=False)
 
         # Create transaction record
         from app.database.crud.transaction import create_transaction
@@ -232,7 +232,7 @@ class CloudPaymentsPaymentMixin:
         transaction = await create_transaction(
             db=db,
             user_id=user.id,
-            type_=TransactionType.DEPOSIT,
+            type=TransactionType.DEPOSIT,
             amount_kopeks=amount_kopeks,
             description=payment.description or settings.CLOUDPAYMENTS_DESCRIPTION,
             payment_method=PaymentMethod.CLOUDPAYMENTS,
@@ -350,11 +350,17 @@ class CloudPaymentsPaymentMixin:
         transaction: Any,
     ) -> None:
         """Send success notification to user via Telegram."""
-        from app.bot import bot
+        from aiogram import Bot
+        from aiogram.client.default import DefaultBotProperties
+        from aiogram.enums import ParseMode
+
+        from app.config import settings
         from app.localization.texts import get_texts
 
-        if not bot:
-            return
+        bot = Bot(
+            token=settings.BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
 
         # Skip email-only users (no telegram_id)
         if not user.telegram_id:
@@ -400,10 +406,16 @@ class CloudPaymentsPaymentMixin:
         message: str,
     ) -> None:
         """Send failure notification to user via Telegram."""
-        from app.bot import bot
+        from aiogram import Bot
+        from aiogram.client.default import DefaultBotProperties
+        from aiogram.enums import ParseMode
 
-        if not bot:
-            return
+        from app.config import settings
+
+        bot = Bot(
+            token=settings.BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
 
         text = f'❌ <b>Оплата не прошла</b>\n\n{message}'
 
