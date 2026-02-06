@@ -9,6 +9,7 @@ from aiogram import Dispatcher, F, types
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -30,7 +31,14 @@ from app.database.crud.user import (
     get_user_by_telegram_id,
     get_user_by_username,
 )
-from app.database.models import Subscription, SubscriptionStatus, TransactionType, User, UserStatus
+from app.database.models import (
+    Subscription,
+    SubscriptionStatus,
+    Transaction,
+    TransactionType,
+    User,
+    UserStatus,
+)
 from app.keyboards.admin import (
     get_admin_pagination_keyboard,
     get_admin_users_filters_keyboard,
@@ -41,6 +49,10 @@ from app.keyboards.admin import (
     get_user_restrictions_keyboard,
 )
 from app.localization.texts import get_texts
+from app.services.referral_service import (
+    process_referral_registration,
+    process_referral_topup,
+)
 from app.services.remnawave_service import RemnaWaveService
 from app.services.subscription_service import SubscriptionService
 from app.services.user_service import UserService
@@ -1422,6 +1434,15 @@ async def _build_user_referrals_view(
             [
                 InlineKeyboardButton(
                     text=texts.t(
+                        'ADMIN_USER_ADD_SINGLE_REFERRAL_BUTTON',
+                        '➕ Добавить реферала',
+                    ),
+                    callback_data=f'admin_user_add_single_referral_{user_id}',
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=texts.t(
                         'ADMIN_USER_REFERRALS_EDIT_BUTTON',
                         '✏️ Редактировать',
                     ),
@@ -1779,6 +1800,239 @@ async def start_edit_user_referrals(
 
     await state.set_state(AdminStates.editing_user_referrals)
     await callback.answer()
+
+
+@admin_required
+@error_handler
+async def start_add_single_referral(
+    callback: types.CallbackQuery,
+    db_user: User,
+    state: FSMContext,
+    db: AsyncSession,
+):
+    """Начало процесса добавления одного реферала-потеряшки."""
+    user_id = int(callback.data.split('_')[-1])
+
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        await callback.answer('❌ Пользователь не найден', show_alert=True)
+        return
+
+    texts = get_texts(db_user.language)
+
+    prompt = texts.t(
+        'ADMIN_USER_ADD_SINGLE_REFERRAL_PROMPT',
+        (
+            '➕ <b>Добавление реферала-потеряшки</b>\n\n'
+            'Пользователь-реферер: <b>{name}</b> (ID: <code>{telegram_id}</code>)\n\n'
+            'Отправьте Telegram ID или @username реферала, которого хотите добавить.\n\n'
+            '<b>Система автоматически:</b>\n'
+            '• Проверит существование пользователя\n'
+            '• Установит связь реферал-реферер\n'
+            '• Проверит наличие пополнений ≥100₽\n'
+            '• Начислит подарочные балансы обоим (если было пополнение)\n\n'
+            'Или нажмите кнопку ниже, чтобы отменить.'
+        ),
+    ).format(
+        name=user.full_name,
+        telegram_id=user.telegram_id or user.email or f'#{user.id}',
+    )
+
+    await state.update_data(
+        adding_referral_referrer_id=user_id,
+        referrals_message_id=callback.message.message_id,
+    )
+
+    await callback.message.edit_text(
+        prompt,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=texts.BACK,
+                        callback_data=f'admin_user_referrals_{user_id}',
+                    )
+                ]
+            ]
+        ),
+    )
+
+    await state.set_state(AdminStates.adding_single_referral)
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def process_add_single_referral(
+    message: types.Message,
+    db_user: User,
+    state: FSMContext,
+    db: AsyncSession,
+):
+    """Обработка ввода Telegram ID для добавления одного реферала-потеряшки."""
+    texts = get_texts(db_user.language)
+    data = await state.get_data()
+
+    referrer_id = data.get('adding_referral_referrer_id')
+    if not referrer_id:
+        await message.answer(
+            texts.t(
+                'ADMIN_USER_ADD_REFERRAL_STATE_LOST',
+                '❌ Не удалось определить реферера. Попробуйте начать сначала.',
+            )
+        )
+        await state.clear()
+        return
+
+    # Получить реферера
+    referrer = await get_user_by_id(db, referrer_id)
+    if not referrer:
+        await message.answer('❌ Реферер не найден в базе данных')
+        await state.clear()
+        return
+
+    # Парсинг Telegram ID или username из сообщения
+    raw_text = message.text.strip()
+    normalized = raw_text.removeprefix('@')
+
+    # Поиск пользователя-реферала
+    referral = None
+    if normalized.isdigit():
+        try:
+            referral = await get_user_by_telegram_id(db, int(normalized))
+        except ValueError:
+            pass
+    else:
+        referral = await get_user_by_username(db, normalized)
+
+    if not referral:
+        await message.answer(
+            texts.t(
+                'ADMIN_USER_ADD_REFERRAL_NOT_FOUND',
+                '❌ Пользователь с ID/username <code>{value}</code> не найден в базе данных.',
+            ).format(value=raw_text)
+        )
+        return
+
+    # Проверка что реферал != рефер
+    if referral.id == referrer_id:
+        await message.answer(
+            texts.t(
+                'ADMIN_USER_ADD_REFERRAL_SELF_ERROR',
+                '❌ Нельзя добавить пользователя рефералом самому себе.',
+            )
+        )
+        return
+
+    # Проверка что у реферала еще нет реферера
+    if referral.referred_by_id is not None:
+        existing_referrer = await get_user_by_id(db, referral.referred_by_id)
+        existing_name = existing_referrer.full_name if existing_referrer else f'ID:{referral.referred_by_id}'
+        await message.answer(
+            texts.t(
+                'ADMIN_USER_ADD_REFERRAL_ALREADY_HAS_REFERRER',
+                '❌ У пользователя <b>{name}</b> уже есть реферер: <b>{referrer_name}</b>\n\n'
+                'Невозможно изменить реферера.',
+            ).format(name=referral.full_name, referrer_name=existing_name)
+        )
+        return
+
+    # Установить связь реферал-реферер
+    referral.referred_by_id = referrer_id
+    await db.commit()
+    logger.info(f'✅ Связь установлена: реферал {referral.id} → реферер {referrer_id}')
+
+    # Вызвать process_referral_registration для создания записи в ReferralEarning
+    registration_success = await process_referral_registration(db, referral.id, referrer_id, message.bot)
+    if not registration_success:
+        logger.warning(f'⚠️ process_referral_registration вернула False для {referral.id}')
+
+    # Проверить было ли пополнение >= 100₽
+    result = await db.execute(
+        select(func.coalesce(func.sum(Transaction.amount_kopeks), 0)).where(
+            and_(
+                Transaction.user_id == referral.id,
+                Transaction.type == TransactionType.DEPOSIT.value,
+                Transaction.is_completed.is_(True),
+            )
+        )
+    )
+    total_topup_kopeks = result.scalar() or 0
+
+    response_lines = [
+        texts.t(
+            'ADMIN_USER_ADD_REFERRAL_SUCCESS_HEADER',
+            '✅ <b>Реферал успешно добавлен!</b>',
+        ),
+        '',
+        texts.t(
+            'ADMIN_USER_ADD_REFERRAL_SUCCESS_INFO',
+            '👤 <b>Реферер:</b> {referrer_name} (ID: <code>{referrer_id}</code>)\n'
+            '👥 <b>Реферал:</b> {referral_name} (ID: <code>{referral_id}</code>)',
+        ).format(
+            referrer_name=referrer.full_name,
+            referrer_id=referrer.telegram_id or referrer.email or f'#{referrer.id}',
+            referral_name=referral.full_name,
+            referral_id=referral.telegram_id or referral.email or f'#{referral.id}',
+        ),
+        '',
+    ]
+
+    # Если было пополнение >= 100₽ - начислить бонусы
+    if total_topup_kopeks >= settings.REFERRAL_MINIMUM_TOPUP_KOPEKS:
+        response_lines.append(
+            texts.t(
+                'ADMIN_USER_ADD_REFERRAL_TOPUP_DETECTED',
+                '💰 <b>Обнаружено пополнение:</b> {amount}\n🎁 <b>Начисляем подарочные балансы...</b>',
+            ).format(amount=settings.format_price(total_topup_kopeks))
+        )
+
+        # Вызвать process_referral_topup для начисления бонусов
+        topup_success = await process_referral_topup(db, referral.id, total_topup_kopeks, message.bot)
+
+        if topup_success:
+            response_lines.append('')
+            response_lines.append(
+                texts.t(
+                    'ADMIN_USER_ADD_REFERRAL_BONUSES_SUCCESS',
+                    '✅ <b>Подарочные балансы начислены:</b>\n'
+                    '• Реферал получил: {referral_bonus}\n'
+                    '• Реферер получил: {referrer_bonus}',
+                ).format(
+                    referral_bonus=settings.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS),
+                    referrer_bonus=settings.format_price(
+                        max(
+                            settings.REFERRAL_INVITER_BONUS_KOPEKS,
+                            int(total_topup_kopeks * settings.REFERRAL_COMMISSION_PERCENT / 100),
+                        )
+                    ),
+                )
+            )
+        else:
+            response_lines.append('')
+            response_lines.append(
+                texts.t(
+                    'ADMIN_USER_ADD_REFERRAL_BONUSES_ERROR',
+                    '⚠️ Ошибка при начислении бонусов. Проверьте логи.',
+                )
+            )
+    else:
+        response_lines.append(
+            texts.t(
+                'ADMIN_USER_ADD_REFERRAL_NO_TOPUP',
+                '📊 <b>Пополнений ≥{min_amount} не обнаружено</b>\n'
+                '💡 Подарочные балансы будут начислены при первом пополнении реферала.',
+            ).format(min_amount=settings.format_price(settings.REFERRAL_MINIMUM_TOPUP_KOPEKS))
+        )
+
+    await message.answer('\n'.join(response_lines))
+    await state.clear()
+
+    # Показать обновленный список рефералов
+    view = await _build_user_referrals_view(db, db_user.language, referrer_id)
+    if view:
+        text, keyboard = view
+        await message.answer(text, reply_markup=keyboard)
 
 
 @admin_required
@@ -5480,8 +5734,11 @@ def register_handlers(dp: Dispatcher):
     dp.message.register(process_balance_edit, AdminStates.editing_user_balance)
 
     dp.callback_query.register(
-        show_user_referrals, F.data.startswith('admin_user_referrals_') & ~F.data.contains('_edit')
+        show_user_referrals,
+        F.data.startswith('admin_user_referrals_') & ~F.data.contains('_edit') & ~F.data.contains('_add'),
     )
+
+    dp.callback_query.register(start_add_single_referral, F.data.startswith('admin_user_add_single_referral_'))
 
     dp.callback_query.register(
         start_edit_referral_percent,
@@ -5501,6 +5758,8 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(start_edit_user_referrals, F.data.startswith('admin_user_referrals_edit_'))
 
     dp.message.register(process_edit_user_referrals, AdminStates.editing_user_referrals)
+
+    dp.message.register(process_add_single_referral, AdminStates.adding_single_referral)
 
     dp.callback_query.register(start_send_user_message, F.data.startswith('admin_user_send_message_'))
 
