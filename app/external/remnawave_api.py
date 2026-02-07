@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -366,32 +367,63 @@ class RemnaWaveAPI:
             raise RemnaWaveAPIError('Session not initialized. Use async context manager.')
 
         url = f'{self.base_url}{endpoint}'
+        max_retries = 3
+        base_delay = 1.0
 
-        try:
-            kwargs = {'url': url, 'params': params}
+        for attempt in range(max_retries + 1):
+            try:
+                kwargs = {'url': url, 'params': params}
 
-            if data:
-                kwargs['json'] = data
+                if data:
+                    kwargs['json'] = data
 
-            async with self.session.request(method, **kwargs) as response:
-                response_text = await response.text()
+                async with self.session.request(method, **kwargs) as response:
+                    response_text = await response.text()
 
-                try:
-                    response_data = json.loads(response_text) if response_text else {}
-                except json.JSONDecodeError:
-                    response_data = {'raw_response': response_text}
+                    try:
+                        response_data = json.loads(response_text) if response_text else {}
+                    except json.JSONDecodeError:
+                        response_data = {'raw_response': response_text}
 
-                if response.status >= 400:
-                    error_message = response_data.get('message', f'HTTP {response.status}')
-                    logger.error(f'API Error {response.status}: {error_message}')
-                    logger.error(f'Response: {response_text[:500]}')
-                    raise RemnaWaveAPIError(error_message, response.status, response_data)
+                    if response.status == 429 and attempt < max_retries:
+                        retry_after = float(response.headers.get('Retry-After', base_delay * (2**attempt)))
+                        logger.warning(
+                            'Rate limited (429) on %s %s, retry %d/%d after %.1fs',
+                            method,
+                            endpoint,
+                            attempt + 1,
+                            max_retries,
+                            retry_after,
+                        )
+                        await asyncio.sleep(retry_after)
+                        continue
 
-                return response_data
+                    if response.status >= 400:
+                        error_message = response_data.get('message', f'HTTP {response.status}')
+                        logger.error(f'API Error {response.status}: {error_message}')
+                        logger.error(f'Response: {response_text[:500]}')
+                        raise RemnaWaveAPIError(error_message, response.status, response_data)
 
-        except aiohttp.ClientError as e:
-            logger.error(f'Request failed: {e}')
-            raise RemnaWaveAPIError(f'Request failed: {e!s}')
+                    return response_data
+
+            except aiohttp.ClientError as e:
+                if attempt < max_retries:
+                    delay = base_delay * (2**attempt)
+                    logger.warning(
+                        'Request failed on %s %s: %s, retry %d/%d after %.1fs',
+                        method,
+                        endpoint,
+                        e,
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error(f'Request failed: {e}')
+                raise RemnaWaveAPIError(f'Request failed: {e!s}')
+
+        raise RemnaWaveAPIError(f'Max retries exceeded for {method} {endpoint}')
 
     async def create_user(
         self,
@@ -563,6 +595,33 @@ class RemnaWaveAPI:
         response = await self._make_request('POST', f'/api/users/{uuid}/actions/revoke', data)
         user = self._parse_user(response['response'])
         return await self.enrich_user_with_happ_link(user)
+
+    async def get_user_accessible_nodes(self, uuid: str) -> list[RemnaWaveAccessibleNode]:
+        """Получает список доступных нод для пользователя"""
+        try:
+            response = await self._make_request('GET', f'/api/users/{uuid}/accessible-nodes')
+            nodes_data = response.get('response', {}).get('activeNodes', [])
+            result = []
+            for node in nodes_data:
+                # Collect inbounds from activeSquads
+                inbounds: list[str] = []
+                for squad in node.get('activeSquads', []):
+                    inbounds.extend(squad.get('activeInbounds', []))
+                result.append(
+                    RemnaWaveAccessibleNode(
+                        uuid=node['uuid'],
+                        node_name=node['nodeName'],
+                        country_code=node['countryCode'],
+                        config_profile_uuid=node.get('configProfileUuid', ''),
+                        config_profile_name=node.get('configProfileName', ''),
+                        active_inbounds=inbounds,
+                    )
+                )
+            return result
+        except RemnaWaveAPIError as e:
+            if e.status_code == 404:
+                return []
+            raise
 
     async def get_all_users(self, start: int = 0, size: int = 100, enrich_happ_links: bool = False) -> dict[str, Any]:
         params = {'start': start, 'size': size}
