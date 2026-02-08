@@ -4875,6 +4875,8 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
                                 full_name=target_user.full_name,
                                 username=target_user.username,
                                 telegram_id=target_user.telegram_id,
+                                email=target_user.email,
+                                user_id=target_user.id,
                             ),
                             active_internal_squads=subscription.connected_squads,
                         )
@@ -4888,6 +4890,8 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
                         full_name=target_user.full_name,
                         username=target_user.username,
                         telegram_id=target_user.telegram_id,
+                        email=target_user.email,
+                        user_id=target_user.id,
                     )
                     async with remnawave_service.get_api_client() as api:
                         create_kwargs = dict(
@@ -4899,10 +4903,12 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
                             else 0,
                             traffic_limit_strategy=TrafficLimitStrategy.MONTH,
                             telegram_id=target_user.telegram_id,
+                            email=target_user.email,
                             description=settings.format_remnawave_user_description(
                                 full_name=target_user.full_name,
                                 username=target_user.username,
                                 telegram_id=target_user.telegram_id,
+                                email=target_user.email,
                             ),
                             active_internal_squads=subscription.connected_squads,
                         )
