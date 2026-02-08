@@ -992,19 +992,20 @@ async def get_contest_leaderboard_with_virtual(
     contest_id: int,
     *,
     limit: int | None = None,
-) -> list[tuple[str, int, int, bool]]:
+) -> list[tuple[str, int, int, bool, int | None]]:
     """Лидерборд с виртуальными участниками.
 
-    Возвращает список кортежей (display_name, referral_count, total_amount, is_virtual).
+    Возвращает список кортежей (display_name, referral_count, total_amount, is_virtual, telegram_id).
+    telegram_id будет None для виртуальных участников.
     """
     real = await get_contest_leaderboard(db, contest_id)
     virtual = await list_virtual_participants(db, contest_id)
 
-    merged: list[tuple[str, int, int, bool]] = []
+    merged: list[tuple[str, int, int, bool, int | None]] = []
     for user, score, amount in real:
-        merged.append((user.full_name, score, amount, False))
+        merged.append((user.full_name, score, amount, False, user.telegram_id))
     for vp in virtual:
-        merged.append((vp.display_name, vp.referral_count, vp.total_amount_kopeks, True))
+        merged.append((vp.display_name, vp.referral_count, vp.total_amount_kopeks, True, None))
 
     merged.sort(key=lambda x: (-x[1], -x[2]))
 

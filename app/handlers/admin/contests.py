@@ -262,9 +262,10 @@ async def show_contest_details(
     if leaderboard:
         lines.append('')
         lines.append(texts.t('ADMIN_CONTEST_LEADERBOARD_TITLE', '📊 Топ участников:'))
-        for idx, (name, score, _, is_virtual) in enumerate(leaderboard, start=1):
+        for idx, (name, score, _, is_virtual, telegram_id) in enumerate(leaderboard, start=1):
             virt_mark = ' 👻' if is_virtual else ''
-            lines.append(f'{idx}. {name}{virt_mark} — {score}')
+            user_id_str = f' (ID{telegram_id})' if telegram_id else ''
+            lines.append(f'{idx}. {name}{user_id_str}{virt_mark} — {score}')
 
     await callback.message.edit_text(
         '\n'.join(lines),
@@ -442,9 +443,10 @@ async def show_leaderboard(
     lines = [
         texts.t('ADMIN_CONTEST_LEADERBOARD_TITLE', '📊 Топ участников:'),
     ]
-    for idx, (name, score, _, is_virtual) in enumerate(leaderboard, start=1):
+    for idx, (name, score, _, is_virtual, telegram_id) in enumerate(leaderboard, start=1):
         virt_mark = ' 👻' if is_virtual else ''
-        lines.append(f'{idx}. {name}{virt_mark} — {score}')
+        user_id_str = f' (ID{telegram_id})' if telegram_id else ''
+        lines.append(f'{idx}. {name}{user_id_str}{virt_mark} — {score}')
 
     await callback.message.edit_text(
         '\n'.join(lines),

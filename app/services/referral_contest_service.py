@@ -272,7 +272,7 @@ class ReferralContestService:
         self,
         *,
         contest: ReferralContest,
-        leaderboard: Sequence[tuple[str, int, int, bool]],
+        leaderboard: Sequence[tuple[str, int, int, bool, int | None]],
         total_events: int,
         today_events: int,
         is_final: bool,
@@ -296,9 +296,10 @@ class ReferralContestService:
         ]
 
         if leaderboard:
-            for idx, (name, score, _, is_virtual) in enumerate(leaderboard[:5], start=1):
+            for idx, (name, score, _, is_virtual, telegram_id) in enumerate(leaderboard[:5], start=1):
                 virt_mark = ' 👻' if is_virtual else ''
-                lines.append(f'{idx}. {name}{virt_mark} — {score}')
+                user_id_str = f' (ID{telegram_id})' if telegram_id else ''
+                lines.append(f'{idx}. {name}{user_id_str}{virt_mark} — {score}')
         else:
             lines.append('Пока нет участников.')
 
@@ -320,7 +321,7 @@ class ReferralContestService:
         self,
         *,
         contest: ReferralContest,
-        leaderboard: Sequence[tuple[str, int, int, bool]],
+        leaderboard: Sequence[tuple[str, int, int, bool, int | None]],
         total_events: int,
         today_events: int,
         is_final: bool,
@@ -348,7 +349,7 @@ class ReferralContestService:
         ]
 
         if leaderboard:
-            for idx, (name, score, _, _is_virtual) in enumerate(leaderboard[:5], start=1):
+            for idx, (name, score, _, _is_virtual, _telegram_id) in enumerate(leaderboard[:5], start=1):
                 lines.append(f'{idx}. {name} — {score}')
         else:
             lines.append('Пока нет участников.')
