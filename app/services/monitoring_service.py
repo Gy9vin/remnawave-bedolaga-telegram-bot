@@ -6,7 +6,6 @@ from typing import Any
 
 from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import FSInputFile
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -108,13 +107,17 @@ class MonitoringService:
 
         if settings.ENABLE_LOGO_MODE and LOGO_PATH.exists() and (text is None or len(text) <= 1000):
             try:
-                return await self.bot.send_photo(
+                from app.utils.message_patch import _cache_logo_file_id, get_logo_media
+
+                result = await self.bot.send_photo(
                     chat_id=chat_id,
-                    photo=FSInputFile(LOGO_PATH),
+                    photo=get_logo_media(),
                     caption=text,
                     reply_markup=reply_markup,
                     parse_mode=parse_mode,
                 )
+                _cache_logo_file_id(result)
+                return result
             except TelegramBadRequest as exc:
                 logger.warning(
                     'Не удалось отправить сообщение с логотипом пользователю %s: %s. Отправляем текстовое сообщение.',
@@ -260,9 +263,18 @@ class MonitoringService:
 
     async def _check_expired_subscriptions(self, db: AsyncSession):
         try:
+            from app.database.crud.subscription import is_recently_updated_by_webhook
+
             expired_subscriptions = await get_expired_subscriptions(db)
 
             for subscription in expired_subscriptions:
+                if is_recently_updated_by_webhook(subscription):
+                    logger.debug(
+                        'Пропуск expire подписки %s: обновлена вебхуком недавно',
+                        subscription.id,
+                    )
+                    continue
+
                 from app.database.crud.subscription import expire_subscription
 
                 await expire_subscription(db, subscription)
@@ -286,6 +298,15 @@ class MonitoringService:
 
     async def update_remnawave_user(self, db: AsyncSession, subscription: Subscription) -> RemnaWaveUser | None:
         try:
+            from app.database.crud.subscription import is_recently_updated_by_webhook
+
+            if is_recently_updated_by_webhook(subscription):
+                logger.debug(
+                    'Пропуск RemnaWave обновления подписки %s: обновлена вебхуком недавно',
+                    subscription.id,
+                )
+                return None
+
             user = await get_user_by_id(db, subscription.user_id)
             if not user or not user.remnawave_uuid:
                 logger.error(f'RemnaWave UUID не найден для пользователя {subscription.user_id}')
@@ -296,6 +317,14 @@ class MonitoringService:
                 await db.refresh(subscription)
             except Exception:
                 pass
+
+            # Re-check guard after refresh (webhook could have committed between first check and refresh)
+            if is_recently_updated_by_webhook(subscription):
+                logger.debug(
+                    'Пропуск RemnaWave обновления подписки %s: обновлена вебхуком недавно (после refresh)',
+                    subscription.id,
+                )
+                return None
 
             current_time = datetime.utcnow()
             is_active = subscription.status == SubscriptionStatus.ACTIVE.value and subscription.end_date > current_time
@@ -548,6 +577,8 @@ class MonitoringService:
             logger.error(f'Ошибка проверки неактивных тестовых подписок: {e}')
 
     async def _check_trial_channel_subscriptions(self, db: AsyncSession):
+        from app.database.crud.subscription import is_recently_updated_by_webhook
+
         if not settings.CHANNEL_IS_REQUIRED_SUB:
             return
 
@@ -634,6 +665,12 @@ class MonitoringService:
                     continue
 
                 if subscription.status == SubscriptionStatus.ACTIVE.value and subscription.is_trial and not is_member:
+                    if is_recently_updated_by_webhook(subscription):
+                        logger.debug(
+                            'Пропуск деактивации trial подписки %s: обновлена вебхуком недавно',
+                            subscription.id,
+                        )
+                        continue
                     subscription = await deactivate_subscription(db, subscription)
                     disabled_count += 1
                     logger.info(
@@ -668,6 +705,12 @@ class MonitoringService:
                                     'trial_channel_unsubscribed',
                                 )
                 elif subscription.status == SubscriptionStatus.DISABLED.value and subscription.is_trial and is_member:
+                    if is_recently_updated_by_webhook(subscription):
+                        logger.debug(
+                            'Пропуск реактивации trial подписки %s: обновлена вебхуком недавно',
+                            subscription.id,
+                        )
+                        continue
                     subscription.status = SubscriptionStatus.ACTIVE.value
                     subscription.updated_at = datetime.utcnow()
                     await db.commit()
@@ -1005,6 +1048,15 @@ class MonitoringService:
             failed_count = 0
 
             for subscription in autopay_subscriptions:
+                from app.database.crud.subscription import is_recently_updated_by_webhook
+
+                if is_recently_updated_by_webhook(subscription):
+                    logger.debug(
+                        'Пропуск автоплатежа подписки %s: обновлена вебхуком недавно',
+                        subscription.id,
+                    )
+                    continue
+
                 user = subscription.user
                 if not user:
                     continue
@@ -2130,11 +2182,19 @@ class MonitoringService:
             }
 
     async def force_check_subscriptions(self, db: AsyncSession) -> dict[str, int]:
+        from app.database.crud.subscription import is_recently_updated_by_webhook
+
         try:
             expired_subscriptions = await get_expired_subscriptions(db)
             expired_count = 0
 
             for subscription in expired_subscriptions:
+                if is_recently_updated_by_webhook(subscription):
+                    logger.debug(
+                        'Пропуск force-check подписки %s: обновлена вебхуком недавно',
+                        subscription.id,
+                    )
+                    continue
                 await deactivate_subscription(db, subscription)
                 expired_count += 1
 

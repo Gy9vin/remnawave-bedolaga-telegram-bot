@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.models import PaymentMethod, TransactionType
 from app.services.subscription_auto_purchase_service import (
-    auto_activate_subscription_after_topup,
     auto_purchase_saved_cart_after_topup,
 )
 from app.utils.payment_logger import payment_logger as logger
@@ -261,7 +260,10 @@ class HeleketPaymentMixin:
         invoice_message = metadata.get('invoice_message') or {}
         invoice_message_removed = False
 
-        if getattr(self, 'bot', None) and invoice_message:
+        status_normalized = (status or '').lower()
+        is_final = status_normalized in {'paid', 'paid_over', 'cancel', 'fail', 'system_fail', 'refund_paid'}
+
+        if getattr(self, 'bot', None) and invoice_message and is_final:
             chat_id = invoice_message.get('chat_id')
             message_id = invoice_message.get('message_id')
             if chat_id and message_id:
@@ -301,7 +303,6 @@ class HeleketPaymentMixin:
             )
             return updated_payment
 
-        status_normalized = (status or '').lower()
         if status_normalized not in {'paid', 'paid_over'}:
             logger.info('Heleket платеж %s в статусе %s, зачисление не требуется', updated_payment.uuid, status)
             return updated_payment
@@ -324,6 +325,7 @@ class HeleketPaymentMixin:
             payment_method=PaymentMethod.HELEKET,
             external_id=updated_payment.uuid,
             is_completed=True,
+            created_at=getattr(updated_payment, 'created_at', None),
         )
 
         linked_payment = await heleket_crud.link_heleket_payment_to_transaction(
@@ -452,22 +454,6 @@ class HeleketPaymentMixin:
                 if auto_purchase_success:
                     has_saved_cart = False
 
-            # Умная автоактивация если автопокупка не сработала
-            if not auto_purchase_success:
-                try:
-                    await auto_activate_subscription_after_topup(
-                        db,
-                        user,
-                        bot=getattr(self, 'bot', None),
-                        topup_amount=amount_kopeks,
-                    )
-                except Exception as auto_activate_error:
-                    logger.error(
-                        'Ошибка умной автоактивации для пользователя %s: %s',
-                        user.id,
-                        auto_activate_error,
-                        exc_info=True,
-                    )
         except Exception as error:
             logger.error(
                 'Ошибка при работе с автоактивацией для пользователя %s: %s',

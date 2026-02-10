@@ -1232,12 +1232,11 @@ class RemnaWaveService:
             )
             existing_subscriptions = existing_subscriptions_result.scalars().all()
 
-            # Создадим словарь для быстрого доступа к подпискам (O(1) вместо N SQL-запросов!)
-            subscriptions_by_user_id = {sub.user_id: sub for sub in existing_subscriptions}
-            logger.info(f'📊 Загружено подписок для быстрого доступа: {len(subscriptions_by_user_id)}')
+            # Создадим словарь для быстрого доступа к подпискам
+            {sub.user_id: sub for sub in existing_subscriptions}
 
             # Для оптимизации коммитим изменения каждые N пользователей
-            batch_size = 500  # Увеличено с 50 для снижения количества коммитов
+            batch_size = 50
             pending_uuid_mutations: list[_UUIDMapMutation] = []
 
             for i, panel_user in enumerate(unique_panel_users):
@@ -1247,7 +1246,7 @@ class RemnaWaveService:
                     if not telegram_id:
                         continue
 
-                    if (i + 1) % 500 == 0:
+                    if (i + 1) % 10 == 0:
                         logger.info(f'🔄 Обрабатываем пользователя {i + 1}/{len(unique_panel_users)}: {telegram_id}')
 
                     db_user = bot_users_by_telegram_id.get(telegram_id)
@@ -1287,9 +1286,9 @@ class RemnaWaveService:
                                 stats['created'] += 1
                                 logger.info(f'✅ Создан пользователь {telegram_id} с подпиской')
                             else:
-                                # Обновляем данные существующего пользователя используя предзагруженную подписку
-                                existing_sub = subscriptions_by_user_id.get(db_user.id)
-                                await self._update_subscription_from_panel_data(db, db_user, panel_user, existing_sub)
+                                # Обновляем данные существующего пользователя
+                                # Но теперь мы уже загрузили подписку с пользователем, нет необходимости перезагружать
+                                await self._update_subscription_from_panel_data(db, db_user, panel_user)
                                 stats['updated'] += 1
                                 logger.info(f'♻️ Обновлена подписка существующего пользователя {telegram_id}')
 
@@ -1312,10 +1311,13 @@ class RemnaWaveService:
                             bot_users_by_uuid,
                         )
 
-                        # Используем предзагруженный словарь вместо SQL-запроса (устранение N+1 query!)
-                        existing_sub = subscriptions_by_user_id.get(db_user.id)
+                        # Используем async запрос вместо доступа к relationship,
+                        # чтобы избежать lazy-load в async контексте
+                        from app.database.crud.subscription import get_subscription_by_user_id as _get_sub
+
+                        existing_sub = await _get_sub(db, db_user.id)
                         if existing_sub:
-                            await self._update_subscription_from_panel_data(db, db_user, panel_user, existing_sub)
+                            await self._update_subscription_from_panel_data(db, db_user, panel_user)
                         else:
                             await self._create_subscription_from_panel_data(db, db_user, panel_user)
 
@@ -1391,10 +1393,13 @@ class RemnaWaveService:
                             if panel_uuid and not db_user.remnawave_uuid:
                                 db_user.remnawave_uuid = panel_uuid
 
-                            # Используем предзагруженный словарь вместо SQL-запроса (устранение N+1 query!)
-                            existing_sub = subscriptions_by_user_id.get(db_user.id)
+                            # Используем async запрос вместо доступа к relationship,
+                            # чтобы избежать lazy-load (greenlet_spawn) в async контексте
+                            from app.database.crud.subscription import get_subscription_by_user_id as _get_sub_email
+
+                            existing_sub = await _get_sub_email(db, db_user.id)
                             if existing_sub:
-                                await self._update_subscription_from_panel_data(db, db_user, panel_user, existing_sub)
+                                await self._update_subscription_from_panel_data(db, db_user, panel_user)
                             else:
                                 await self._create_subscription_from_panel_data(db, db_user, panel_user)
 
@@ -1422,11 +1427,13 @@ class RemnaWaveService:
                 processed_count = 0
                 cleanup_uuid_mutations: list[_UUIDMapMutation] = []
 
-                # Собираем список пользователей для деактивации (используем словарь вместо hasattr)
+                # Собираем список пользователей для деактивации
                 users_to_deactivate = [
                     (telegram_id, db_user)
                     for telegram_id, db_user in bot_users_by_telegram_id.items()
-                    if telegram_id not in panel_telegram_ids and subscriptions_by_user_id.get(db_user.id) is not None
+                    if telegram_id not in panel_telegram_ids
+                    and hasattr(db_user, 'subscription')
+                    and db_user.subscription
                 ]
 
                 if users_to_deactivate:
@@ -1447,13 +1454,19 @@ class RemnaWaveService:
                     for telegram_id, db_user in users_to_deactivate:
                         cleanup_mutation: _UUIDMapMutation | None = None
                         try:
-                            logger.info(f'🗑️ Деактивация подписки пользователя {telegram_id} (нет в панели)')
+                            subscription = db_user.subscription
 
-                            # Используем предзагруженный словарь вместо lazy-load
-                            subscription = subscriptions_by_user_id.get(db_user.id)
-                            if not subscription:
-                                logger.warning(f'⚠️ Подписка не найдена для пользователя {telegram_id}, пропускаем')
+                            # Skip if recently updated by webhook
+                            from app.database.crud.subscription import is_recently_updated_by_webhook
+
+                            if subscription and is_recently_updated_by_webhook(subscription):
+                                logger.debug(
+                                    'Пропуск деактивации подписки %s: обновлена вебхуком недавно',
+                                    subscription.id,
+                                )
                                 continue
+
+                            logger.info(f'🗑️ Деактивация подписки пользователя {telegram_id} (нет в панели)')
 
                             if db_user.remnawave_uuid and hwid_api_client:
                                 try:
@@ -1659,20 +1672,25 @@ class RemnaWaveService:
             except Exception as basic_error:
                 logger.error(f'❌ Ошибка создания базовой подписки: {basic_error}')
 
-    async def _update_subscription_from_panel_data(
-        self, db: AsyncSession, user, panel_user, subscription: Optional['Subscription'] = None
-    ):
+    async def _update_subscription_from_panel_data(self, db: AsyncSession, user, panel_user):
         try:
+            from app.database.crud.subscription import get_subscription_by_user_id, is_recently_updated_by_webhook
             from app.database.models import SubscriptionStatus
 
-            # Используем переданную подписку или загружаем из БД (для обратной совместимости)
-            if subscription is None:
-                from app.database.crud.subscription import get_subscription_by_user_id
-
-                subscription = await get_subscription_by_user_id(db, user.id)
+            # Всегда используем async CRUD запрос для получения подписки,
+            # чтобы избежать lazy-load (greenlet_spawn) в async контексте
+            subscription = await get_subscription_by_user_id(db, user.id)
 
             if not subscription:
                 await self._create_subscription_from_panel_data(db, user, panel_user)
+                return
+
+            # Skip if recently updated by webhook (prevent stale data overwrite)
+            if is_recently_updated_by_webhook(subscription):
+                logger.debug(
+                    'Пропуск синхронизации подписки %s: обновлена вебхуком недавно',
+                    subscription.id,
+                )
                 return
 
             panel_status = panel_user.get('status', 'ACTIVE')
@@ -1682,38 +1700,47 @@ class RemnaWaveService:
                 # expire_at приходит в UTC (naive) из _parse_remnawave_date
                 expire_at = self._parse_remnawave_date(expire_at_str)
 
-                # Конвертируем локальную дату из БД в UTC для корректного сравнения
-                # subscription.end_date хранится в локальной таймзоне (MSK)
-                local_end_date_utc = self._local_to_utc(subscription.end_date)
+                # Обновляем end_date только если пользователь ACTIVE в панели.
+                # Для EXPIRED/DISABLED панель может содержать искусственную дату
+                # (установленную _safe_expire_at_for_panel при sync_users_to_panel),
+                # которая не должна перезаписывать реальную дату окончания подписки.
+                if panel_status == 'ACTIVE':
+                    # Конвертируем локальную дату из БД в UTC для корректного сравнения
+                    local_end_date_utc = self._local_to_utc(subscription.end_date)
 
-                # КРИТИЧНО: НЕ перезаписываем end_date если локальная дата ПОЗЖЕ
-                # Это защищает от ситуации когда подписка была продлена в боте,
-                # но RemnaWave ещё не получил обновление или вернул старую дату
-                time_diff = abs((local_end_date_utc - expire_at).total_seconds())
-                if time_diff > 60:
-                    if expire_at > local_end_date_utc:
-                        # RemnaWave имеет более позднюю дату - обновляем
-                        # Конвертируем UTC обратно в локальное время для сохранения в БД
-                        new_end_date_local = (
-                            expire_at.replace(tzinfo=self._utc_timezone)
-                            .astimezone(self._panel_timezone)
-                            .replace(tzinfo=None)
-                        )
-                        logger.info(
-                            f'✅ Sync: обновлена end_date для user {getattr(user, "telegram_id", "?")}: '
-                            f'{subscription.end_date} -> {new_end_date_local} (разница: {time_diff:.0f}с)'
-                        )
-                        subscription.end_date = new_end_date_local
+                    # КРИТИЧНО: НЕ перезаписываем end_date если локальная дата ПОЗЖЕ
+                    # Это защищает от ситуации когда подписка была продлена в боте,
+                    # но RemnaWave ещё не получил обновление или вернул старую дату
+                    time_diff = abs((local_end_date_utc - expire_at).total_seconds())
+                    if time_diff > 60:
+                        if expire_at > local_end_date_utc:
+                            # RemnaWave имеет более позднюю дату - обновляем
+                            # Конвертируем UTC обратно в локальное время для сохранения в БД
+                            new_end_date_local = (
+                                expire_at.replace(tzinfo=self._utc_timezone)
+                                .astimezone(self._panel_timezone)
+                                .replace(tzinfo=None)
+                            )
+                            logger.info(
+                                f'✅ Sync: обновлена end_date для user {getattr(user, "telegram_id", "?")}: '
+                                f'{subscription.end_date} -> {new_end_date_local} (разница: {time_diff:.0f}с)'
+                            )
+                            subscription.end_date = new_end_date_local
+                        else:
+                            # Локальная дата позже - НЕ перезаписываем
+                            logger.debug(
+                                f'⏭️ Sync: end_date для user {getattr(user, "telegram_id", "?")} актуальна: '
+                                f'локальная ({subscription.end_date} / UTC: {local_end_date_utc}) >= RemnaWave ({expire_at} UTC)'
+                            )
                     else:
-                        # Локальная дата позже - НЕ перезаписываем
                         logger.debug(
-                            f'⏭️ Sync: end_date для user {getattr(user, "telegram_id", "?")} актуальна: '
-                            f'локальная ({subscription.end_date} / UTC: {local_end_date_utc}) >= RemnaWave ({expire_at} UTC)'
+                            f'⏭️ Sync: пропускаем обновление end_date для user {getattr(user, "telegram_id", "?")}: '
+                            f'разница слишком мала ({time_diff:.0f}с < 60с)'
                         )
                 else:
                     logger.debug(
                         f'⏭️ Sync: пропускаем обновление end_date для user {getattr(user, "telegram_id", "?")}: '
-                        f'разница слишком мала ({time_diff:.0f}с < 60с)'
+                        f'панель не ACTIVE (статус: {panel_status})'
                     )
 
             current_time = self._now_utc()
@@ -2490,12 +2517,20 @@ class RemnaWaveService:
                             await self._update_subscription_from_panel_data(db, user, panel_user)
                             stats['updated'] += 1
                         elif subscription.status != SubscriptionStatus.DISABLED.value:
-                            logger.info(f'🗑️ Деактивируем подписку пользователя {user.telegram_id} (нет в панели)')
+                            from app.database.crud.subscription import (
+                                deactivate_subscription,
+                                is_recently_updated_by_webhook,
+                            )
 
-                            from app.database.crud.subscription import deactivate_subscription
-
-                            await deactivate_subscription(db, subscription)
-                            stats['updated'] += 1
+                            if is_recently_updated_by_webhook(subscription):
+                                logger.debug(
+                                    'Пропуск деактивации подписки %s: обновлена вебхуком недавно',
+                                    subscription.id,
+                                )
+                            else:
+                                logger.info(f'🗑️ Деактивируем подписку пользователя {user.telegram_id} (нет в панели)')
+                                await deactivate_subscription(db, subscription)
+                                stats['updated'] += 1
 
                     except Exception as sub_error:
                         logger.error(f'❌ Ошибка синхронизации подписки {subscription.id}: {sub_error}')
@@ -2538,6 +2573,8 @@ class RemnaWaveService:
                         user = subscription.user
                         issues_fixed = 0
 
+                        from app.database.crud.subscription import is_recently_updated_by_webhook
+
                         current_time = self._now_utc()
                         # Конвертируем end_date в UTC для корректного сравнения
                         end_date_utc = self._local_to_utc(subscription.end_date)
@@ -2546,6 +2583,7 @@ class RemnaWaveService:
                         if (
                             end_date_utc + expiry_buffer <= current_time
                             and subscription.status == SubscriptionStatus.ACTIVE.value
+                            and not is_recently_updated_by_webhook(subscription)
                         ):
                             time_since_expiry = current_time - end_date_utc
                             logger.warning(
