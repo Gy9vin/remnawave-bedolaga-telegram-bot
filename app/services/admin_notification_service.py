@@ -1221,6 +1221,45 @@ class AdminNotificationService:
         """Public check for whether admin notifications are configured and active."""
         return self._is_enabled()
 
+    async def send_withdrawal_request_notification(
+        self,
+        text: str,
+        reply_markup: types.InlineKeyboardMarkup | None = None,
+        topic_id: int | None = None,
+    ) -> bool:
+        """Send withdrawal request notification to admin chat.
+
+        НЕ зависит от ADMIN_NOTIFICATIONS_ENABLED — заявки на вывод
+        критичны для бизнеса и всегда должны отправляться, если настроен chat_id.
+
+        Если задан withdrawal topic_id — отправляет только туда.
+        Иначе — в основной топик уведомлений.
+        """
+        if not self.chat_id:
+            logger.warning('Не удалось отправить уведомление о выводе: ADMIN_NOTIFICATIONS_CHAT_ID не настроен')
+            return False
+
+        target_topic_id = topic_id or self.topic_id
+
+        try:
+            message_kwargs = {
+                'chat_id': self.chat_id,
+                'text': text,
+                'parse_mode': 'HTML',
+                'disable_web_page_preview': True,
+            }
+            if target_topic_id:
+                message_kwargs['message_thread_id'] = target_topic_id
+            if reply_markup is not None:
+                message_kwargs['reply_markup'] = reply_markup
+
+            await self.bot.send_message(**message_kwargs)
+            logger.info(f'Уведомление о выводе отправлено в чат {self.chat_id}, топик {target_topic_id}')
+            return True
+        except Exception as e:
+            logger.error(f'Ошибка отправки уведомления о выводе в топик {target_topic_id}: {e}')
+            return False
+
     async def send_webhook_notification(self, text: str) -> bool:
         """Send a generic webhook/infrastructure notification to admin chat.
 

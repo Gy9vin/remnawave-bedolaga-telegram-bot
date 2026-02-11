@@ -17,7 +17,6 @@ from app.database.crud.transaction import create_transaction
 from app.database.crud.user import subtract_user_balance
 from app.database.models import Subscription, TransactionType, User
 from app.services.subscription_service import SubscriptionService
-from app.utils.pricing_utils import calculate_prorated_price
 
 
 logger = logging.getLogger(__name__)
@@ -169,13 +168,15 @@ class ModemService:
         """
         modem_price_per_month = settings.get_modem_price_per_month()
 
-        base_price, charged_months = calculate_prorated_price(
-            modem_price_per_month,
-            subscription.end_date,
-        )
-
         now = datetime.utcnow()
-        remaining_days = max(0, (subscription.end_date - now).days)
+        remaining_days = max(1, (subscription.end_date - now).days)
+
+        # Подневный расчёт: дневная ставка × оставшиеся дни
+        daily_price = modem_price_per_month / 30
+        base_price = max(100, int(daily_price * remaining_days))  # Минимум 1₽
+
+        # Месяцы для определения скидки
+        charged_months = max(1, round(remaining_days / 30))
 
         discount_percent = settings.get_modem_period_discount(charged_months)
         if discount_percent > 0:

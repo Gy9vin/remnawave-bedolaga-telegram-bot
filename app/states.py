@@ -136,6 +136,9 @@ class AdminStates(StatesGroup):
     # Тестовое начисление реферального дохода
     test_referral_earning_input = State()
 
+    # Проверка баланса вывода пользователя
+    withdrawal_check_user_input = State()
+
     # Диагностика рефералов
     referral_diagnostics_period = State()
     waiting_for_log_file = State()
@@ -277,6 +280,7 @@ class AdminSubmenuStates(StatesGroup):
 
 class BlacklistStates(StatesGroup):
     waiting_for_blacklist_url = State()
+    waiting_for_exception_id = State()
 
 
 class ReferralWithdrawalStates(StatesGroup):

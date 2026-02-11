@@ -61,11 +61,12 @@ class ReferralWithdrawalService:
     async def get_user_spending(self, db: AsyncSession, user_id: int) -> int:
         """
         Получает сумму трат пользователя (покупки подписок, сброс трафика и т.д.).
+        НЕ включает withdrawal — вывод учитывается отдельно через get_withdrawn_amount.
         """
         result = await db.execute(
             select(func.coalesce(func.sum(Transaction.amount_kopeks), 0)).where(
                 Transaction.user_id == user_id,
-                Transaction.type.in_(['subscription_payment', 'withdrawal']),
+                Transaction.type == 'subscription_payment',
                 Transaction.is_completed == True,
             )
         )
@@ -75,6 +76,7 @@ class ReferralWithdrawalService:
         """
         Получает сумму трат ПОСЛЕ первого реферального начисления.
         Только эти траты могут быть засчитаны как "потрачено из реф. баланса".
+        НЕ включает withdrawal — вывод учитывается отдельно через get_withdrawn_amount.
         """
         first_earning_date = await self.get_first_referral_earning_date(db, user_id)
         if not first_earning_date:
@@ -83,7 +85,7 @@ class ReferralWithdrawalService:
         result = await db.execute(
             select(func.coalesce(func.sum(Transaction.amount_kopeks), 0)).where(
                 Transaction.user_id == user_id,
-                Transaction.type.in_(['subscription_payment', 'withdrawal']),
+                Transaction.type == 'subscription_payment',
                 Transaction.is_completed == True,
                 Transaction.created_at >= first_earning_date,
             )
@@ -92,21 +94,32 @@ class ReferralWithdrawalService:
 
     async def get_withdrawn_amount(self, db: AsyncSession, user_id: int) -> int:
         """
-        Получает сумму уже выведенных средств (одобренные/выполненные заявки).
+        Получает сумму РЕАЛЬНО выведенных средств (только COMPLETED — деньги переведены).
         """
         result = await db.execute(
             select(func.coalesce(func.sum(WithdrawalRequest.amount_kopeks), 0)).where(
                 WithdrawalRequest.user_id == user_id,
-                WithdrawalRequest.status.in_(
-                    [WithdrawalRequestStatus.APPROVED.value, WithdrawalRequestStatus.COMPLETED.value]
-                ),
+                WithdrawalRequest.status == WithdrawalRequestStatus.COMPLETED.value,
+            )
+        )
+        return result.scalar() or 0
+
+    async def get_approved_withdrawal_amount(self, db: AsyncSession, user_id: int) -> int:
+        """
+        Получает сумму одобренных заявок, ожидающих перевода (APPROVED, но ещё не COMPLETED).
+        Эти средства заморожены — их нельзя вывести повторно.
+        """
+        result = await db.execute(
+            select(func.coalesce(func.sum(WithdrawalRequest.amount_kopeks), 0)).where(
+                WithdrawalRequest.user_id == user_id,
+                WithdrawalRequest.status == WithdrawalRequestStatus.APPROVED.value,
             )
         )
         return result.scalar() or 0
 
     async def get_pending_withdrawal_amount(self, db: AsyncSession, user_id: int) -> int:
         """
-        Получает сумму заявок в ожидании (заморожено).
+        Получает сумму заявок в ожидании (PENDING — заморожено).
         """
         result = await db.execute(
             select(func.coalesce(func.sum(WithdrawalRequest.amount_kopeks), 0)).where(
@@ -118,20 +131,35 @@ class ReferralWithdrawalService:
     async def get_referral_balance_stats(self, db: AsyncSession, user_id: int) -> dict:
         """
         Получает полную статистику реферального баланса.
+
+        Формула доступного баланса:
+        available = total_earned - referral_spent - withdrawn - approved - pending
+
+        withdrawn = только COMPLETED (деньги реально переведены)
+        approved = только APPROVED (одобрено, ожидает перевода)
+        pending = только PENDING (на рассмотрении)
+
+        ВАЖНО: available_total ограничен фактическим balance_kopeks пользователя.
+        Нельзя вывести больше, чем реально есть на балансе.
         """
+        # Получаем фактический баланс пользователя
+        user_result = await db.execute(select(User.balance_kopeks).where(User.id == user_id))
+        actual_balance = user_result.scalar() or 0
+
         total_earned = await self.get_total_referral_earnings(db, user_id)
         own_deposits = await self.get_user_own_deposits(db, user_id)
         spending = await self.get_user_spending(db, user_id)
         spending_after_earning = await self.get_user_spending_after_first_earning(db, user_id)
         withdrawn = await self.get_withdrawn_amount(db, user_id)
+        approved = await self.get_approved_withdrawal_amount(db, user_id)
         pending = await self.get_pending_withdrawal_amount(db, user_id)
 
         # Сколько реф. баланса потрачено = мин(траты ПОСЛЕ первого начисления, реф_заработок)
         # Логика: только траты после получения реф. дохода могут быть из реф. баланса
         referral_spent = min(spending_after_earning, total_earned)
 
-        # Доступный реферальный баланс
-        available_referral = max(0, total_earned - referral_spent - withdrawn - pending)
+        # Доступный реферальный баланс (учитываем все замороженные суммы)
+        available_referral = max(0, total_earned - referral_spent - withdrawn - approved - pending)
 
         # Если разрешено выводить и свой баланс
         if not settings.REFERRAL_WITHDRAWAL_ONLY_REFERRAL_BALANCE:
@@ -142,15 +170,22 @@ class ReferralWithdrawalService:
             own_remaining = 0
             available_total = available_referral
 
+        # Ограничиваем доступную сумму фактическим балансом (минус замороженные)
+        # Нельзя вывести больше, чем реально есть на счету
+        max_withdrawable = max(0, actual_balance - approved - pending)
+        available_total = min(available_total, max_withdrawable)
+
         return {
             'total_earned': total_earned,  # Всего заработано с рефералов
             'own_deposits': own_deposits,  # Собственные пополнения
             'spending': spending,  # Потрачено на подписки и пр.
             'referral_spent': referral_spent,  # Сколько реф. баланса потрачено
-            'withdrawn': withdrawn,  # Уже выведено
-            'pending': pending,  # На рассмотрении
+            'withdrawn': withdrawn,  # Реально выведено (COMPLETED)
+            'approved': approved,  # Одобрено, ожидает перевода (APPROVED)
+            'pending': pending,  # На рассмотрении (PENDING)
             'available_referral': available_referral,  # Доступно реф. баланса
             'available_total': available_total,  # Всего доступно к выводу
+            'actual_balance': actual_balance,  # Фактический баланс
             'only_referral_mode': settings.REFERRAL_WITHDRAWAL_ONLY_REFERRAL_BALANCE,
         }
 
@@ -158,6 +193,65 @@ class ReferralWithdrawalService:
         """Получает сумму, доступную для вывода."""
         stats = await self.get_referral_balance_stats(db, user_id)
         return stats['available_total']
+
+    @staticmethod
+    def build_withdrawal_explanation(stats: dict) -> str | None:
+        """Генерирует понятное объяснение для пользователя почему доступно != баланс."""
+        balance = stats['actual_balance']
+        available = stats['available_total']
+        earned = stats['total_earned']
+        ref_spent = stats['referral_spent']
+        withdrawn = stats['withdrawn']
+        approved = stats['approved']
+        pending = stats['pending']
+
+        def fmt(kopeks: int) -> str:
+            return f'{kopeks / 100:.2f}₽'
+
+        # Если всё совпадает — объяснение не нужно
+        if available >= balance > 0:
+            return None
+
+        # Если нет заработка
+        if earned == 0:
+            return 'У вас пока нет реферальных начислений. Выводить можно только реферальный заработок.'
+
+        lines = []
+
+        if available < balance:
+            lines.append(
+                f'Выводить можно только реферальный заработок. '
+                f'На вашем балансе {fmt(balance)} — но часть из них это собственные пополнения, '
+                f'которые вывести нельзя.'
+            )
+            lines.append(f'Заработано с рефералов: {fmt(earned)}')
+
+            if ref_spent > 0:
+                lines.append(f'Из них потрачено на подписки: -{fmt(ref_spent)}')
+
+            if withdrawn > 0:
+                lines.append(f'Уже выведено: -{fmt(withdrawn)}')
+            if approved > 0:
+                lines.append(f'Одобрено, ждёт перевода: -{fmt(approved)}')
+            if pending > 0:
+                lines.append(f'На рассмотрении: -{fmt(pending)}')
+
+            lines.append(f'Итого доступно к выводу: {fmt(available)}')
+
+            diff = balance - available
+            if diff > 0 and stats.get('only_referral_mode'):
+                lines.append(f'Остальные {fmt(diff)} — собственные средства, они не выводятся.')
+
+        elif available == 0 and earned > 0:
+            frozen = withdrawn + approved + pending
+            if ref_spent >= earned:
+                lines.append('Весь реферальный заработок потрачен на подписки.')
+            elif frozen >= earned - ref_spent:
+                lines.append('Весь реферальный заработок выведен или ожидает вывода.')
+            else:
+                lines.append('Реферальный заработок потрачен или выведен.')
+
+        return '\n'.join(lines) if lines else None
 
     # ==================== ПРОВЕРКИ ====================
 
@@ -432,6 +526,15 @@ class ReferralWithdrawalService:
         )
         return result.scalars().all()
 
+    async def get_approved_requests(self, db: AsyncSession) -> list[WithdrawalRequest]:
+        """Получает все одобренные заявки (ожидают перевода)."""
+        result = await db.execute(
+            select(WithdrawalRequest)
+            .where(WithdrawalRequest.status == WithdrawalRequestStatus.APPROVED.value)
+            .order_by(WithdrawalRequest.created_at.asc())
+        )
+        return result.scalars().all()
+
     async def get_all_requests(self, db: AsyncSession, limit: int = 50, offset: int = 0) -> list[WithdrawalRequest]:
         """Получает все заявки на вывод (журнал)."""
         result = await db.execute(
@@ -443,7 +546,8 @@ class ReferralWithdrawalService:
         self, db: AsyncSession, request_id: int, admin_id: int, comment: str | None = None
     ) -> tuple[bool, str]:
         """
-        Одобряет заявку на вывод и списывает средства с баланса.
+        Одобряет заявку на вывод (без списания баланса).
+        Списание происходит при complete_request (когда деньги реально переведены).
         Возвращает (success, error_message).
         """
         result = await db.execute(select(WithdrawalRequest).where(WithdrawalRequest.id == request_id))
@@ -460,31 +564,7 @@ class ReferralWithdrawalService:
         if request.amount_kopeks > stats['available_total']:
             return False, f'Недостаточно средств у пользователя. Доступно: {stats["available_total"] / 100:.0f}₽'
 
-        # Получаем пользователя для списания с баланса
-        user_result = await db.execute(select(User).where(User.id == request.user_id))
-        user = user_result.scalar_one_or_none()
-
-        if not user:
-            return False, 'Пользователь не найден'
-
-        # Списываем с баланса
-        if user.balance_kopeks < request.amount_kopeks:
-            return False, f'Недостаточно средств на балансе. Баланс: {user.balance_kopeks / 100:.0f}₽'
-
-        user.balance_kopeks -= request.amount_kopeks
-
-        # Создаём транзакцию списания
-        withdrawal_tx = Transaction(
-            user_id=request.user_id,
-            type='withdrawal',
-            amount_kopeks=-request.amount_kopeks,
-            description=f'Вывод реферального баланса (заявка #{request.id})',
-            is_completed=True,
-            completed_at=datetime.utcnow(),
-        )
-        db.add(withdrawal_tx)
-
-        # Обновляем статус заявки
+        # Обновляем статус заявки (баланс НЕ списываем — это при complete)
         request.status = WithdrawalRequestStatus.APPROVED.value
         request.processed_by = admin_id
         request.processed_at = datetime.utcnow()
@@ -513,14 +593,47 @@ class ReferralWithdrawalService:
 
     async def complete_request(
         self, db: AsyncSession, request_id: int, admin_id: int, comment: str | None = None
-    ) -> bool:
-        """Отмечает заявку как выполненную (деньги переведены)."""
+    ) -> tuple[bool, str]:
+        """
+        Отмечает заявку как выполненную (деньги переведены).
+        Списывает средства с баланса и создаёт транзакцию.
+        """
         result = await db.execute(select(WithdrawalRequest).where(WithdrawalRequest.id == request_id))
         request = result.scalar_one_or_none()
 
         if not request or request.status != WithdrawalRequestStatus.APPROVED.value:
-            return False
+            return False, 'Заявка не найдена или не одобрена'
 
+        # Получаем пользователя для списания с баланса
+        user_result = await db.execute(select(User).where(User.id == request.user_id))
+        user = user_result.scalar_one_or_none()
+
+        if not user:
+            return False, 'Пользователь не найден'
+
+        # Проверяем фактический баланс (защита от ухода в минус)
+        if user.balance_kopeks < request.amount_kopeks:
+            return (
+                False,
+                f'Недостаточно средств на балансе пользователя. '
+                f'Баланс: {user.balance_kopeks / 100:.0f}₽, '
+                f'запрошено: {request.amount_kopeks / 100:.0f}₽',
+            )
+
+        user.balance_kopeks -= request.amount_kopeks
+
+        # Создаём транзакцию списания
+        withdrawal_tx = Transaction(
+            user_id=request.user_id,
+            type='withdrawal',
+            amount_kopeks=-request.amount_kopeks,
+            description=f'Вывод реферального баланса (заявка #{request.id})',
+            is_completed=True,
+            completed_at=datetime.utcnow(),
+        )
+        db.add(withdrawal_tx)
+
+        # Обновляем статус заявки
         request.status = WithdrawalRequestStatus.COMPLETED.value
         request.processed_by = admin_id
         request.processed_at = datetime.utcnow()
@@ -528,7 +641,7 @@ class ReferralWithdrawalService:
             request.admin_comment = (request.admin_comment or '') + f'\n{comment}'
 
         await db.commit()
-        return True
+        return True, ''
 
     # ==================== ФОРМАТИРОВАНИЕ ====================
 
@@ -555,6 +668,14 @@ class ReferralWithdrawalService:
             )
             + '\n'
         )
+
+        if stats['approved'] > 0:
+            text += (
+                texts.t('REFERRAL_WITHDRAWAL_STATS_APPROVED', '✅ Одобрено (ожидает перевода): <b>{amount}</b>').format(
+                    amount=texts.format_price(stats['approved'])
+                )
+                + '\n'
+            )
 
         if stats['pending'] > 0:
             text += (
@@ -605,7 +726,9 @@ class ReferralWithdrawalService:
             text += f'• Заработано с рефералов: {bs["total_earned"] / 100:.0f}₽\n'
             text += f'• Собственные пополнения: {bs["own_deposits"] / 100:.0f}₽\n'
             text += f'• Потрачено: {bs["spending"] / 100:.0f}₽\n'
-            text += f'• Уже выведено: {bs["withdrawn"] / 100:.0f}₽\n'
+            text += f'• Выведено: {bs["withdrawn"] / 100:.0f}₽\n'
+            if bs.get('approved', 0) > 0:
+                text += f'• Одобрено (ожидает): {bs["approved"] / 100:.0f}₽\n'
 
         # Статистика по рефералам
         if 'referral_deposits' in details:

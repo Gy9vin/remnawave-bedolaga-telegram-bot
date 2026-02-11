@@ -27,6 +27,7 @@ from .branding import router as branding_router
 from .contests import router as contests_router
 from .info import router as info_router
 from .media import router as media_router
+from .modem import router as modem_router
 from .notifications import router as notifications_router
 from .oauth import router as oauth_router
 from .polls import router as polls_router
@@ -50,6 +51,7 @@ router = APIRouter(prefix='/cabinet', tags=['Cabinet'])
 router.include_router(auth_router)
 router.include_router(oauth_router)
 router.include_router(subscription_router)
+router.include_router(modem_router)
 router.include_router(balance_router)
 router.include_router(referral_router)
 # Notifications router MUST be before tickets router to avoid route conflict

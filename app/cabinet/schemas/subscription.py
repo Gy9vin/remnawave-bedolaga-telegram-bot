@@ -80,6 +80,7 @@ class RenewalOptionResponse(BaseModel):
     price_rubles: float
     discount_percent: int = 0
     original_price_kopeks: int | None = None
+    modem_price_kopeks: int = 0
 
 
 class RenewalRequest(BaseModel):

@@ -319,20 +319,26 @@ async def get_renewal_options(
     """Get available subscription renewal options with prices."""
     options = []
 
+    # Загружаем подписку для проверки модема и устройств
+    subscription = await get_subscription_by_user_id(db, user.id)
+
     # В режиме тарифов берём цены из тарифа пользователя
     tariff_prices = None
     tariff_periods = None
     extra_devices = 0
     tariff_device_price = 0
     if settings.is_tariffs_mode():
-        subscription = await get_subscription_by_user_id(db, user.id)
         if subscription and subscription.tariff_id:
             tariff = await get_tariff_by_id(db, subscription.tariff_id)
             if tariff and tariff.period_prices:
                 tariff_prices = {int(k): v for k, v in tariff.period_prices.items()}
                 tariff_periods = sorted(tariff_prices.keys())
                 # Учитываем докупленные устройства сверх тарифа
-                extra_devices = max(0, (subscription.device_limit or 0) - (tariff.device_limit or 0))
+                # Модем добавляет +1 к device_limit, но оплачивается отдельно
+                effective_device_limit = subscription.device_limit or 0
+                if getattr(subscription, 'modem_enabled', False):
+                    effective_device_limit = max(0, effective_device_limit - 1)
+                extra_devices = max(0, effective_device_limit - (tariff.device_limit or 0))
                 if extra_devices > 0:
                     tariff_device_price = tariff.device_price_kopeks or settings.PRICE_PER_DEVICE
 
@@ -359,6 +365,21 @@ async def get_renewal_options(
             months = calculate_months_from_days(period)
             price_kopeks += extra_devices * tariff_device_price * months
 
+        # Добавляем стоимость модема за период продления
+        modem_price_kopeks = 0
+        if subscription and getattr(subscription, 'modem_enabled', False) and settings.is_modem_enabled():
+            from app.utils.pricing_utils import calculate_months_from_days
+
+            modem_months = calculate_months_from_days(period)
+            modem_price_per_month = settings.get_modem_price_per_month()
+            modem_base_price = modem_price_per_month * modem_months
+            modem_discount = settings.get_modem_period_discount(modem_months)
+            if modem_discount > 0:
+                modem_price_kopeks = modem_base_price - (modem_base_price * modem_discount // 100)
+            else:
+                modem_price_kopeks = modem_base_price
+            price_kopeks += modem_price_kopeks
+
         # Apply user's discount if any
         discount_percent = 0
         if hasattr(user, 'get_promo_discount'):
@@ -377,6 +398,7 @@ async def get_renewal_options(
                 price_rubles=price_kopeks / 100,
                 discount_percent=discount_percent,
                 original_price_kopeks=original_price,
+                modem_price_kopeks=modem_price_kopeks,
             )
         )
 
@@ -425,14 +447,34 @@ async def renew_subscription(
         )
 
     # Добавляем стоимость докупленных устройств сверх тарифа
+    # Модем добавляет +1 к device_limit, но оплачивается отдельно
+    modem_enabled = getattr(user.subscription, 'modem_enabled', False)
     if tariff:
-        extra_devices = max(0, (user.subscription.device_limit or 0) - (tariff.device_limit or 0))
+        effective_device_limit = user.subscription.device_limit or 0
+        if modem_enabled:
+            effective_device_limit = max(0, effective_device_limit - 1)
+        extra_devices = max(0, effective_device_limit - (tariff.device_limit or 0))
         if extra_devices > 0:
             from app.utils.pricing_utils import calculate_months_from_days
 
             device_price = tariff.device_price_kopeks or settings.PRICE_PER_DEVICE
             months = calculate_months_from_days(request.period_days)
             price_kopeks += extra_devices * device_price * months
+
+    # Добавляем стоимость модема за период продления
+    modem_price_kopeks = 0
+    if modem_enabled and settings.is_modem_enabled():
+        from app.utils.pricing_utils import calculate_months_from_days
+
+        modem_months = calculate_months_from_days(request.period_days)
+        modem_price_per_month = settings.get_modem_price_per_month()
+        modem_base_price = modem_price_per_month * modem_months
+        modem_discount = settings.get_modem_period_discount(modem_months)
+        if modem_discount > 0:
+            modem_price_kopeks = modem_base_price - (modem_base_price * modem_discount // 100)
+        else:
+            modem_price_kopeks = modem_base_price
+        price_kopeks += modem_price_kopeks
 
     # Apply promo group discount
     original_price_kopeks = price_kopeks
@@ -565,6 +607,7 @@ async def renew_subscription(
         'message': 'Subscription renewed successfully',
         'new_end_date': user.subscription.end_date.isoformat(),
         'amount_paid_kopeks': price_kopeks,
+        'modem_price_kopeks': modem_price_kopeks,
     }
 
     # Add discount info to response

@@ -4,9 +4,11 @@
 """
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import aiohttp
 
@@ -31,6 +33,10 @@ class BlacklistService:
         # Кэш результатов проверки: {telegram_id: (is_blacklisted, reason, timestamp)}
         self._check_cache: dict[int, tuple[bool, str | None, float]] = {}
         self._cache_ttl = 300  # 5 минут
+        # Локальные исключения из чёрного списка
+        self._exceptions_path = Path('data/blacklist_exceptions.json')
+        self._exceptions: dict[str, dict] = {}
+        self._load_exceptions()
 
     def is_blacklist_check_enabled(self) -> bool:
         """Проверяет, включена ли проверка черного списка"""
@@ -51,6 +57,70 @@ class BlacklistService:
     def is_admin(self, telegram_id: int) -> bool:
         """Проверяет, является ли пользователь администратором"""
         return settings.is_admin(telegram_id)
+
+    # ========== Исключения из чёрного списка ==========
+
+    def _load_exceptions(self) -> None:
+        """Загружает исключения из JSON файла."""
+        try:
+            if self._exceptions_path.exists():
+                raw = self._exceptions_path.read_text(encoding='utf-8')
+                self._exceptions = json.loads(raw) if raw.strip() else {}
+            else:
+                self._exceptions = {}
+        except Exception as exc:
+            logger.error(f'Ошибка загрузки исключений blacklist: {exc}')
+            self._exceptions = {}
+
+    def _save_exceptions(self) -> bool:
+        """Сохраняет исключения в JSON файл."""
+        try:
+            self._exceptions_path.parent.mkdir(parents=True, exist_ok=True)
+            self._exceptions_path.write_text(
+                json.dumps(self._exceptions, ensure_ascii=False, indent=2),
+                encoding='utf-8',
+            )
+            return True
+        except Exception as exc:
+            logger.error(f'Ошибка сохранения исключений blacklist: {exc}')
+            return False
+
+    def is_excepted(self, telegram_id: int) -> bool:
+        """Проверяет, есть ли пользователь в исключениях."""
+        return str(telegram_id) in self._exceptions
+
+    def add_exception(self, telegram_id: int, comment: str = '') -> bool:
+        """Добавляет пользователя в исключения."""
+        self._exceptions[str(telegram_id)] = {
+            'comment': comment,
+            'added_at': datetime.utcnow().isoformat(),
+        }
+        # Сбрасываем кэш для этого пользователя
+        self._check_cache.pop(telegram_id, None)
+        saved = self._save_exceptions()
+        if saved:
+            logger.info(f'Пользователь {telegram_id} добавлен в исключения blacklist: {comment}')
+        return saved
+
+    def remove_exception(self, telegram_id: int) -> bool:
+        """Убирает пользователя из исключений."""
+        key = str(telegram_id)
+        if key not in self._exceptions:
+            return False
+        del self._exceptions[key]
+        self._check_cache.pop(telegram_id, None)
+        saved = self._save_exceptions()
+        if saved:
+            logger.info(f'Пользователь {telegram_id} убран из исключений blacklist')
+        return saved
+
+    def get_exceptions(self) -> dict[str, dict]:
+        """Возвращает все исключения."""
+        return self._exceptions.copy()
+
+    def get_exceptions_count(self) -> int:
+        """Возвращает количество исключений."""
+        return len(self._exceptions)
 
     async def update_blacklist(self) -> bool:
         """
@@ -156,6 +226,11 @@ class BlacklistService:
 
         # Проверяем, является ли пользователь администратором и нужно ли его игнорировать
         if self.should_ignore_admins() and self.is_admin(telegram_id):
+            self._check_cache[telegram_id] = (False, None, now)
+            return False, None
+
+        # Проверяем локальные исключения
+        if self.is_excepted(telegram_id):
             self._check_cache[telegram_id] = (False, None, now)
             return False, None
 

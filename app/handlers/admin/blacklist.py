@@ -42,6 +42,8 @@ URL к черному списку: <code>{url_text}</code>
 Действия:
 """
 
+    exceptions_count = blacklist_service.get_exceptions_count()
+
     keyboard = [
         [
             types.InlineKeyboardButton(
@@ -53,6 +55,12 @@ URL к черному списку: <code>{url_text}</code>
             types.InlineKeyboardButton(
                 text='📋 Просмотреть список' if is_enabled else '📋 Просмотр (откл.)',
                 callback_data='admin_blacklist_view',
+            )
+        ],
+        [
+            types.InlineKeyboardButton(
+                text=f'🛡️ Исключения ({exceptions_count})',
+                callback_data='admin_blacklist_exceptions',
             )
         ],
         [
@@ -254,22 +262,194 @@ async def process_blacklist_url(message: types.Message, db_user: User, state: FS
     await state.clear()
 
 
+@admin_required
+@error_handler
+async def show_blacklist_exceptions(callback: types.CallbackQuery, db_user: User, state: FSMContext):
+    """Показывает список исключений из чёрного списка."""
+    exceptions = blacklist_service.get_exceptions()
+
+    if not exceptions:
+        text = '🛡️ <b>Исключения из чёрного списка</b>\n\nСписок пуст'
+    else:
+        text = f'🛡️ <b>Исключения из чёрного списка ({len(exceptions)})</b>\n\n'
+        for tg_id, info in list(exceptions.items())[:20]:
+            comment = info.get('comment', '')
+            comment_text = f' — {comment}' if comment else ''
+            text += f'<code>{tg_id}</code>{comment_text}\n'
+
+        if len(exceptions) > 20:
+            text += f'\n... и ещё {len(exceptions) - 20}'
+
+    keyboard = [
+        [types.InlineKeyboardButton(text='➕ Добавить исключение', callback_data='admin_blacklist_exc_add')],
+    ]
+
+    # Кнопки удаления для каждого исключения (первые 10)
+    for tg_id in list(exceptions.keys())[:10]:
+        keyboard.append(
+            [
+                types.InlineKeyboardButton(
+                    text=f'❌ Убрать {tg_id}',
+                    callback_data=f'admin_bl_exc_rm_{tg_id}',
+                )
+            ]
+        )
+
+    keyboard.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_blacklist_settings')])
+
+    await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def start_add_exception(callback: types.CallbackQuery, db_user: User, state: FSMContext):
+    """Запрашивает Telegram ID для добавления в исключения."""
+    await callback.message.edit_text(
+        '🛡️ <b>Добавить исключение</b>\n\n'
+        'Введите Telegram ID пользователя, которого нужно исключить из чёрного списка.\n\n'
+        'Можно добавить комментарий через пробел:\n'
+        '<code>123456789 ошибочно добавлен</code>\n\n'
+        'Для отмены нажмите кнопку Назад.',
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_blacklist_exceptions')]]
+        ),
+    )
+    await state.set_state(BlacklistStates.waiting_for_exception_id)
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def process_add_exception(message: types.Message, db_user: User, state: FSMContext):
+    """Обрабатывает ввод Telegram ID для исключения."""
+    if await state.get_state() != BlacklistStates.waiting_for_exception_id.state:
+        return
+
+    text = message.text.strip()
+
+    if text.lower() in ['/cancel', 'отмена', 'cancel']:
+        await state.clear()
+        await message.answer(
+            'Отменено',
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [types.InlineKeyboardButton(text='🛡️ Исключения', callback_data='admin_blacklist_exceptions')]
+                ]
+            ),
+        )
+        return
+
+    # Парсим ID и комментарий
+    parts = text.split(maxsplit=1)
+    try:
+        telegram_id = int(parts[0])
+    except ValueError:
+        await message.answer(
+            '❌ Неверный формат. Введите числовой Telegram ID.',
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_blacklist_exceptions')]
+                ]
+            ),
+        )
+        return
+
+    comment = parts[1] if len(parts) > 1 else ''
+
+    success = blacklist_service.add_exception(telegram_id, comment)
+    await state.clear()
+
+    if success:
+        # Проверяем, был ли пользователь в blacklist
+        bl_user = await blacklist_service.get_user_by_telegram_id(telegram_id)
+        in_blacklist = '(найден в чёрном списке)' if bl_user else '(не найден в чёрном списке)'
+
+        await message.answer(
+            f'✅ Пользователь <code>{telegram_id}</code> добавлен в исключения {in_blacklist}',
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [types.InlineKeyboardButton(text='🛡️ Исключения', callback_data='admin_blacklist_exceptions')],
+                    [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_blacklist_settings')],
+                ]
+            ),
+        )
+    else:
+        await message.answer(
+            '❌ Ошибка сохранения исключения',
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [types.InlineKeyboardButton(text='🛡️ Исключения', callback_data='admin_blacklist_exceptions')]
+                ]
+            ),
+        )
+
+
+@admin_required
+@error_handler
+async def remove_exception(callback: types.CallbackQuery, db_user: User, state: FSMContext):
+    """Удаляет пользователя из исключений."""
+    # Извлекаем telegram_id из callback_data: admin_bl_exc_rm_{id}
+    try:
+        telegram_id = int(callback.data.split('admin_bl_exc_rm_')[1])
+    except (ValueError, IndexError):
+        await callback.answer('❌ Ошибка', show_alert=True)
+        return
+
+    success = blacklist_service.remove_exception(telegram_id)
+
+    if success:
+        await callback.answer(f'Пользователь {telegram_id} убран из исключений')
+    else:
+        await callback.answer(f'Пользователь {telegram_id} не найден в исключениях', show_alert=True)
+
+    # Обновляем список
+    exceptions = blacklist_service.get_exceptions()
+
+    if not exceptions:
+        text = '🛡️ <b>Исключения из чёрного списка</b>\n\nСписок пуст'
+    else:
+        text = f'🛡️ <b>Исключения из чёрного списка ({len(exceptions)})</b>\n\n'
+        for tg_id, info in list(exceptions.items())[:20]:
+            comment = info.get('comment', '')
+            comment_text = f' — {comment}' if comment else ''
+            text += f'<code>{tg_id}</code>{comment_text}\n'
+
+    keyboard = [
+        [types.InlineKeyboardButton(text='➕ Добавить исключение', callback_data='admin_blacklist_exc_add')],
+    ]
+    for tg_id in list(exceptions.keys())[:10]:
+        keyboard.append(
+            [
+                types.InlineKeyboardButton(
+                    text=f'❌ Убрать {tg_id}',
+                    callback_data=f'admin_bl_exc_rm_{tg_id}',
+                )
+            ]
+        )
+    keyboard.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_blacklist_settings')])
+
+    await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+
 def register_blacklist_handlers(dp):
     """
     Регистрация обработчиков черного списка
     """
     # Обработчик показа настроек черного списка
-    # Этот обработчик нужно будет вызывать из меню пользователей или отдельно
     dp.callback_query.register(show_blacklist_settings, lambda c: c.data == 'admin_blacklist_settings')
 
     # Обработчики для взаимодействия с черным списком
     dp.callback_query.register(toggle_blacklist, lambda c: c.data == 'admin_blacklist_toggle')
-
     dp.callback_query.register(update_blacklist, lambda c: c.data == 'admin_blacklist_update')
-
     dp.callback_query.register(show_blacklist_users, lambda c: c.data == 'admin_blacklist_view')
-
     dp.callback_query.register(start_set_blacklist_url, lambda c: c.data == 'admin_blacklist_set_url')
 
-    # Обработчик сообщений для установки URL (работает только в нужном состоянии)
+    # Исключения из чёрного списка
+    dp.callback_query.register(show_blacklist_exceptions, lambda c: c.data == 'admin_blacklist_exceptions')
+    dp.callback_query.register(start_add_exception, lambda c: c.data == 'admin_blacklist_exc_add')
+    dp.callback_query.register(remove_exception, lambda c: c.data and c.data.startswith('admin_bl_exc_rm_'))
+
+    # Обработчики сообщений (FSM)
     dp.message.register(process_blacklist_url, StateFilter(BlacklistStates.waiting_for_blacklist_url))
+    dp.message.register(process_add_exception, StateFilter(BlacklistStates.waiting_for_exception_id))

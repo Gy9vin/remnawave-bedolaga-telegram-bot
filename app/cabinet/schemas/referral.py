@@ -76,3 +76,51 @@ class ReferralTermsResponse(BaseModel):
     first_topup_bonus_rubles: float
     inviter_bonus_kopeks: int
     inviter_bonus_rubles: float
+
+
+class WithdrawalBalanceResponse(BaseModel):
+    """Withdrawal balance stats."""
+
+    balance_kopeks: int  # Фактический баланс пользователя
+    total_earned_kopeks: int
+    referral_spent_kopeks: int
+    withdrawn_kopeks: int  # Реально выведено (COMPLETED)
+    approved_kopeks: int = 0  # Одобрено, ожидает перевода (APPROVED)
+    pending_kopeks: int  # На рассмотрении (PENDING)
+    available_kopeks: int
+    can_withdraw: bool
+    cannot_withdraw_reason: str | None = None
+    min_amount_kopeks: int
+    cooldown_days: int
+    only_referral_mode: bool
+    explanation: str | None = None  # Понятное объяснение для пользователя
+
+
+class WithdrawalCreateRequest(BaseModel):
+    """Request to create a withdrawal."""
+
+    amount_kopeks: int
+    payment_details: str
+
+
+class WithdrawalRequestResponse(BaseModel):
+    """Withdrawal request info."""
+
+    id: int
+    amount_kopeks: int
+    status: str
+    payment_details: str | None = None
+    risk_score: int = 0
+    admin_comment: str | None = None
+    created_at: datetime
+    processed_at: datetime | None = None
+
+
+class WithdrawalRequestsListResponse(BaseModel):
+    """Paginated withdrawal requests list."""
+
+    items: list[WithdrawalRequestResponse]
+    total: int
+    page: int
+    per_page: int
+    pages: int
