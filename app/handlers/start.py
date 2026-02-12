@@ -427,12 +427,27 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
         texts = get_texts(user.language)
 
         if referral_code and not user.referred_by_id:
-            await message.answer(
-                texts.t(
-                    'ALREADY_REGISTERED_REFERRAL',
-                    'ℹ️ Вы уже зарегистрированы в системе. Реферальная ссылка не может быть применена.',
+            # Try to apply referral retroactively (e.g., user was created via Cabinet before bot processed the code)
+            recently_created = user.created_at and (datetime.utcnow() - user.created_at).total_seconds() < 600
+            if recently_created:
+                try:
+                    referrer = await get_user_by_referral_code(db, referral_code)
+                    if referrer and referrer.id != user.id:
+                        user.referred_by_id = referrer.id
+                        await db.commit()
+                        await process_referral_registration(db, user.id, referrer.id, message.bot)
+                        logger.info(
+                            f'✅ Реферальный код {referral_code} применён ретроактивно для пользователя {user.telegram_id}'
+                        )
+                except Exception as e:
+                    logger.error(f'Ошибка применения реферального кода ретроактивно: {e}')
+            else:
+                await message.answer(
+                    texts.t(
+                        'ALREADY_REGISTERED_REFERRAL',
+                        'ℹ️ Вы уже зарегистрированы в системе. Реферальная ссылка не может быть применена.',
+                    )
                 )
-            )
 
         if campaign:
             try:
