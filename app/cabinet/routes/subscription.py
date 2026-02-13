@@ -671,7 +671,7 @@ async def get_traffic_packages(
         if tariff and not tariff.allow_traffic_topup:
             return []
 
-    packages = settings.get_traffic_packages()
+    packages = settings.get_traffic_topup_packages()
     result = []
 
     for pkg in packages:
@@ -784,7 +784,7 @@ async def purchase_traffic(
                 )
 
         # Получаем цену из глобальных настроек
-        packages = settings.get_traffic_packages()
+        packages = settings.get_traffic_topup_packages()
         matching_pkg = next((pkg for pkg in packages if pkg['gb'] == request.gb and pkg.get('enabled', True)), None)
         if not matching_pkg:
             raise HTTPException(
@@ -2557,7 +2557,7 @@ async def save_traffic_cart(
                 detail='Докупка трафика отключена',
             )
 
-        packages = settings.get_traffic_packages()
+        packages = settings.get_traffic_topup_packages()
         matching_pkg = next((pkg for pkg in packages if pkg['gb'] == request.gb and pkg.get('enabled', True)), None)
         if not matching_pkg:
             raise HTTPException(

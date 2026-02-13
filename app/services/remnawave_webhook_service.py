@@ -17,9 +17,11 @@ from typing import Any
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import delete
+from sqlalchemy.exc import PendingRollbackError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
+from app.config import settings
 from app.database.crud.subscription import (
     deactivate_subscription,
     decrement_subscription_server_counts,
@@ -28,7 +30,7 @@ from app.database.crud.subscription import (
     reactivate_subscription,
     update_subscription_usage,
 )
-from app.database.crud.user import get_user_by_remnawave_uuid, get_user_by_telegram_id
+from app.database.crud.user import get_user_by_id, get_user_by_remnawave_uuid, get_user_by_telegram_id
 from app.database.models import Subscription, SubscriptionServer, SubscriptionStatus, User
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
@@ -57,6 +59,26 @@ _TEXT_KEY_TO_NOTIFICATION_TYPE: dict[str, NotificationType] = {
     'WEBHOOK_USER_NOT_CONNECTED': NotificationType.WEBHOOK_USER_NOT_CONNECTED,
     'WEBHOOK_DEVICE_ADDED': NotificationType.WEBHOOK_DEVICE_ADDED,
     'WEBHOOK_DEVICE_DELETED': NotificationType.WEBHOOK_DEVICE_DELETED,
+}
+
+# Mapping from locale text_key to the Settings toggle that controls it
+_TEXT_KEY_TO_SETTING: dict[str, str] = {
+    'WEBHOOK_SUB_EXPIRED': 'WEBHOOK_NOTIFY_SUB_EXPIRED',
+    'WEBHOOK_SUB_DISABLED': 'WEBHOOK_NOTIFY_SUB_STATUS',
+    'WEBHOOK_SUB_ENABLED': 'WEBHOOK_NOTIFY_SUB_STATUS',
+    'WEBHOOK_SUB_LIMITED': 'WEBHOOK_NOTIFY_SUB_LIMITED',
+    'WEBHOOK_SUB_TRAFFIC_RESET': 'WEBHOOK_NOTIFY_TRAFFIC_RESET',
+    'WEBHOOK_SUB_DELETED': 'WEBHOOK_NOTIFY_SUB_DELETED',
+    'WEBHOOK_SUB_REVOKED': 'WEBHOOK_NOTIFY_SUB_REVOKED',
+    'WEBHOOK_SUB_EXPIRES_72H': 'WEBHOOK_NOTIFY_SUB_EXPIRING',
+    'WEBHOOK_SUB_EXPIRES_48H': 'WEBHOOK_NOTIFY_SUB_EXPIRING',
+    'WEBHOOK_SUB_EXPIRES_24H': 'WEBHOOK_NOTIFY_SUB_EXPIRING',
+    'WEBHOOK_SUB_EXPIRED_24H_AGO': 'WEBHOOK_NOTIFY_SUB_EXPIRED',
+    'WEBHOOK_SUB_FIRST_CONNECTED': 'WEBHOOK_NOTIFY_FIRST_CONNECTED',
+    'WEBHOOK_SUB_BANDWIDTH_THRESHOLD': 'WEBHOOK_NOTIFY_BANDWIDTH_THRESHOLD',
+    'WEBHOOK_USER_NOT_CONNECTED': 'WEBHOOK_NOTIFY_NOT_CONNECTED',
+    'WEBHOOK_DEVICE_ADDED': 'WEBHOOK_NOTIFY_DEVICES',
+    'WEBHOOK_DEVICE_DELETED': 'WEBHOOK_NOTIFY_DEVICES',
 }
 
 # Admin event display names for notification messages
@@ -171,7 +193,7 @@ class RemnaWaveWebhookService:
         try:
             await handler(db, user, subscription, data)
             return True
-        except StaleDataError:
+        except (StaleDataError, PendingRollbackError):
             logger.warning(
                 'RemnaWave webhook %s: entity already deleted for user %s (concurrent deletion)',
                 event_name,
@@ -353,7 +375,7 @@ class RemnaWaveWebhookService:
         sub_text = texts.get('MY_SUBSCRIPTION_BUTTON', 'My subscription')
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [build_miniapp_or_callback_button(text=buy_text, callback_data='subscription_add_traffic')],
+                [build_miniapp_or_callback_button(text=buy_text, callback_data='buy_traffic')],
                 [build_miniapp_or_callback_button(text=sub_text, callback_data='subscription')],
             ]
         )
@@ -371,7 +393,19 @@ class RemnaWaveWebhookService:
         Telegram users receive a bot message; email-only users receive
         an email and/or WebSocket notification through the unified
         notification delivery service.
+
+        Respects WEBHOOK_NOTIFY_USER_ENABLED master toggle and
+        per-event toggles from Settings.
         """
+        if not settings.WEBHOOK_NOTIFY_USER_ENABLED:
+            logger.debug('Webhook user notifications disabled globally, skipping %s', text_key)
+            return
+
+        setting_key = _TEXT_KEY_TO_SETTING.get(text_key)
+        if setting_key and not getattr(settings, setting_key, True):
+            logger.debug('Webhook notification %s disabled via %s', text_key, setting_key)
+            return
+
         texts = get_texts(user.language)
         message = texts.get(text_key)
         if not message:
@@ -574,18 +608,47 @@ class RemnaWaveWebhookService:
     async def _handle_user_deleted(
         self, db: AsyncSession, user: User, subscription: Subscription | None, data: dict
     ) -> None:
+        user_id = user.id
+        sub_id = subscription.id if subscription else None
+
         if subscription:
             self._stamp_webhook_update(subscription)
 
             # Decrement server counters BEFORE clearing connected_squads
             await decrement_subscription_server_counts(db, subscription)
 
+            # Re-fetch after potential rollback inside decrement_subscription_server_counts
+            try:
+                await db.refresh(subscription)
+            except Exception:
+                # Subscription was cascade-deleted, re-fetch user and skip subscription updates
+                logger.warning(
+                    'Webhook: subscription %s already deleted for user %s, skipping subscription cleanup',
+                    sub_id,
+                    user_id,
+                )
+                subscription = None
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+
+                try:
+                    user = await get_user_by_id(db, user_id)
+                except Exception:
+                    logger.error('Webhook: user %s not found after rollback', user_id)
+                    return
+                if not user:
+                    logger.error('Webhook: user %s not found after rollback', user_id)
+                    return
+
+        if subscription:
             if subscription.status != SubscriptionStatus.EXPIRED.value:
                 subscription.status = SubscriptionStatus.EXPIRED.value
                 logger.info(
                     'Webhook: subscription %s marked expired (user deleted in panel) for user %s',
-                    subscription.id,
-                    user.id,
+                    sub_id,
+                    user_id,
                 )
 
             # Clear subscription data — panel user no longer exists
@@ -596,7 +659,7 @@ class RemnaWaveWebhookService:
             subscription.updated_at = datetime.now(UTC).replace(tzinfo=None)
 
             # Remove SubscriptionServer link rows
-            await db.execute(delete(SubscriptionServer).where(SubscriptionServer.subscription_id == subscription.id))
+            await db.execute(delete(SubscriptionServer).where(SubscriptionServer.subscription_id == sub_id))
 
         # Clear remnawave linkage
         if user.remnawave_uuid:

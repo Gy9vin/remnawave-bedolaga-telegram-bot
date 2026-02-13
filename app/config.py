@@ -110,6 +110,20 @@ class Settings(BaseSettings):
     REMNAWAVE_WEBHOOK_PATH: str = '/remnawave-webhook'
     REMNAWAVE_WEBHOOK_SECRET: str | None = None  # HMAC-SHA256 shared secret (min 32 chars)
 
+    # Webhook user notification toggles (what Telegram messages users receive from webhook events)
+    WEBHOOK_NOTIFY_USER_ENABLED: bool = True
+    WEBHOOK_NOTIFY_SUB_STATUS: bool = True
+    WEBHOOK_NOTIFY_SUB_EXPIRED: bool = True
+    WEBHOOK_NOTIFY_SUB_EXPIRING: bool = True
+    WEBHOOK_NOTIFY_SUB_LIMITED: bool = True
+    WEBHOOK_NOTIFY_TRAFFIC_RESET: bool = True
+    WEBHOOK_NOTIFY_SUB_DELETED: bool = True
+    WEBHOOK_NOTIFY_SUB_REVOKED: bool = True
+    WEBHOOK_NOTIFY_FIRST_CONNECTED: bool = True
+    WEBHOOK_NOTIFY_NOT_CONNECTED: bool = True
+    WEBHOOK_NOTIFY_BANDWIDTH_THRESHOLD: bool = True
+    WEBHOOK_NOTIFY_DEVICES: bool = True
+
     TRIAL_DURATION_DAYS: int = 3
     TRIAL_TRAFFIC_LIMIT_GB: int = 10
     TRIAL_DEVICE_LIMIT: int = 2
@@ -167,11 +181,6 @@ class Settings(BaseSettings):
     DEVICES_SELECTION_ENABLED: bool = True
     DEVICES_SELECTION_DISABLED_AMOUNT: int | None = None
 
-    # Настройки модема
-    MODEM_ENABLED: bool = False
-    MODEM_PRICE_PER_MONTH: int = 10000  # Цена модема в копейках за месяц
-    MODEM_PERIOD_DISCOUNTS: str = ''  # Скидки на модем: "месяцев:процент,месяцев:процент" (напр. "3:10,6:15,12:20")
-
     BASE_PROMO_GROUP_PERIOD_DISCOUNTS_ENABLED: bool = False
     BASE_PROMO_GROUP_PERIOD_DISCOUNTS: str = ''
 
@@ -186,7 +195,7 @@ class Settings(BaseSettings):
     # Режим продаж подписок:
     # - classic: классический режим (выбор серверов, трафика, устройств, периода отдельно)
     # - tariffs: режим тарифов (готовые пакеты с фиксированными параметрами)
-    SALES_MODE: str = 'classic'
+    SALES_MODE: str = 'tariffs'
 
     # ID тарифа для триала в режиме тарифов (0 = использовать стандартные настройки триала)
     # Если указан ID тарифа, параметры триала берутся из тарифа (traffic_limit_gb, device_limit, allowed_squads)
@@ -512,7 +521,7 @@ class Settings(BaseSettings):
     KASSA_AI_PAYMENT_SYSTEM_ID: int = 44
 
     MAIN_MENU_MODE: str = 'default'
-    CONNECT_BUTTON_MODE: str = 'guide'
+    CONNECT_BUTTON_MODE: str = 'miniapp_subscription'
     MINIAPP_CUSTOM_URL: str = ''
     MINIAPP_STATIC_PATH: str = 'miniapp'
     MINIAPP_PURCHASE_URL: str = ''
@@ -1061,7 +1070,7 @@ class Settings(BaseSettings):
         if not sanitized_username:
             sanitized_username = f'user_{identifier}'
 
-        return sanitized_username[:64]
+        return sanitized_username[:36]
 
     @staticmethod
     def parse_daily_time_list(raw_value: str | None) -> list[time]:
@@ -1533,9 +1542,6 @@ class Settings(BaseSettings):
     def get_disabled_mode_device_limit(self) -> int | None:
         return self.get_devices_selection_disabled_amount()
 
-    def is_modem_enabled(self) -> bool:
-        return bool(self.MODEM_ENABLED)
-
     def is_tariffs_mode(self) -> bool:
         """Проверяет, включен ли режим продаж 'Тарифы'."""
         return self.SALES_MODE == 'tariffs'
@@ -1546,67 +1552,11 @@ class Settings(BaseSettings):
 
     def get_sales_mode(self) -> str:
         """Возвращает текущий режим продаж."""
-        return self.SALES_MODE if self.SALES_MODE in ('classic', 'tariffs') else 'classic'
+        return self.SALES_MODE if self.SALES_MODE in ('classic', 'tariffs') else 'tariffs'
 
     def get_trial_tariff_id(self) -> int:
         """Возвращает ID тарифа для триала (0 = использовать стандартные настройки)."""
         return max(0, self.TRIAL_TARIFF_ID)
-
-    def get_modem_price_per_month(self) -> int:
-        try:
-            value = int(self.MODEM_PRICE_PER_MONTH)
-        except (TypeError, ValueError):
-            logger.warning(
-                'Некорректное значение MODEM_PRICE_PER_MONTH: %s',
-                self.MODEM_PRICE_PER_MONTH,
-            )
-            return 10000
-        return max(0, value)
-
-    def get_modem_period_discounts(self) -> dict[int, int]:
-        """Возвращает скидки на модем по количеству месяцев: {месяцев: процент_скидки}"""
-        try:
-            config_str = (self.MODEM_PERIOD_DISCOUNTS or '').strip()
-            if not config_str:
-                return {}
-
-            discounts: dict[int, int] = {}
-            for part in config_str.split(','):
-                part = part.strip()
-                if not part:
-                    continue
-
-                months_and_discount = part.split(':')
-                if len(months_and_discount) != 2:
-                    continue
-
-                months_str, discount_str = months_and_discount
-                try:
-                    months = int(months_str.strip())
-                    discount_percent = int(discount_str.strip())
-                except ValueError:
-                    continue
-
-                discounts[months] = max(0, min(100, discount_percent))
-
-            return discounts
-        except Exception:
-            return {}
-
-    def get_modem_period_discount(self, months: int) -> int:
-        """Возвращает процент скидки для указанного количества месяцев"""
-        if months <= 0:
-            return 0
-
-        discounts = self.get_modem_period_discounts()
-
-        # Ищем точное совпадение или ближайшее меньшее
-        applicable_discount = 0
-        for discount_months, discount_percent in sorted(discounts.items()):
-            if months >= discount_months:
-                applicable_discount = discount_percent
-
-        return applicable_discount
 
     def is_trial_paid_activation_enabled(self) -> bool:
         # TRIAL_PAYMENT_ENABLED - главный переключатель платной активации

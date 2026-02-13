@@ -6,6 +6,7 @@ from typing import Optional
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.config import settings
 from app.database.crud.notification import clear_notifications
@@ -294,23 +295,22 @@ async def replace_subscription(
     if update_server_counters:
         try:
             from app.database.crud.server_squad import (
-                add_user_to_servers,
                 get_server_ids_by_uuids,
-                remove_user_from_servers,
+                update_server_user_counts,
             )
 
             squads_to_remove = old_squads - new_squads
             squads_to_add = new_squads - old_squads
 
-            if squads_to_remove:
-                server_ids = await get_server_ids_by_uuids(db, list(squads_to_remove))
-                if server_ids:
-                    await remove_user_from_servers(db, sorted(server_ids))
+            remove_ids = await get_server_ids_by_uuids(db, list(squads_to_remove)) if squads_to_remove else []
+            add_ids = await get_server_ids_by_uuids(db, list(squads_to_add)) if squads_to_add else []
 
-            if squads_to_add:
-                server_ids = await get_server_ids_by_uuids(db, list(squads_to_add))
-                if server_ids:
-                    await add_user_to_servers(db, sorted(server_ids))
+            if remove_ids or add_ids:
+                await update_server_user_counts(
+                    db,
+                    add_ids=add_ids or None,
+                    remove_ids=remove_ids or None,
+                )
 
             logger.info(
                 '♻️ Обновлены параметры подписки %s: удалено сквадов %s, добавлено %s',
@@ -625,6 +625,9 @@ async def decrement_subscription_server_counts(
     if not subscription:
         return
 
+    # Save ID before any DB operations that might invalidate the ORM object
+    sub_id = subscription.id
+
     server_ids: set[int] = set()
 
     if subscription_servers is not None:
@@ -633,12 +636,12 @@ async def decrement_subscription_server_counts(
                 server_ids.add(sub_server.server_squad_id)
     else:
         try:
-            ids_from_links = await get_subscription_server_ids(db, subscription.id)
+            ids_from_links = await get_subscription_server_ids(db, sub_id)
             server_ids.update(ids_from_links)
         except Exception as error:
             logger.error(
                 '⚠️ Не удалось получить серверы подписки %s для уменьшения счетчика: %s',
-                subscription.id,
+                sub_id,
                 error,
             )
 
@@ -652,7 +655,7 @@ async def decrement_subscription_server_counts(
         except Exception as error:
             logger.error(
                 '⚠️ Не удалось сопоставить сквады подписки %s с серверами: %s',
-                subscription.id,
+                sub_id,
                 error,
             )
 
@@ -662,12 +665,20 @@ async def decrement_subscription_server_counts(
     try:
         from app.database.crud.server_squad import remove_user_from_servers
 
-        await remove_user_from_servers(db, sorted(server_ids))
+        # Use savepoint so StaleDataError rollback doesn't affect the parent transaction
+        async with db.begin_nested():
+            await remove_user_from_servers(db, list(server_ids))
+    except StaleDataError:
+        logger.warning(
+            '⚠️ Подписка %s уже удалена (StaleDataError), пропускаем декремент серверов %s',
+            sub_id,
+            list(server_ids),
+        )
     except Exception as error:
         logger.error(
             '⚠️ Ошибка уменьшения счетчика пользователей серверов %s для подписки %s: %s',
             list(server_ids),
-            subscription.id,
+            sub_id,
             error,
         )
 

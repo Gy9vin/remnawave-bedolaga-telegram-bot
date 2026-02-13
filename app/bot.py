@@ -63,7 +63,6 @@ from app.handlers.stars_payments import register_stars_handlers
 from app.middlewares.auth import AuthMiddleware
 from app.middlewares.blacklist import BlacklistMiddleware
 from app.middlewares.button_stats import ButtonStatsMiddleware
-from app.middlewares.display_name_restriction import DisplayNameRestrictionMiddleware
 from app.middlewares.global_error import GlobalErrorMiddleware
 from app.middlewares.logging import LoggingMiddleware
 from app.middlewares.maintenance import MaintenanceMiddleware
@@ -124,10 +123,6 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     dp.message.middleware(blacklist_middleware)
     dp.callback_query.middleware(blacklist_middleware)
     dp.pre_checkout_query.middleware(blacklist_middleware)
-    display_name_middleware = DisplayNameRestrictionMiddleware()
-    dp.message.middleware(display_name_middleware)
-    dp.callback_query.middleware(display_name_middleware)
-    dp.pre_checkout_query.middleware(display_name_middleware)
     dp.message.middleware(ThrottlingMiddleware())
     dp.callback_query.middleware(ThrottlingMiddleware())
 
@@ -215,6 +210,26 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
         logger.info('Мониторинг техработ отключен настройками')
 
     logger.info('🛡️ GlobalErrorMiddleware активирован - бот защищен от устаревших callback queries')
+
+    # Validate CONNECT_BUTTON_MODE dependencies
+    if not settings.get_happ_cryptolink_redirect_template():
+        if settings.CONNECT_BUTTON_MODE == 'happ_cryptolink':
+            logger.warning(
+                '⚠️ CONNECT_BUTTON_MODE=happ_cryptolink, но HAPP_CRYPTOLINK_REDIRECT_TEMPLATE не задан! '
+                'Кнопка "Подключиться" не будет отображаться.'
+            )
+        elif settings.CONNECT_BUTTON_MODE == 'guide':
+            logger.warning(
+                '⚠️ CONNECT_BUTTON_MODE=guide, но HAPP_CRYPTOLINK_REDIRECT_TEMPLATE не задан! '
+                'Кнопка "Подключиться" в гайдах не будет работать — Telegram не поддерживает '
+                'кастомные схемы (happ://, v2ray://) в inline-кнопках без HTTPS-редиректа.'
+            )
+    if settings.CONNECT_BUTTON_MODE == 'miniapp_custom' and not settings.MINIAPP_CUSTOM_URL:
+        logger.warning(
+            '⚠️ CONNECT_BUTTON_MODE=miniapp_custom, но MINIAPP_CUSTOM_URL не задан! '
+            'Кнопка "Подключиться" не будет работать.'
+        )
+
     logger.info('Бот успешно настроен')
 
     return bot, dp
