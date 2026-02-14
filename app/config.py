@@ -202,6 +202,14 @@ class Settings(BaseSettings):
     # Длительность триала всё равно берётся из TRIAL_DURATION_DAYS
     TRIAL_TARIFF_ID: int = 0
 
+    # ===== МОДЕМ =====
+    # Включить функционал подключения модема (доп. устройство за отдельную плату)
+    MODEM_ENABLED: bool = False
+    # Цена модема в копейках за месяц
+    MODEM_PRICE_PER_MONTH: int = 10000
+    # Скидки на модем за длительный срок: "месяцев:процент,месяцев:процент"
+    MODEM_PERIOD_DISCOUNTS: str = '3:15,6:20,12:25'
+
     # Настройки докупки трафика
     TRAFFIC_TOPUP_ENABLED: bool = True  # Включить/выключить функцию докупки трафика
     # Пакеты для докупки трафика (формат: "гб:цена:enabled", пустая строка = использовать TRAFFIC_PACKAGES_CONFIG)
@@ -1926,6 +1934,47 @@ class Settings(BaseSettings):
 
         discounts = self.get_base_promo_group_period_discounts()
         return discounts.get(period_days, 0)
+
+    # ===== Модем =====
+
+    def is_modem_enabled(self) -> bool:
+        """Проверяет, включена ли функция модема."""
+        return self.MODEM_ENABLED
+
+    def get_modem_price_per_month(self) -> int:
+        """Возвращает цену модема в копейках за месяц."""
+        return self.MODEM_PRICE_PER_MONTH
+
+    def get_modem_period_discount(self, months: int) -> int:
+        """Возвращает процент скидки на модем для заданного количества месяцев."""
+        try:
+            config_str = (self.MODEM_PERIOD_DISCOUNTS or '').strip()
+            if not config_str:
+                return 0
+
+            discounts: dict[int, int] = {}
+            for part in config_str.split(','):
+                part = part.strip()
+                if not part:
+                    continue
+                pieces = part.split(':')
+                if len(pieces) != 2:
+                    continue
+                try:
+                    m = int(pieces[0].strip())
+                    d = int(pieces[1].strip())
+                    discounts[m] = max(0, min(100, d))
+                except ValueError:
+                    continue
+
+            # Найти максимальную скидку для периода <= months
+            best_discount = 0
+            for threshold, discount in sorted(discounts.items()):
+                if months >= threshold:
+                    best_discount = discount
+            return best_discount
+        except Exception:
+            return 0
 
     def is_maintenance_auto_enable(self) -> bool:
         return self.MAINTENANCE_AUTO_ENABLE

@@ -236,6 +236,7 @@ def _subscription_to_response(
         next_daily_charge_at=next_daily_charge_at,
         tariff_id=tariff_id,
         tariff_name=tariff_name,
+        modem_enabled=getattr(subscription, 'modem_enabled', False) or False,
     )
 
 

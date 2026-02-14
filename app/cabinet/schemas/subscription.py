@@ -56,6 +56,8 @@ class SubscriptionData(BaseModel):
     next_daily_charge_at: datetime | None = None  # When next daily charge will happen
     tariff_id: int | None = None
     tariff_name: str | None = None
+    # Modem
+    modem_enabled: bool = False
 
     class Config:
         from_attributes = True
