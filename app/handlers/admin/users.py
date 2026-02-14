@@ -9,7 +9,7 @@ from aiogram import Dispatcher, F, types
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -1937,17 +1937,20 @@ async def process_add_single_referral(
     if not registration_success:
         logger.warning(f'⚠️ process_referral_registration вернула False для {referral.id}')
 
-    # Проверить было ли пополнение >= 100₽
+    # Найти первое пополнение (как в оригинальной логике process_referral_topup)
     result = await db.execute(
-        select(func.coalesce(func.sum(Transaction.amount_kopeks), 0)).where(
+        select(Transaction.amount_kopeks)
+        .where(
             and_(
                 Transaction.user_id == referral.id,
                 Transaction.type == TransactionType.DEPOSIT.value,
                 Transaction.is_completed.is_(True),
             )
         )
+        .order_by(Transaction.created_at.asc())
+        .limit(1)
     )
-    total_topup_kopeks = result.scalar() or 0
+    first_topup_kopeks = result.scalar() or 0
 
     response_lines = [
         texts.t(
@@ -1968,17 +1971,23 @@ async def process_add_single_referral(
         '',
     ]
 
-    # Если было пополнение >= 100₽ - начислить бонусы
-    if total_topup_kopeks >= settings.REFERRAL_MINIMUM_TOPUP_KOPEKS:
+    # Если было пополнение >= минимума - начислить бонусы
+    if first_topup_kopeks >= settings.REFERRAL_MINIMUM_TOPUP_KOPEKS:
+        # Рассчитываем бонус реферера по той же логике что и в process_referral_topup:
+        # max(фиксированный бонус, процент от первого пополнения)
+        commission_percent = get_effective_referral_commission_percent(referrer)
+        commission_amount = int(first_topup_kopeks * commission_percent / 100)
+        inviter_bonus = max(settings.REFERRAL_INVITER_BONUS_KOPEKS, commission_amount)
+
         response_lines.append(
             texts.t(
                 'ADMIN_USER_ADD_REFERRAL_TOPUP_DETECTED',
                 '💰 <b>Обнаружено пополнение:</b> {amount}\n🎁 <b>Начисляем подарочные балансы...</b>',
-            ).format(amount=settings.format_price(total_topup_kopeks))
+            ).format(amount=settings.format_price(first_topup_kopeks))
         )
 
-        # Вызвать process_referral_topup для начисления бонусов
-        topup_success = await process_referral_topup(db, referral.id, total_topup_kopeks, message.bot)
+        # Передаём сумму первого пополнения (как в оригинальной логике)
+        topup_success = await process_referral_topup(db, referral.id, first_topup_kopeks, message.bot)
 
         if topup_success:
             response_lines.append('')
@@ -1990,12 +1999,7 @@ async def process_add_single_referral(
                     '• Реферер получил: {referrer_bonus}',
                 ).format(
                     referral_bonus=settings.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS),
-                    referrer_bonus=settings.format_price(
-                        max(
-                            settings.REFERRAL_INVITER_BONUS_KOPEKS,
-                            int(total_topup_kopeks * settings.REFERRAL_COMMISSION_PERCENT / 100),
-                        )
-                    ),
+                    referrer_bonus=settings.format_price(inviter_bonus),
                 )
             )
         else:
@@ -4432,7 +4436,7 @@ async def _calculate_subscription_period_price(
     if not device_limit or device_limit < 0:
         device_limit = settings.DEFAULT_DEVICE_LIMIT
 
-    total_price, _ = await service.calculate_subscription_price(
+    total_price, _ = await service.calculate_subscription_price_with_months(
         period_days=period_days,
         traffic_gb=traffic_limit_gb,
         server_squad_ids=server_ids,

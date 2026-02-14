@@ -1392,8 +1392,14 @@ async def _build_tariff_response(
     # Вычисляем доп. устройства для текущего тарифа (при продлении)
     extra_devices_count = 0
     extra_device_price_per_month = 0
+    modem_enabled = False
     if subscription and subscription.tariff_id == tariff.id:
-        extra_devices_count = max(0, (subscription.device_limit or 0) - (tariff.device_limit or 0))
+        effective_device_limit = subscription.device_limit or 0
+        modem_enabled = getattr(subscription, 'modem_enabled', False)
+        # Модем добавляет +1 к device_limit, но оплачивается отдельно
+        if modem_enabled:
+            effective_device_limit = max(0, effective_device_limit - 1)
+        extra_devices_count = max(0, effective_device_limit - (tariff.device_limit or 0))
         if extra_devices_count > 0:
             extra_device_price_per_month = tariff.device_price_kopeks or settings.PRICE_PER_DEVICE
 
@@ -1443,6 +1449,31 @@ async def _build_tariff_response(
                 period_data['extra_devices_cost_label'] = settings.format_price(extra_devices_cost)
                 period_data['base_tariff_price_kopeks'] = base_tariff_price
                 period_data['base_tariff_price_label'] = settings.format_price(base_tariff_price)
+
+            # Информация о стоимости модема
+            if modem_enabled and settings.is_modem_enabled():
+                from app.utils.pricing_utils import calculate_months_from_days
+
+                modem_months = calculate_months_from_days(period_days)
+                modem_price_per_month = settings.get_modem_price_per_month()
+                modem_base_price = modem_price_per_month * modem_months
+                modem_discount = settings.get_modem_period_discount(modem_months)
+                if modem_discount > 0:
+                    modem_price_kopeks = modem_base_price - (modem_base_price * modem_discount // 100)
+                else:
+                    modem_price_kopeks = modem_base_price
+                period_data['modem_price_kopeks'] = modem_price_kopeks
+                # Добавляем стоимость модема к итоговой цене периода
+                period_data['price_kopeks'] = final_price + modem_price_kopeks
+                period_data['price_label'] = settings.format_price(final_price + modem_price_kopeks)
+                per_month_with_modem = (
+                    (final_price + modem_price_kopeks) // months if months > 0 else final_price + modem_price_kopeks
+                )
+                period_data['price_per_month_kopeks'] = per_month_with_modem
+                period_data['price_per_month_label'] = settings.format_price(per_month_with_modem)
+                if discount_percent > 0:
+                    period_data['original_price_kopeks'] = original_price + modem_price_kopeks
+                    period_data['original_price_label'] = settings.format_price(original_price + modem_price_kopeks)
 
             # Add discount info if discount is applied
             if discount_percent > 0:

@@ -241,6 +241,7 @@ class PurchasePricingResult:
     final_total: int
     months: int
     details: dict[str, Any]
+    modem_price_kopeks: int = 0
 
 
 @dataclass
@@ -460,7 +461,11 @@ class MiniAppSubscriptionPurchaseService:
         # чтобы при продлении клиент получил стандартные значения платной подписки
         is_trial_subscription = subscription and getattr(subscription, 'is_trial', False)
         if subscription and getattr(subscription, 'device_limit', None) and not is_trial_subscription:
-            default_devices = max(default_devices, int(subscription.device_limit))
+            effective_device_limit = int(subscription.device_limit)
+            # Модем добавляет +1 к device_limit, но оплачивается отдельно
+            if getattr(subscription, 'modem_enabled', False):
+                effective_device_limit = max(1, effective_device_limit - 1)
+            default_devices = max(default_devices, effective_device_limit)
 
         fixed_traffic_value = None
         if settings.is_traffic_fixed():
@@ -825,6 +830,20 @@ class MiniAppSubscriptionPurchaseService:
             + details['devices_price_per_month'] * months
         )
 
+        # Добавляем стоимость модема если он подключён у пользователя
+        modem_price_kopeks = 0
+        subscription = context.subscription
+        if subscription and getattr(subscription, 'modem_enabled', False) and settings.is_modem_enabled():
+            modem_months = calculate_months_from_days(selection.period.days)
+            modem_price_per_month = settings.get_modem_price_per_month()
+            modem_base_price = modem_price_per_month * modem_months
+            modem_discount = settings.get_modem_period_discount(modem_months)
+            if modem_discount > 0:
+                modem_price_kopeks = modem_base_price - (modem_base_price * modem_discount // 100)
+            else:
+                modem_price_kopeks = modem_base_price
+            total_without_promo += modem_price_kopeks
+
         final_total, promo_discount_value, promo_percent = _apply_promo_offer_discount(
             context.user, total_without_promo
         )
@@ -832,7 +851,7 @@ class MiniAppSubscriptionPurchaseService:
         discounted_total = total_without_promo
 
         is_valid = validate_pricing_calculation(
-            details.get('base_price', 0),
+            details.get('base_price', 0) + modem_price_kopeks,
             (details.get('traffic_price_per_month', 0) - details.get('traffic_discount_total', 0) // max(1, months))
             + (details.get('servers_price_per_month', 0) - details.get('servers_discount_total', 0) // max(1, months))
             + (details.get('devices_price_per_month', 0) - details.get('devices_discount_total', 0) // max(1, months)),
@@ -847,13 +866,14 @@ class MiniAppSubscriptionPurchaseService:
             selection=selection,
             server_ids=server_ids,
             server_prices_for_period=list(details.get('servers_individual_prices', [])),
-            base_original_total=base_original_total,
+            base_original_total=base_original_total + modem_price_kopeks,
             discounted_total=discounted_total,
             promo_discount_value=promo_discount_value,
             promo_discount_percent=promo_percent,
             final_total=final_total,
             months=months,
             details=details,
+            modem_price_kopeks=modem_price_kopeks,
         )
 
     async def _calculate_base_total(
@@ -1025,6 +1045,17 @@ class MiniAppSubscriptionPurchaseService:
                 devices_item['discountLabel'] = devices_discount_note
             breakdown.append(devices_item)
 
+        if pricing.modem_price_kopeks:
+            breakdown.append(
+                {
+                    'label': texts.t(
+                        'MINIAPP_PURCHASE_BREAKDOWN_MODEM',
+                        'Modem',
+                    ),
+                    'value': texts.format_price(pricing.modem_price_kopeks),
+                }
+            )
+
         if pricing.promo_discount_value:
             promo_item = {
                 'label': texts.t(
@@ -1173,7 +1204,11 @@ class MiniAppSubscriptionPurchaseService:
             subscription.is_trial = False
             subscription.status = SubscriptionStatus.ACTIVE.value
             subscription.traffic_limit_gb = pricing.selection.traffic_value
-            subscription.device_limit = pricing.selection.devices
+            # Если модем подключён, добавляем +1 к device_limit (модем оплачивается отдельно)
+            device_limit = pricing.selection.devices
+            if getattr(subscription, 'modem_enabled', False):
+                device_limit += 1
+            subscription.device_limit = device_limit
             subscription.connected_squads = pricing.selection.servers
 
             extension_base_date = now
@@ -1189,12 +1224,16 @@ class MiniAppSubscriptionPurchaseService:
             await db.commit()
             await db.refresh(subscription)
         else:
+            # При новой подписке модем не может быть подключён, но на всякий случай
+            new_device_limit = pricing.selection.devices
+            if context.subscription and getattr(context.subscription, 'modem_enabled', False):
+                new_device_limit += 1
             subscription = await create_paid_subscription(
                 db=db,
                 user_id=user.id,
                 duration_days=pricing.selection.period.days,
                 traffic_limit_gb=pricing.selection.traffic_value,
-                device_limit=pricing.selection.devices,
+                device_limit=new_device_limit,
                 connected_squads=pricing.selection.servers,
                 update_server_counters=False,
             )
