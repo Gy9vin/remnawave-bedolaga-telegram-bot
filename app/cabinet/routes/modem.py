@@ -99,6 +99,9 @@ async def get_modem_price(
         'final_price_label': settings.format_price(price_info.final_price),
         'balance_kopeks': user.balance_kopeks,
         'balance_sufficient': user.balance_kopeks >= price_info.final_price,
+        'missing_amount_kopeks': max(0, price_info.final_price - user.balance_kopeks),
+        'missing_amount_label': settings.format_price(max(0, price_info.final_price - user.balance_kopeks)),
+        'price_label': settings.format_price(price_info.final_price),
     }
 
 
