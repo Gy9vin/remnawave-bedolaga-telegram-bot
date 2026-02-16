@@ -1,8 +1,8 @@
 import json
-import logging
 from pathlib import Path
 
 import qrcode
+import structlog
 from aiogram import Dispatcher, F, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -25,7 +25,7 @@ from app.utils.user_utils import (
 )
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
@@ -793,14 +793,23 @@ async def confirm_withdrawal_request(callback: types.CallbackQuery, db_user: Use
 
     try:
         notification_service = AdminNotificationService(callback.bot)
-        withdrawal_topic_id = settings.REFERRAL_WITHDRAWAL_NOTIFICATIONS_TOPIC_ID
-        sent = await notification_service.send_withdrawal_request_notification(
-            admin_text, reply_markup=admin_keyboard, topic_id=withdrawal_topic_id
-        )
-        if not sent:
-            logger.warning(f'Уведомление о выводе #{request.id} не отправлено (chat_id={notification_service.chat_id})')
+        await notification_service.send_to_admins(admin_text, keyboard=admin_keyboard)
     except Exception as e:
-        logger.error(f'Ошибка отправки уведомления админам о заявке на вывод: {e}')
+        logger.error('Ошибка отправки уведомления админам о заявке на вывод', error=e)
+
+    # Уведомление в топик, если настроено
+    topic_id = settings.REFERRAL_WITHDRAWAL_NOTIFICATIONS_TOPIC_ID
+    if topic_id and settings.ADMIN_NOTIFICATIONS_CHAT_ID:
+        try:
+            await callback.bot.send_message(
+                chat_id=settings.ADMIN_NOTIFICATIONS_CHAT_ID,
+                message_thread_id=topic_id,
+                text=admin_text,
+                reply_markup=admin_keyboard,
+                parse_mode='HTML',
+            )
+        except Exception as e:
+            logger.error('Ошибка отправки уведомления в топик о заявке на вывод', error=e)
 
     # Отвечаем пользователю
     text = texts.t(

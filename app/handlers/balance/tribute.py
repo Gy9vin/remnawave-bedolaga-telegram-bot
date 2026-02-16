@@ -1,5 +1,4 @@
-import logging
-
+import structlog
 from aiogram import types
 
 from app.config import settings
@@ -9,7 +8,7 @@ from app.utils.decorators import error_handler
 from app.utils.payment_checks import check_topup_restriction
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @error_handler
@@ -77,7 +76,7 @@ async def start_tribute_payment(
         )
 
     except Exception as e:
-        logger.error(f'Ошибка создания Tribute платежа: {e}')
+        logger.error('Ошибка создания Tribute платежа', error=e)
         await callback.answer('❌ Ошибка создания платежа', show_alert=True)
 
     await callback.answer()

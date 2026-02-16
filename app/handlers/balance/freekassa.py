@@ -1,7 +1,6 @@
 """Handler for Freekassa balance top-up."""
 
-import logging
-
+import structlog
 from aiogram import types
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,7 +16,7 @@ from app.utils.decorators import error_handler
 from app.utils.payment_checks import check_topup_restriction
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def _create_freekassa_payment_and_respond(
@@ -120,11 +119,7 @@ async def _create_freekassa_payment_and_respond(
             parse_mode='HTML',
         )
 
-    logger.info(
-        'Freekassa payment created: user=%s, amount=%s₽',
-        db_user.telegram_id,
-        amount_rub,
-    )
+    logger.info('Freekassa payment created: user amount=₽', telegram_id=db_user.telegram_id, amount_rub=amount_rub)
 
 
 @error_handler

@@ -1,8 +1,8 @@
 import html
-import logging
 from datetime import datetime
 from typing import Any
 
+import structlog
 from aiogram import types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -20,7 +20,7 @@ from app.utils.decorators import error_handler
 from app.utils.payment_checks import check_topup_restriction
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def _get_available_pal24_methods() -> list[str]:
@@ -225,7 +225,7 @@ async def _send_pal24_payment_message(
                 )
                 await db.commit()
         except Exception as error:  # pragma: no cover - diagnostics
-            logger.warning('Не удалось сохранить сообщение PayPalych: %s', error)
+            logger.warning('Не удалось сохранить сообщение PayPalych', error=error)
 
         await state.update_data(
             pal24_invoice_message_id=invoice_message.message_id,
@@ -235,15 +235,15 @@ async def _send_pal24_payment_message(
         await state.clear()
 
         logger.info(
-            'Создан PayPalych счет для пользователя %s: %s₽, ID: %s, метод: %s',
-            db_user.telegram_id,
-            amount_kopeks / 100,
-            bill_id,
-            payment_method,
+            'Создан PayPalych счет для пользователя : ₽, ID метод',
+            telegram_id=db_user.telegram_id,
+            amount_kopeks=amount_kopeks / 100,
+            bill_id=bill_id,
+            payment_method=payment_method,
         )
 
     except Exception as error:
-        logger.error(f'Ошибка создания PayPalych платежа: {error}')
+        logger.error('Ошибка создания PayPalych платежа', error=error)
         await message.answer(
             texts.t(
                 'PAL24_PAYMENT_ERROR',
@@ -363,16 +363,13 @@ async def process_pal24_payment_amount(
     try:
         await message.delete()
     except Exception as delete_error:  # pragma: no cover - depends on bot rights
-        logger.warning('Не удалось удалить сообщение с суммой PayPalych: %s', delete_error)
+        logger.warning('Не удалось удалить сообщение с суммой PayPalych', delete_error=delete_error)
 
     if prompt_message_id:
         try:
             await message.bot.delete_message(prompt_chat_id, prompt_message_id)
         except Exception as delete_error:  # pragma: no cover - diagnostic
-            logger.warning(
-                'Не удалось удалить сообщение с запросом суммы PayPalych: %s',
-                delete_error,
-            )
+            logger.warning('Не удалось удалить сообщение с запросом суммы PayPalych', delete_error=delete_error)
 
     if len(available_methods) == 1:
         await _send_pal24_payment_message(
@@ -645,5 +642,5 @@ async def check_pal24_payment_status(
                 raise
 
     except Exception as e:
-        logger.error(f'Ошибка проверки статуса PayPalych: {e}')
+        logger.error('Ошибка проверки статуса PayPalych', error=e)
         await callback.answer('❌ Ошибка проверки статуса', show_alert=True)

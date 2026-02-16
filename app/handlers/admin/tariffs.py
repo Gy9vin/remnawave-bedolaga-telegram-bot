@@ -1,7 +1,6 @@
 """Управление тарифами в админ-панели."""
 
-import logging
-
+import structlog
 from aiogram import Dispatcher, F, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -26,7 +25,7 @@ from app.utils.decorators import admin_required, error_handler
 from app.utils.pricing_utils import format_period_description
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 ITEMS_PER_PAGE = 10
 

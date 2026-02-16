@@ -4,18 +4,16 @@
 """
 
 import asyncio
-import json
-import logging
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import aiohttp
+import structlog
 
 from app.config import settings
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class BlacklistService:
@@ -33,10 +31,6 @@ class BlacklistService:
         # Кэш результатов проверки: {telegram_id: (is_blacklisted, reason, timestamp)}
         self._check_cache: dict[int, tuple[bool, str | None, float]] = {}
         self._cache_ttl = 300  # 5 минут
-        # Локальные исключения из чёрного списка
-        self._exceptions_path = Path('data/blacklist_exceptions.json')
-        self._exceptions: dict[str, dict] = {}
-        self._load_exceptions()
 
     def is_blacklist_check_enabled(self) -> bool:
         """Проверяет, включена ли проверка черного списка"""
@@ -58,70 +52,6 @@ class BlacklistService:
         """Проверяет, является ли пользователь администратором"""
         return settings.is_admin(telegram_id)
 
-    # ========== Исключения из чёрного списка ==========
-
-    def _load_exceptions(self) -> None:
-        """Загружает исключения из JSON файла."""
-        try:
-            if self._exceptions_path.exists():
-                raw = self._exceptions_path.read_text(encoding='utf-8')
-                self._exceptions = json.loads(raw) if raw.strip() else {}
-            else:
-                self._exceptions = {}
-        except Exception as exc:
-            logger.error(f'Ошибка загрузки исключений blacklist: {exc}')
-            self._exceptions = {}
-
-    def _save_exceptions(self) -> bool:
-        """Сохраняет исключения в JSON файл."""
-        try:
-            self._exceptions_path.parent.mkdir(parents=True, exist_ok=True)
-            self._exceptions_path.write_text(
-                json.dumps(self._exceptions, ensure_ascii=False, indent=2),
-                encoding='utf-8',
-            )
-            return True
-        except Exception as exc:
-            logger.error(f'Ошибка сохранения исключений blacklist: {exc}')
-            return False
-
-    def is_excepted(self, telegram_id: int) -> bool:
-        """Проверяет, есть ли пользователь в исключениях."""
-        return str(telegram_id) in self._exceptions
-
-    def add_exception(self, telegram_id: int, comment: str = '') -> bool:
-        """Добавляет пользователя в исключения."""
-        self._exceptions[str(telegram_id)] = {
-            'comment': comment,
-            'added_at': datetime.utcnow().isoformat(),
-        }
-        # Сбрасываем кэш для этого пользователя
-        self._check_cache.pop(telegram_id, None)
-        saved = self._save_exceptions()
-        if saved:
-            logger.info(f'Пользователь {telegram_id} добавлен в исключения blacklist: {comment}')
-        return saved
-
-    def remove_exception(self, telegram_id: int) -> bool:
-        """Убирает пользователя из исключений."""
-        key = str(telegram_id)
-        if key not in self._exceptions:
-            return False
-        del self._exceptions[key]
-        self._check_cache.pop(telegram_id, None)
-        saved = self._save_exceptions()
-        if saved:
-            logger.info(f'Пользователь {telegram_id} убран из исключений blacklist')
-        return saved
-
-    def get_exceptions(self) -> dict[str, dict]:
-        """Возвращает все исключения."""
-        return self._exceptions.copy()
-
-    def get_exceptions_count(self) -> int:
-        """Возвращает количество исключений."""
-        return len(self._exceptions)
-
     async def update_blacklist(self) -> bool:
         """
         Обновляет черный список из GitHub репозитория
@@ -142,7 +72,7 @@ class BlacklistService:
                 # Получаем содержимое файла
                 async with aiohttp.ClientSession() as session, session.get(raw_url) as response:
                     if response.status != 200:
-                        logger.error(f'Ошибка при получении черного списка: статус {response.status}')
+                        logger.error('Ошибка при получении черного списка: статус', status=response.status)
                         return False
 
                     content = await response.text()
@@ -186,20 +116,22 @@ class BlacklistService:
                     except ValueError:
                         # Если не удается преобразовать в число, это не ID
                         logger.warning(
-                            f'Неверный формат строки {line_num} в черном списке - первое значение не является числом: {line}'
+                            'Неверный формат строки в черном списке первое значение не является числом',
+                            line_num=line_num,
+                            line=line,
                         )
 
                 self.blacklist_data = blacklist_data
                 self.last_update = datetime.utcnow()
                 self._check_cache.clear()
-                logger.info(f'Черный список успешно обновлен. Найдено {len(blacklist_data)} записей')
+                logger.info('Черный список успешно обновлен. Найдено записей', blacklist_data_count=len(blacklist_data))
                 return True
 
             except ValueError as e:
-                logger.error(f'Ошибка при парсинге ID из черного списка: {e}')
+                logger.error('Ошибка при парсинге ID из черного списка', error=e)
                 return False
             except Exception as e:
-                logger.error(f'Ошибка при обновлении черного списка: {e}')
+                logger.error('Ошибка при обновлении черного списка', error=e)
                 return False
 
     async def is_user_blacklisted(self, telegram_id: int, username: str | None = None) -> tuple[bool, str | None]:
@@ -229,11 +161,6 @@ class BlacklistService:
             self._check_cache[telegram_id] = (False, None, now)
             return False, None
 
-        # Проверяем локальные исключения
-        if self.is_excepted(telegram_id):
-            self._check_cache[telegram_id] = (False, None, now)
-            return False, None
-
         # Если черный список пуст или устарел, обновляем его
         interval_hours = self.get_blacklist_update_interval_hours()
         required_interval = timedelta(hours=interval_hours)
@@ -243,7 +170,7 @@ class BlacklistService:
         # Проверяем по Telegram ID
         for bl_id, bl_username, bl_reason in self.blacklist_data:
             if bl_id == telegram_id:
-                logger.info(f'Пользователь {telegram_id} найден в черном списке по ID: {bl_reason}')
+                logger.info('Пользователь найден в черном списке по ID', telegram_id=telegram_id, bl_reason=bl_reason)
                 self._check_cache[telegram_id] = (True, bl_reason, now)
                 return True, bl_reason
 
@@ -253,7 +180,10 @@ class BlacklistService:
             for bl_id, bl_username, bl_reason in self.blacklist_data:
                 if bl_username and bl_username.lower().lstrip('@') == username_lower:
                     logger.info(
-                        f'Пользователь {username} ({telegram_id}) найден в черном списке по username: {bl_reason}'
+                        'Пользователь найден в черном списке по username',
+                        username=username,
+                        telegram_id=telegram_id,
+                        bl_reason=bl_reason,
                     )
                     self._check_cache[telegram_id] = (True, bl_reason, now)
                     return True, bl_reason

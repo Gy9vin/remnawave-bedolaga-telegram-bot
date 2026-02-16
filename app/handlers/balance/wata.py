@@ -1,6 +1,6 @@
-import logging
 from datetime import datetime
 
+import structlog
 from aiogram import types
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import update
@@ -16,7 +16,7 @@ from app.utils.decorators import error_handler
 from app.utils.payment_checks import check_topup_restriction
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @error_handler
@@ -131,7 +131,7 @@ async def process_wata_payment_amount(
             language=db_user.language,
         )
     except Exception as error:  # pragma: no cover - handled by decorator logs
-        logger.exception('Ошибка создания WATA платежа: %s', error)
+        logger.exception('Ошибка создания WATA платежа', error=error)
         result = None
 
     if not result or not result.get('payment_url'):
@@ -194,16 +194,13 @@ async def process_wata_payment_amount(
     try:
         await message.delete()
     except Exception as delete_error:  # pragma: no cover - depends on bot rights
-        logger.warning('Не удалось удалить сообщение с суммой WATA: %s', delete_error)
+        logger.warning('Не удалось удалить сообщение с суммой WATA', delete_error=delete_error)
 
     if prompt_message_id:
         try:
             await message.bot.delete_message(prompt_chat_id, prompt_message_id)
         except Exception as delete_error:  # pragma: no cover - diagnostic
-            logger.warning(
-                'Не удалось удалить сообщение с запросом суммы WATA: %s',
-                delete_error,
-            )
+            logger.warning('Не удалось удалить сообщение с запросом суммы WATA', delete_error=delete_error)
 
     invoice_message = await message.answer(
         message_text,
@@ -228,7 +225,7 @@ async def process_wata_payment_amount(
             )
             await db.commit()
     except Exception as error:  # pragma: no cover - diagnostics
-        logger.warning('Не удалось сохранить сообщение WATA: %s', error)
+        logger.warning('Не удалось сохранить сообщение WATA', error=error)
 
     await state.update_data(
         wata_invoice_message_id=invoice_message.message_id,
@@ -238,10 +235,10 @@ async def process_wata_payment_amount(
     await state.clear()
 
     logger.info(
-        'Создан WATA платеж для пользователя %s: %s₽, ссылка: %s',
-        db_user.telegram_id,
-        amount_kopeks / 100,
-        payment_link_id,
+        'Создан WATA платеж для пользователя : ₽, ссылка',
+        telegram_id=db_user.telegram_id,
+        amount_kopeks=amount_kopeks / 100,
+        payment_link_id=payment_link_id,
     )
 
 
@@ -271,7 +268,7 @@ async def check_wata_payment_status(
         if user and getattr(user, 'language', None):
             user_language = user.language
     except Exception as error:
-        logger.debug('Не удалось получить пользователя для WATA статуса: %s', error)
+        logger.debug('Не удалось получить пользователя для WATA статуса', error=error)
 
     texts = get_texts(user_language)
 
