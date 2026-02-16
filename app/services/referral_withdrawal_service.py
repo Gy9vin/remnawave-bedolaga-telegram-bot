@@ -559,10 +559,12 @@ class ReferralWithdrawalService:
         if request.status != WithdrawalRequestStatus.PENDING.value:
             return False, 'Заявка уже обработана'
 
-        # Проверяем, что баланс всё ещё достаточен
+        # Проверяем, что баланс достаточен (исключая текущую заявку из pending,
+        # иначе она блокирует сама себя)
         stats = await self.get_referral_balance_stats(db, request.user_id)
-        if request.amount_kopeks > stats['available_total']:
-            return False, f'Недостаточно средств у пользователя. Доступно: {stats["available_total"] / 100:.0f}₽'
+        available_plus_self = stats['available_total'] + request.amount_kopeks
+        if request.amount_kopeks > available_plus_self:
+            return False, f'Недостаточно средств у пользователя. Доступно: {available_plus_self / 100:.0f}₽'
 
         # Обновляем статус заявки (баланс НЕ списываем — это при complete)
         request.status = WithdrawalRequestStatus.APPROVED.value
