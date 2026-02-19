@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -37,6 +37,7 @@ def _serialize_broadcast(broadcast: BroadcastHistory) -> BroadcastResponse:
         total_count=broadcast.total_count,
         sent_count=broadcast.sent_count,
         failed_count=broadcast.failed_count,
+        blocked_count=broadcast.blocked_count or 0,
         status=broadcast.status,
         admin_id=broadcast.admin_id,
         admin_name=broadcast.admin_name,
@@ -138,7 +139,7 @@ async def stop_broadcast(
         broadcast.status = 'cancelling'
     else:
         broadcast.status = 'cancelled'
-        broadcast.completed_at = datetime.utcnow()
+        broadcast.completed_at = datetime.now(UTC)
 
     await db.commit()
     await db.refresh(broadcast)

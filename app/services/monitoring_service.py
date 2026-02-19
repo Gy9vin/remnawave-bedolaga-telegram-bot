@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -45,19 +45,19 @@ from app.database.models import (
     TicketStatus,
     User,
     UserPromoGroup,
+    UserStatus,
 )
 from app.external.remnawave_api import (
     RemnaWaveAPIError,
     RemnaWaveUser,
     TrafficLimitStrategy,
-    UserStatus,
+    UserStatus as RemnaWaveUserStatus,
 )
 from app.localization.texts import get_texts
 from app.services.notification_delivery_service import (
     notification_delivery_service,
 )
 from app.services.notification_settings_service import NotificationSettingsService
-from app.services.payment_service import PaymentService
 from app.services.promo_offer_service import promo_offer_service
 from app.services.subscription_service import SubscriptionService
 from app.utils.cache import cache
@@ -83,10 +83,9 @@ class MonitoringService:
     def __init__(self, bot=None):
         self.is_running = False
         self.subscription_service = SubscriptionService()
-        self.payment_service = PaymentService()
         self.bot = bot
         self._notified_users: set[str] = set()
-        self._last_cleanup = datetime.utcnow()
+        self._last_cleanup = datetime.now(UTC)
         self._sla_task = None
 
     async def _send_message_with_logo(
@@ -95,6 +94,7 @@ class MonitoringService:
         text: str,
         reply_markup=None,
         parse_mode: str | None = 'HTML',
+        user: User | None = None,
     ):
         """Отправляет сообщение, добавляя логотип при необходимости."""
         if not self.bot:
@@ -103,6 +103,11 @@ class MonitoringService:
         # Skip email-only users (no telegram_id)
         if not chat_id:
             logger.debug('Пропуск уведомления: chat_id не указан (email-пользователь)')
+            return None
+
+        # Skip blocked/deleted users to save Telegram rate limits
+        if user and user.status in (UserStatus.BLOCKED.value, UserStatus.DELETED.value):
+            logger.debug('Пропуск уведомления: пользователь недоступен', user_id=user.id, status=user.status)
             return None
 
         if settings.ENABLE_LOGO_MODE and LOGO_PATH.exists() and (text is None or len(text) <= 1000):
@@ -146,11 +151,9 @@ class MonitoringService:
         )
         return any(marker in message for marker in unreachable_markers)
 
-    def _handle_unreachable_user(self, user: User, error: Exception, context: str) -> bool:
+    async def _handle_unreachable_user(self, user: User, error: Exception, context: str) -> bool:
         if isinstance(error, TelegramForbiddenError):
-            logger.warning(
-                '⚠️ Пользователь недоступен : бот заблокирован', telegram_id=user.telegram_id, context=context
-            )
+            logger.warning('⚠️ Пользователь недоступен: бот заблокирован', telegram_id=user.telegram_id, context=context)
             return True
 
         if isinstance(error, TelegramBadRequest) and self._is_unreachable_error(error):
@@ -228,7 +231,7 @@ class MonitoringService:
                     db,
                     'monitoring_cycle_completed',
                     'Цикл мониторинга успешно завершен',
-                    {'timestamp': datetime.utcnow().isoformat()},
+                    {'timestamp': datetime.now(UTC).isoformat()},
                 )
                 await db.commit()
 
@@ -247,7 +250,7 @@ class MonitoringService:
                 await db.rollback()
 
     async def _cleanup_notification_cache(self):
-        current_time = datetime.utcnow()
+        current_time = datetime.now(UTC)
 
         if (current_time - self._last_cleanup).total_seconds() >= 3600:
             old_count = len(self._notified_users)
@@ -321,7 +324,7 @@ class MonitoringService:
                 )
                 return None
 
-            current_time = datetime.utcnow()
+            current_time = datetime.now(UTC)
             is_active = subscription.status == SubscriptionStatus.ACTIVE.value and subscription.end_date > current_time
 
             if subscription.status == SubscriptionStatus.ACTIVE.value and subscription.end_date <= current_time:
@@ -341,7 +344,7 @@ class MonitoringService:
 
                 update_kwargs = dict(
                     uuid=user.remnawave_uuid,
-                    status=UserStatus.ACTIVE if is_active else UserStatus.EXPIRED,
+                    status=RemnaWaveUserStatus.ACTIVE if is_active else RemnaWaveUserStatus.EXPIRED,
                     expire_at=subscription.end_date,
                     traffic_limit_bytes=self._gb_to_bytes(subscription.traffic_limit_gb),
                     traffic_limit_strategy=TrafficLimitStrategy.MONTH,
@@ -468,10 +471,11 @@ class MonitoringService:
 
     async def _check_trial_expiring_soon(self, db: AsyncSession):
         try:
-            threshold_time = datetime.utcnow() + timedelta(hours=2)
+            threshold_time = datetime.now(UTC) + timedelta(hours=2)
 
             result = await db.execute(
                 select(Subscription)
+                .join(Subscription.user)
                 .options(
                     selectinload(Subscription.user).selectinload(User.promo_group),
                     selectinload(Subscription.user)
@@ -483,7 +487,8 @@ class MonitoringService:
                         Subscription.status == SubscriptionStatus.ACTIVE.value,
                         Subscription.is_trial == True,
                         Subscription.end_date <= threshold_time,
-                        Subscription.end_date > datetime.utcnow(),
+                        Subscription.end_date > datetime.now(UTC),
+                        User.status == UserStatus.ACTIVE.value,
                     )
                 )
             )
@@ -536,13 +541,14 @@ class MonitoringService:
             return
 
         try:
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             notifications_allowed = (
                 NotificationSettingsService.are_notifications_globally_enabled()
                 and NotificationSettingsService.is_trial_channel_unsubscribed_enabled()
             )
             result = await db.execute(
                 select(Subscription)
+                .join(Subscription.user)
                 .options(
                     selectinload(Subscription.user),
                     selectinload(Subscription.tariff),
@@ -557,6 +563,7 @@ class MonitoringService:
                                 SubscriptionStatus.DISABLED.value,
                             ]
                         ),
+                        User.status == UserStatus.ACTIVE.value,
                     )
                 )
             )
@@ -653,7 +660,7 @@ class MonitoringService:
                         )
                         continue
                     subscription.status = SubscriptionStatus.ACTIVE.value
-                    subscription.updated_at = datetime.utcnow()
+                    subscription.updated_at = datetime.now(UTC)
                     await db.commit()
                     await db.refresh(subscription)
                     restored_count += 1
@@ -707,7 +714,7 @@ class MonitoringService:
             return
 
         try:
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
 
             result = await db.execute(
                 select(Subscription)
@@ -829,7 +836,7 @@ class MonitoringService:
             logger.error('Ошибка проверки напоминаний об истекшей подписке', error=e)
 
     async def _get_expiring_paid_subscriptions(self, db: AsyncSession, days_before: int) -> list[Subscription]:
-        current_time = datetime.utcnow()
+        current_time = datetime.now(UTC)
         threshold_date = current_time + timedelta(days=days_before)
 
         result = await db.execute(
@@ -878,7 +885,7 @@ class MonitoringService:
             return 0
 
         expires_at = getattr(user, 'promo_offer_discount_expires_at', None)
-        if expires_at and expires_at <= datetime.utcnow():
+        if expires_at and expires_at <= datetime.now(UTC):
             return 0
 
         return max(0, min(100, percent))
@@ -914,7 +921,7 @@ class MonitoringService:
         user.promo_offer_discount_percent = 0
         user.promo_offer_discount_source = None
         user.promo_offer_discount_expires_at = None
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(UTC)
 
         await db.commit()
         await db.refresh(user)
@@ -941,7 +948,7 @@ class MonitoringService:
 
     async def _process_autopayments(self, db: AsyncSession):
         try:
-            current_time = datetime.utcnow()
+            current_time = datetime.now(UTC)
 
             result = await db.execute(
                 select(Subscription)
@@ -1399,7 +1406,7 @@ class MonitoringService:
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
-            if self._handle_unreachable_user(user, exc, 'уведомление об истечении подписки'):
+            if await self._handle_unreachable_user(user, exc, 'уведомление об истечении подписки'):
                 return True
             logger.error(
                 'Ошибка Telegram API при отправке уведомления об истечении подписки пользователю',
@@ -1466,7 +1473,7 @@ class MonitoringService:
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
-            if self._handle_unreachable_user(user, exc, 'уведомление об истекающей подписке'):
+            if await self._handle_unreachable_user(user, exc, 'уведомление об истекающей подписке'):
                 return True
             logger.error(
                 'Ошибка Telegram API при отправке уведомления об истечении подписки пользователю',
@@ -1514,11 +1521,12 @@ class MonitoringService:
                 text=message,
                 parse_mode='HTML',
                 reply_markup=keyboard,
+                user=user,
             )
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
-            if self._handle_unreachable_user(user, exc, 'уведомление о завершении тестовой подписки'):
+            if await self._handle_unreachable_user(user, exc, 'уведомление о завершении тестовой подписки'):
                 return True
             logger.error(
                 'Ошибка Telegram API при отправке уведомления о завершении тестовой подписки пользователю',
@@ -1584,11 +1592,12 @@ class MonitoringService:
                 text=message,
                 parse_mode='HTML',
                 reply_markup=keyboard,
+                user=user,
             )
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
-            if self._handle_unreachable_user(user, exc, 'уведомление об отписке от канала'):
+            if await self._handle_unreachable_user(user, exc, 'уведомление об отписке от канала'):
                 return True
             logger.error(
                 'Ошибка Telegram API при отправке уведомления об отписке от канала пользователю',
@@ -1659,7 +1668,7 @@ class MonitoringService:
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
-            if self._handle_unreachable_user(user, exc, 'напоминание об истекшей подписке'):
+            if await self._handle_unreachable_user(user, exc, 'напоминание об истекшей подписке'):
                 return True
             logger.error(
                 'Ошибка Telegram API при отправке напоминания об истекшей подписке пользователю',
@@ -1754,7 +1763,7 @@ class MonitoringService:
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
-            if self._handle_unreachable_user(user, exc, 'скидочное уведомление'):
+            if await self._handle_unreachable_user(user, exc, 'скидочное уведомление'):
                 return True
             logger.error(
                 'Ошибка Telegram API при отправке скидочного уведомления пользователю',
@@ -1779,7 +1788,7 @@ class MonitoringService:
                 parse_mode='HTML',
             )
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
-            if not self._handle_unreachable_user(user, exc, 'уведомление об успешном автоплатеже'):
+            if not await self._handle_unreachable_user(user, exc, 'уведомление об успешном автоплатеже'):
                 logger.error(
                     'Ошибка Telegram API при отправке уведомления об автоплатеже пользователю',
                     telegram_id=user.telegram_id,
@@ -1816,7 +1825,7 @@ class MonitoringService:
             )
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
-            if not self._handle_unreachable_user(user, exc, 'уведомление о неудачном автоплатеже'):
+            if not await self._handle_unreachable_user(user, exc, 'уведомление о неудачном автоплатеже'):
                 logger.error(
                     'Ошибка Telegram API при отправке уведомления о неудачном автоплатеже пользователю',
                     telegram_id=user.telegram_id,
@@ -1833,7 +1842,7 @@ class MonitoringService:
 
     async def _cleanup_inactive_users(self, db: AsyncSession):
         try:
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             if now.hour != 3:
                 return
 
@@ -1860,7 +1869,7 @@ class MonitoringService:
 
     async def _sync_with_remnawave(self, db: AsyncSession):
         try:
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             if now.minute != 0:
                 return
 
@@ -1902,8 +1911,6 @@ class MonitoringService:
             if not settings.is_admin_notifications_enabled():
                 return
 
-            from datetime import datetime, timedelta
-
             try:
                 from app.services.support_settings_service import SupportSettingsService
 
@@ -1911,7 +1918,7 @@ class MonitoringService:
             except Exception:
                 sla_minutes = max(1, int(getattr(settings, 'SUPPORT_TICKET_SLA_MINUTES', 5)))
             cooldown_minutes = max(1, int(getattr(settings, 'SUPPORT_TICKET_SLA_REMINDER_COOLDOWN_MINUTES', 15)))
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             stale_before = now - timedelta(minutes=sla_minutes)
             cooldown_before = now - timedelta(minutes=cooldown_minutes)
 
@@ -2021,7 +2028,7 @@ class MonitoringService:
             )
             recent_events = recent_events_result.scalars().all()
 
-            yesterday = datetime.utcnow() - timedelta(days=1)
+            yesterday = datetime.now(UTC) - timedelta(days=1)
 
             events_24h_result = await db.execute(select(MonitoringLog).where(MonitoringLog.created_at >= yesterday))
             events_24h = events_24h_result.scalars().all()
@@ -2031,7 +2038,7 @@ class MonitoringService:
 
             return {
                 'is_running': self.is_running,
-                'last_update': datetime.utcnow(),
+                'last_update': datetime.now(UTC),
                 'recent_events': [
                     {
                         'type': event.event_type,
@@ -2053,7 +2060,7 @@ class MonitoringService:
             logger.error('Ошибка получения статуса мониторинга', error=e)
             return {
                 'is_running': self.is_running,
-                'last_update': datetime.utcnow(),
+                'last_update': datetime.now(UTC),
                 'recent_events': [],
                 'stats_24h': {'total_events': 0, 'successful': 0, 'failed': 0, 'success_rate': 0},
             }
@@ -2176,7 +2183,7 @@ class MonitoringService:
             if days == 0:
                 result = await db.execute(delete(MonitoringLog))
             else:
-                cutoff_date = datetime.utcnow() - timedelta(days=days)
+                cutoff_date = datetime.now(UTC) - timedelta(days=days)
                 result = await db.execute(delete(MonitoringLog).where(MonitoringLog.created_at < cutoff_date))
 
             deleted_count = result.rowcount

@@ -11,6 +11,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database.crud.campaign import (
+    get_campaign_by_start_parameter,
+    get_campaign_registration_by_user,
+)
 from app.database.crud.user import (
     clear_email_change_pending,
     create_user,
@@ -27,9 +31,10 @@ from app.middlewares.channel_checker import (
     delete_pending_payload_from_redis,
     get_pending_payload_from_redis,
 )
+from app.services.campaign_service import AdvertisingCampaignService
 from app.services.disposable_email_service import disposable_email_service
 from app.services.referral_service import process_referral_registration
-from app.utils.timezone import panel_datetime_to_naive_utc
+from app.utils.timezone import panel_datetime_to_utc
 
 from ..auth import (
     create_access_token,
@@ -53,6 +58,7 @@ from ..auth.jwt_handler import get_refresh_token_expires_at
 from ..dependencies import get_cabinet_db, get_current_cabinet_user
 from ..schemas.auth import (
     AuthResponse,
+    CampaignBonusInfo,
     EmailChangeRequest,
     EmailChangeResponse,
     EmailChangeVerifyRequest,
@@ -122,12 +128,6 @@ async def _store_refresh_token(
     token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
     expires_at = get_refresh_token_expires_at()
 
-    # Check if token already exists (handles race conditions)
-    existing = await db.execute(select(CabinetRefreshToken).where(CabinetRefreshToken.token_hash == token_hash))
-    if existing.scalar_one_or_none():
-        # Token already stored, skip
-        return
-
     token_record = CabinetRefreshToken(
         user_id=user_id,
         token_hash=token_hash,
@@ -137,9 +137,95 @@ async def _store_refresh_token(
     db.add(token_record)
     try:
         await db.commit()
-    except Exception:
-        # Handle race condition if token was inserted between check and insert
+    except IntegrityError:
         await db.rollback()
+        logger.debug('Refresh token already exists (duplicate)', user_id=user_id)
+
+
+async def _process_campaign_bonus(
+    db: AsyncSession,
+    user: User,
+    campaign_slug: str | None,
+) -> CampaignBonusInfo | None:
+    """Process campaign bonus for user during auth. Never raises."""
+    if not campaign_slug:
+        return None
+    try:
+        campaign = await get_campaign_by_start_parameter(db, campaign_slug, only_active=True)
+        if not campaign:
+            return None
+
+        # Lock user row to prevent concurrent bonus application (race condition)
+        await db.execute(select(User).where(User.id == user.id).with_for_update())
+
+        existing = await get_campaign_registration_by_user(db, user.id)
+        if existing:
+            logger.debug('User already has campaign registration', user_id=user.id)
+            return None
+
+        # Привязать реферала к партнёру кампании (если партнёр назначен и юзер ещё не привязан)
+        if campaign.partner_user_id and not user.referred_by_id:
+            user.referred_by_id = campaign.partner_user_id
+            await db.flush()
+            try:
+                await process_referral_registration(db, user.id, campaign.partner_user_id, bot=None)
+                logger.info(
+                    'Referral set from campaign partner',
+                    user_id=user.id,
+                    partner_user_id=campaign.partner_user_id,
+                    campaign_id=campaign.id,
+                )
+            except Exception as e:
+                logger.error('Failed to process referral from campaign partner', error=e)
+
+        service = AdvertisingCampaignService()
+        result = await service.apply_campaign_bonus(db, user, campaign)
+        if not result.success:
+            return None
+
+        # Refresh user to get updated balance after bonus
+        await db.refresh(user)
+
+        return CampaignBonusInfo(
+            campaign_name=campaign.name,
+            bonus_type=result.bonus_type or campaign.bonus_type,
+            balance_kopeks=result.balance_kopeks,
+            subscription_days=result.subscription_days,
+            tariff_name=result.tariff_name,
+        )
+    except Exception:
+        logger.exception('Failed to process campaign bonus', user_id=user.id, campaign_slug=campaign_slug)
+        try:
+            await db.rollback()
+            # Re-fetch user so session stays usable for the caller
+            await db.refresh(user)
+        except Exception:
+            logger.exception('Failed to rollback after campaign bonus error', user_id=user.id)
+        return None
+
+
+async def _process_referral_code(
+    db: AsyncSession,
+    user: User,
+    referral_code: str | None,
+) -> None:
+    """Set referred_by_id for user if referral_code is valid. Never raises."""
+    if not referral_code or user.referred_by_id:
+        return
+    try:
+        referrer = await get_user_by_referral_code(db, referral_code)
+        if not referrer:
+            return
+        if referrer.id == user.id:
+            return
+        if referrer.email and user.email and referrer.email.lower() == user.email.lower():
+            return
+        user.referred_by_id = referrer.id
+        await db.flush()
+        await process_referral_registration(db, user.id, referrer.id, bot=None)
+        logger.info('Referral applied from code', user_id=user.id, referrer_id=referrer.id, referral_code=referral_code)
+    except Exception as e:
+        logger.error('Failed to process referral code', error=e, referral_code=referral_code)
 
 
 async def _sync_subscription_from_panel_by_email(db: AsyncSession, user: User) -> None:
@@ -179,7 +265,7 @@ async def _sync_subscription_from_panel_by_email(db: AsyncSession, user: User) -
             existing_sub = await get_subscription_by_user_id(db, user.id)
 
             # Parse panel data — panel returns local time with misleading +00:00 offset
-            expire_at = panel_datetime_to_naive_utc(panel_user.expire_at)
+            expire_at = panel_datetime_to_utc(panel_user.expire_at)
             traffic_limit_gb = panel_user.traffic_limit_bytes // (1024**3) if panel_user.traffic_limit_bytes > 0 else 0
             traffic_used_gb = panel_user.used_traffic_bytes / (1024**3) if panel_user.used_traffic_bytes > 0 else 0
 
@@ -190,7 +276,7 @@ async def _sync_subscription_from_panel_by_email(db: AsyncSession, user: User) -
             device_limit = panel_user.hwid_device_limit or 1
 
             # Determine status — expire_at is now naive UTC
-            current_time = datetime.now(UTC).replace(tzinfo=None)
+            current_time = datetime.now(UTC)
 
             if panel_user.status.value == 'ACTIVE' and expire_at > current_time:
                 sub_status = SubscriptionStatus.ACTIVE
@@ -277,6 +363,16 @@ async def auth_telegram(
     tg_last_name = user_data.get('last_name')
     tg_language = user_data.get('language_code', 'ru')
 
+    # Resolve referral code to referrer ID for new users
+    referrer_id = None
+    if request.referral_code and not user:
+        try:
+            referrer = await get_user_by_referral_code(db, request.referral_code)
+            if referrer:
+                referrer_id = referrer.id
+        except Exception as e:
+            logger.warning('Failed to resolve referral code', referral_code=request.referral_code, error=e)
+
     if not user:
         # Create new user from Telegram initData
         logger.info(f'Creating new user from cabinet (initData): telegram_id={telegram_id}')
@@ -333,13 +429,21 @@ async def auth_telegram(
         )
 
     # Update last login
-    user.cabinet_last_login = datetime.utcnow()
+    user.cabinet_last_login = datetime.now(UTC)
     await db.commit()
 
     response = _create_auth_response(user)
 
     # Store refresh token
     await _store_refresh_token(db, user.id, response.refresh_token)
+
+    # Process referral code (before campaign bonus, which may also set referrer)
+    await _process_referral_code(db, user, request.referral_code)
+
+    # Process campaign bonus
+    response.campaign_bonus = await _process_campaign_bonus(db, user, request.campaign_slug)
+    if response.campaign_bonus:
+        response.user = _user_to_response(user)
 
     return response
 
@@ -355,7 +459,7 @@ async def auth_telegram_widget(
     This endpoint validates data from Telegram Login Widget and returns
     JWT tokens for authenticated access.
     """
-    widget_data = request.model_dump()
+    widget_data = request.model_dump(exclude={'campaign_slug', 'referral_code'})
 
     if not validate_telegram_login_widget(widget_data):
         raise HTTPException(
@@ -364,6 +468,16 @@ async def auth_telegram_widget(
         )
 
     user = await get_user_by_telegram_id(db, request.id)
+
+    # Resolve referral code to referrer ID for new users
+    referrer_id = None
+    if request.referral_code and not user:
+        try:
+            referrer = await get_user_by_referral_code(db, request.referral_code)
+            if referrer:
+                referrer_id = referrer.id
+        except Exception as e:
+            logger.warning('Failed to resolve referral code', referral_code=request.referral_code, error=e)
 
     if not user:
         # Create new user from Telegram data
@@ -413,11 +527,19 @@ async def auth_telegram_widget(
     if request.last_name != user.last_name:
         user.last_name = request.last_name
 
-    user.cabinet_last_login = datetime.utcnow()
+    user.cabinet_last_login = datetime.now(UTC)
     await db.commit()
 
     response = _create_auth_response(user)
     await _store_refresh_token(db, user.id, response.refresh_token)
+
+    # Process referral code (before campaign bonus, which may also set referrer)
+    await _process_referral_code(db, user, request.referral_code)
+
+    # Process campaign bonus
+    response.campaign_bonus = await _process_campaign_bonus(db, user, request.campaign_slug)
+    if response.campaign_bonus:
+        response.user = _user_to_response(user)
 
     return response
 
@@ -579,7 +701,7 @@ async def register_email_standalone(
     # Для тестового email - автоматически верифицировать
     if is_test_email:
         user.email_verified = True
-        user.email_verified_at = datetime.utcnow()
+        user.email_verified_at = datetime.now(UTC)
         await db.commit()
         logger.info(f'Test email auto-verified: {request.email}, user_id={user.id}')
     else:
@@ -664,10 +786,10 @@ async def verify_email(
 
     # Mark email as verified
     user.email_verified = True
-    user.email_verified_at = datetime.utcnow()
+    user.email_verified_at = datetime.now(UTC)
     user.email_verification_token = None
     user.email_verification_expires = None
-    user.cabinet_last_login = datetime.utcnow()
+    user.cabinet_last_login = datetime.now(UTC)
 
     await db.commit()
 
@@ -677,6 +799,11 @@ async def verify_email(
     # Return auth tokens so user is logged in after verification
     response = _create_auth_response(user)
     await _store_refresh_token(db, user.id, response.refresh_token)
+
+    # Process campaign bonus
+    response.campaign_bonus = await _process_campaign_bonus(db, user, request.campaign_slug)
+    if response.campaign_bonus:
+        response.user = _user_to_response(user)
 
     return response
 
@@ -781,7 +908,7 @@ async def login_email(
                 language='ru',
             )
             user.email_verified = True
-            user.email_verified_at = datetime.utcnow()
+            user.email_verified_at = datetime.now(UTC)
             await db.commit()
         else:
             raise HTTPException(
@@ -814,11 +941,16 @@ async def login_email(
             detail='User account is not active',
         )
 
-    user.cabinet_last_login = datetime.utcnow()
+    user.cabinet_last_login = datetime.now(UTC)
     await db.commit()
 
     response = _create_auth_response(user)
     await _store_refresh_token(db, user.id, response.refresh_token)
+
+    # Process campaign bonus
+    response.campaign_bonus = await _process_campaign_bonus(db, user, request.campaign_slug)
+    if response.campaign_bonus:
+        response.user = _user_to_response(user)
 
     return response
 
@@ -902,7 +1034,7 @@ async def logout(
     token_record = result.scalar_one_or_none()
 
     if token_record:
-        token_record.revoked_at = datetime.utcnow()
+        token_record.revoked_at = datetime.now(UTC)
         await db.commit()
 
     return {'message': 'Logged out successfully'}

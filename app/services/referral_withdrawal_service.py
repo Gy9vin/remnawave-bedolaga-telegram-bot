@@ -4,7 +4,7 @@
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from sqlalchemy import func, select
@@ -265,21 +265,39 @@ class ReferralWithdrawalService:
         )
         return result.scalar_one_or_none()
 
-    async def can_request_withdrawal(self, db: AsyncSession, user_id: int) -> tuple[bool, str]:
+    async def can_request_withdrawal(
+        self, db: AsyncSession, user_id: int, *, stats: dict | None = None
+    ) -> tuple[bool, str, dict]:
         """
         Проверяет, может ли пользователь запросить вывод.
-        Возвращает (can_request, reason).
+        Возвращает (can_request, reason, stats).
+        Принимает предвычисленные stats для избежания повторного запроса.
         """
         if not settings.is_referral_withdrawal_enabled():
-            return False, 'Функция вывода реферального баланса отключена'
+            return (
+                False,
+                'Функция вывода реферального баланса отключена',
+                {
+                    'total_earned': 0,
+                    'own_deposits': 0,
+                    'spending': 0,
+                    'referral_spent': 0,
+                    'withdrawn': 0,
+                    'pending': 0,
+                    'available_referral': 0,
+                    'available_total': 0,
+                    'only_referral_mode': settings.REFERRAL_WITHDRAWAL_ONLY_REFERRAL_BALANCE,
+                },
+            )
 
         # Проверяем доступный баланс
-        stats = await self.get_referral_balance_stats(db, user_id)
+        if stats is None:
+            stats = await self.get_referral_balance_stats(db, user_id)
         available = stats['available_total']
         min_amount = settings.REFERRAL_WITHDRAWAL_MIN_AMOUNT_KOPEKS
 
         if available < min_amount:
-            return False, f'Минимальная сумма вывода: {min_amount / 100:.0f}₽. Доступно: {available / 100:.0f}₽'
+            return False, f'Минимальная сумма вывода: {min_amount / 100:.0f}₽. Доступно: {available / 100:.0f}₽', stats
 
         # Проверяем cooldown (пропускаем в тестовом режиме)
         last_request = await self.get_last_withdrawal_request(db, user_id)
@@ -289,15 +307,15 @@ class ReferralWithdrawalService:
                 cooldown_days = settings.REFERRAL_WITHDRAWAL_COOLDOWN_DAYS
                 cooldown_end = last_request.created_at + timedelta(days=cooldown_days)
 
-                if datetime.utcnow() < cooldown_end:
-                    days_left = (cooldown_end - datetime.utcnow()).days + 1
-                    return False, f'Следующий запрос на вывод будет доступен через {days_left} дн.'
+                if datetime.now(UTC) < cooldown_end:
+                    days_left = (cooldown_end - datetime.now(UTC)).days + 1
+                    return False, f'Следующий запрос на вывод будет доступен через {days_left} дн.', stats
 
             # Проверяем, нет ли активной заявки
             if last_request.status == WithdrawalRequestStatus.PENDING.value:
-                return False, 'У вас уже есть активная заявка на рассмотрении'
+                return False, 'У вас уже есть активная заявка на рассмотрении', stats
 
-        return True, 'OK'
+        return True, 'OK', stats
 
     # ==================== АНАЛИЗ НА ОТМЫВАНИЕ ====================
 
@@ -338,39 +356,39 @@ class ReferralWithdrawalService:
         suspicious_referrals = []
 
         if referral_ids:
-            # Получаем детальную статистику по каждому рефералу за последний месяц
-            month_ago = datetime.utcnow() - timedelta(days=30)
+            month_ago = datetime.now(UTC) - timedelta(days=30)
 
-            for ref_id in referral_ids:
-                ref_user = next((r for r in referrals_list if r.id == ref_id), None)
-                ref_name = ref_user.full_name if ref_user else f'ID{ref_id}'
-
-                # Пополнения этого реферала за месяц
-                ref_deposits = await db.execute(
-                    select(
-                        func.count().label('count'),
-                        func.coalesce(func.sum(Transaction.amount_kopeks), 0).label('total'),
-                    ).where(
-                        Transaction.user_id == ref_id,
-                        Transaction.type == 'deposit',
-                        Transaction.is_completed == True,
-                        Transaction.created_at >= month_ago,
-                    )
+            # Одним запросом получаем статистику пополнений всех рефералов за месяц
+            ref_deposits_result = await db.execute(
+                select(
+                    Transaction.user_id,
+                    func.count().label('count'),
+                    func.coalesce(func.sum(Transaction.amount_kopeks), 0).label('total'),
                 )
-                deposit_data = ref_deposits.fetchone()
-                deposit_count = deposit_data.count
-                deposit_total = deposit_data.total
+                .where(
+                    Transaction.user_id.in_(referral_ids),
+                    Transaction.type == 'deposit',
+                    Transaction.is_completed == True,
+                    Transaction.created_at >= month_ago,
+                )
+                .group_by(Transaction.user_id)
+            )
+            ref_deposit_map = {row.user_id: (row.count, row.total) for row in ref_deposits_result.all()}
+
+            referrals_by_id = {r.id: r for r in referrals_list}
+            max_deposits = settings.REFERRAL_WITHDRAWAL_SUSPICIOUS_MAX_DEPOSITS_PER_MONTH
+            min_suspicious = settings.REFERRAL_WITHDRAWAL_SUSPICIOUS_MIN_DEPOSIT_KOPEKS
+
+            for ref_id, (deposit_count, deposit_total) in ref_deposit_map.items():
+                ref_user = referrals_by_id.get(ref_id)
+                ref_name = ref_user.full_name if ref_user else f'ID{ref_id}'
 
                 suspicious_flags = []
 
-                # Проверка: слишком много пополнений от одного реферала
-                max_deposits = settings.REFERRAL_WITHDRAWAL_SUSPICIOUS_MAX_DEPOSITS_PER_MONTH
                 if deposit_count > max_deposits:
                     analysis['risk_score'] += 15
                     suspicious_flags.append(f'{deposit_count} пополнений/мес')
 
-                # Проверка: большие суммы от одного реферала
-                min_suspicious = settings.REFERRAL_WITHDRAWAL_SUSPICIOUS_MIN_DEPOSIT_KOPEKS
                 if deposit_total > min_suspicious:
                     analysis['risk_score'] += 10
                     suspicious_flags.append(f'сумма {deposit_total / 100:.0f}₽')
@@ -390,7 +408,7 @@ class ReferralWithdrawalService:
             if suspicious_referrals:
                 analysis['flags'].append(f'⚠️ Подозрительная активность у {len(suspicious_referrals)} реферала(ов)')
 
-            # Общая статистика по рефералам
+            # Общая статистика по рефералам (за всё время)
             all_ref_deposits = await db.execute(
                 select(
                     func.count(func.distinct(Transaction.user_id)).label('paying_count'),
@@ -428,7 +446,7 @@ class ReferralWithdrawalService:
         analysis['details']['earnings_by_reason'] = earnings_by_reason
 
         # 5. Проверка: много начислений за последнюю неделю
-        week_ago = datetime.utcnow() - timedelta(days=7)
+        week_ago = datetime.now(UTC) - timedelta(days=7)
         recent_earnings = await db.execute(
             select(func.count(), func.coalesce(func.sum(ReferralEarning.amount_kopeks), 0)).where(
                 ReferralEarning.user_id == user_id, ReferralEarning.created_at >= week_ago
@@ -482,13 +500,14 @@ class ReferralWithdrawalService:
         Создаёт заявку на вывод с анализом на отмывание.
         Возвращает (request, error_message).
         """
-        # Проверяем возможность вывода
-        can_request, reason = await self.can_request_withdrawal(db, user_id)
+        # Блокируем строку пользователя для предотвращения параллельного создания заявок
+        await db.execute(select(User).where(User.id == user_id).with_for_update())
+
+        # Проверяем возможность вывода (stats возвращаются для переиспользования)
+        can_request, reason, stats = await self.can_request_withdrawal(db, user_id)
         if not can_request:
             return None, reason
 
-        # Проверяем сумму
-        stats = await self.get_referral_balance_stats(db, user_id)
         available = stats['available_total']
 
         if amount_kopeks > available:
@@ -550,7 +569,7 @@ class ReferralWithdrawalService:
         Списание происходит при complete_request (когда деньги реально переведены).
         Возвращает (success, error_message).
         """
-        result = await db.execute(select(WithdrawalRequest).where(WithdrawalRequest.id == request_id))
+        result = await db.execute(select(WithdrawalRequest).where(WithdrawalRequest.id == request_id).with_for_update())
         request = result.scalar_one_or_none()
 
         if not request:
@@ -559,17 +578,34 @@ class ReferralWithdrawalService:
         if request.status != WithdrawalRequestStatus.PENDING.value:
             return False, 'Заявка уже обработана'
 
-        # Проверяем, что баланс достаточен (исключая текущую заявку из pending,
-        # иначе она блокирует сама себя)
-        stats = await self.get_referral_balance_stats(db, request.user_id)
-        available_plus_self = stats['available_total'] + request.amount_kopeks
-        if request.amount_kopeks > available_plus_self:
-            return False, f'Недостаточно средств у пользователя. Доступно: {available_plus_self / 100:.0f}₽'
+        # Получаем пользователя для списания с баланса (с блокировкой строки)
+        user_result = await db.execute(select(User).where(User.id == request.user_id).with_for_update())
+        user = user_result.scalar_one_or_none()
 
-        # Обновляем статус заявки (баланс НЕ списываем — это при complete)
+        if not user:
+            return False, 'Пользователь не найден'
+
+        # Списываем с баланса
+        if user.balance_kopeks < request.amount_kopeks:
+            return False, f'Недостаточно средств на балансе. Баланс: {user.balance_kopeks / 100:.0f}₽'
+
+        user.balance_kopeks -= request.amount_kopeks
+
+        # Создаём транзакцию списания
+        withdrawal_tx = Transaction(
+            user_id=request.user_id,
+            type='withdrawal',
+            amount_kopeks=-request.amount_kopeks,
+            description=f'Вывод реферального баланса (заявка #{request.id})',
+            is_completed=True,
+            completed_at=datetime.now(UTC),
+        )
+        db.add(withdrawal_tx)
+
+        # Обновляем статус заявки
         request.status = WithdrawalRequestStatus.APPROVED.value
         request.processed_by = admin_id
-        request.processed_at = datetime.utcnow()
+        request.processed_at = datetime.now(UTC)
         request.admin_comment = comment
 
         await db.commit()
@@ -577,34 +613,37 @@ class ReferralWithdrawalService:
 
     async def reject_request(
         self, db: AsyncSession, request_id: int, admin_id: int, comment: str | None = None
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """Отклоняет заявку на вывод."""
-        result = await db.execute(select(WithdrawalRequest).where(WithdrawalRequest.id == request_id))
+        result = await db.execute(select(WithdrawalRequest).where(WithdrawalRequest.id == request_id).with_for_update())
         request = result.scalar_one_or_none()
 
-        if not request or request.status != WithdrawalRequestStatus.PENDING.value:
-            return False
+        if not request:
+            return False, 'Заявка не найдена'
+
+        if request.status != WithdrawalRequestStatus.PENDING.value:
+            return False, 'Заявка уже обработана'
 
         request.status = WithdrawalRequestStatus.REJECTED.value
         request.processed_by = admin_id
-        request.processed_at = datetime.utcnow()
+        request.processed_at = datetime.now(UTC)
         request.admin_comment = comment
 
         await db.commit()
-        return True
+        return True, ''
 
     async def complete_request(
         self, db: AsyncSession, request_id: int, admin_id: int, comment: str | None = None
     ) -> tuple[bool, str]:
-        """
-        Отмечает заявку как выполненную (деньги переведены).
-        Списывает средства с баланса и создаёт транзакцию.
-        """
-        result = await db.execute(select(WithdrawalRequest).where(WithdrawalRequest.id == request_id))
+        """Отмечает заявку как выполненную (деньги переведены)."""
+        result = await db.execute(select(WithdrawalRequest).where(WithdrawalRequest.id == request_id).with_for_update())
         request = result.scalar_one_or_none()
 
-        if not request or request.status != WithdrawalRequestStatus.APPROVED.value:
-            return False, 'Заявка не найдена или не одобрена'
+        if not request:
+            return False, 'Заявка не найдена'
+
+        if request.status != WithdrawalRequestStatus.APPROVED.value:
+            return False, 'Заявка не в статусе "одобрена"'
 
         # Получаем пользователя для списания с баланса
         user_result = await db.execute(select(User).where(User.id == request.user_id))
@@ -638,7 +677,7 @@ class ReferralWithdrawalService:
         # Обновляем статус заявки
         request.status = WithdrawalRequestStatus.COMPLETED.value
         request.processed_by = admin_id
-        request.processed_at = datetime.utcnow()
+        request.processed_at = datetime.now(UTC)
         if comment:
             request.admin_comment = (request.admin_comment or '') + f'\n{comment}'
 

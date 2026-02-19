@@ -20,7 +20,7 @@ from app.database.crud.system_setting import (
 )
 from app.database.database import AsyncSessionLocal
 from app.database.models import SystemSetting
-from app.database.universal_migration import ensure_default_web_api_token
+from app.services.web_api_token_service import ensure_default_web_api_token
 
 
 logger = structlog.get_logger(__name__)
@@ -1622,6 +1622,13 @@ class BotConfigurationService:
                     )
                 except Exception as error:
                     logger.error('Не удалось обновить сервис автосинхронизации RemnaWave', error=error)
+            elif key == 'SUPPORT_SYSTEM_MODE':
+                try:
+                    from app.services.support_settings_service import SupportSettingsService
+
+                    SupportSettingsService.set_system_mode(str(value))
+                except Exception as error:
+                    logger.error('Не удалось синхронизировать SupportSettingsService', error=error)
             elif key in {
                 'REMNAWAVE_API_URL',
                 'REMNAWAVE_API_KEY',

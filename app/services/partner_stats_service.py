@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -30,31 +30,39 @@ class PartnerStatsService:
         user_id: int,
     ) -> dict[str, Any]:
         """Получить детальную статистику реферера."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week_ago = now - timedelta(days=7)
         month_ago = now - timedelta(days=30)
         year_ago = now - timedelta(days=365)
 
-        # Базовые данные о рефералах
-        referrals_query = select(User).where(User.referred_by_id == user_id)
-        referrals_result = await db.execute(referrals_query)
-        referrals = referrals_result.scalars().all()
-        referral_ids = [r.id for r in referrals]
-
-        total_referrals = len(referrals)
-
-        # Сколько сделали первое пополнение (has_made_first_topup)
-        paid_referrals = sum(1 for r in referrals if r.has_made_first_topup)
+        # Агрегированная статистика рефералов одним запросом (без загрузки всех User в память)
+        referral_counts_result = await db.execute(
+            select(
+                func.count(User.id).label('total'),
+                func.sum(case((User.has_made_first_topup.is_(True), 1), else_=0)).label('paid'),
+                func.sum(case((User.created_at >= today_start, 1), else_=0)).label('today'),
+                func.sum(case((User.created_at >= week_ago, 1), else_=0)).label('week'),
+                func.sum(case((User.created_at >= month_ago, 1), else_=0)).label('month'),
+                func.sum(case((User.created_at >= year_ago, 1), else_=0)).label('year'),
+            ).where(User.referred_by_id == user_id)
+        )
+        ref_row = referral_counts_result.one()
+        total_referrals = int(ref_row.total or 0)
+        paid_referrals = int(ref_row.paid or 0)
+        referrals_today = int(ref_row.today or 0)
+        referrals_week = int(ref_row.week or 0)
+        referrals_month = int(ref_row.month or 0)
+        referrals_year = int(ref_row.year or 0)
 
         # Активные рефералы (с активной подпиской)
-        if referral_ids:
+        if total_referrals > 0:
             active_result = await db.execute(
                 select(func.count(func.distinct(User.id)))
                 .join(Subscription, User.id == Subscription.user_id)
                 .where(
                     and_(
-                        User.id.in_(referral_ids),
+                        User.referred_by_id == user_id,
                         Subscription.status == SubscriptionStatus.ACTIVE.value,
                         Subscription.end_date > now,
                     )
@@ -89,12 +97,6 @@ class PartnerStatsService:
         earnings_week = int(earnings_row.week)
         earnings_month = int(earnings_row.month)
         earnings_year = int(earnings_row.year)
-
-        # Рефералы по периодам
-        referrals_today = sum(1 for r in referrals if r.created_at >= today_start)
-        referrals_week = sum(1 for r in referrals if r.created_at >= week_ago)
-        referrals_month = sum(1 for r in referrals if r.created_at >= month_ago)
-        referrals_year = sum(1 for r in referrals if r.created_at >= year_ago)
 
         # Конверсии
         conversion_to_paid = round((paid_referrals / total_referrals * 100), 2) if total_referrals > 0 else 0
@@ -137,7 +139,7 @@ class PartnerStatsService:
         days: int = 30,
     ) -> list[dict[str, Any]]:
         """Получить статистику реферера по дням."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         start_date = now - timedelta(days=days)
 
         # Рефералы по дням
@@ -196,7 +198,7 @@ class PartnerStatsService:
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         """Получить топ рефералов по доходу для реферера."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         # Получаем рефералов с их доходами
         result = await db.execute(
@@ -266,7 +268,7 @@ class PartnerStatsService:
         previous_days: int = 7,
     ) -> dict[str, Any]:
         """Сравнить текущий и предыдущий период."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         current_start = now - timedelta(days=current_days)
         previous_start = current_start - timedelta(days=previous_days)
         previous_end = current_start
@@ -345,12 +347,11 @@ class PartnerStatsService:
         days: int = 30,
     ) -> dict[str, Any]:
         """Глобальная статистика партнёрской программы."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week_ago = now - timedelta(days=7)
         month_ago = now - timedelta(days=30)
         year_ago = now - timedelta(days=365)
-        now - timedelta(days=days)
 
         # Всего рефереров (у кого есть рефералы)
         total_referrers = await db.execute(
@@ -449,7 +450,7 @@ class PartnerStatsService:
         days: int = 30,
     ) -> list[dict[str, Any]]:
         """Глобальная статистика по дням."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         start_date = now - timedelta(days=days)
 
         # Рефералы по дням
@@ -501,7 +502,7 @@ class PartnerStatsService:
         days: int | None = None,
     ) -> list[dict[str, Any]]:
         """Получить топ рефереров."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         start_date = now - timedelta(days=days) if days else None
 
         # Подсчёт рефералов и заработков

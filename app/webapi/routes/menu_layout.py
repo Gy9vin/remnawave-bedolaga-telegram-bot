@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -553,7 +554,6 @@ async def export_menu_layout(
     db: AsyncSession = Depends(get_db_session),
 ) -> MenuLayoutExportResponse:
     """Экспортировать конфигурацию меню."""
-    from datetime import datetime
 
     export_data = await MenuLayoutService.export_config(db)
 
@@ -589,7 +589,7 @@ async def export_menu_layout(
         version=export_data.get('version', 1),
         rows=rows,
         buttons=buttons,
-        exported_at=datetime.utcnow(),
+        exported_at=datetime.now(UTC),
     )
 
 
@@ -730,12 +730,11 @@ async def get_menu_click_stats(
     db: AsyncSession = Depends(get_db_session),
 ) -> MenuClickStatsResponse:
     """Получить общую статистику кликов по всем кнопкам."""
-    from datetime import datetime, timedelta
 
     stats = await MenuLayoutService.get_all_buttons_stats(db, days)
     total_clicks = await MenuLayoutService.get_total_clicks(db, days)
 
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     period_start = now - timedelta(days=days)
 
     return MenuClickStatsResponse(

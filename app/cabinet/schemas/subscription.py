@@ -58,6 +58,7 @@ class SubscriptionData(BaseModel):
     tariff_name: str | None = None
     # Modem
     modem_enabled: bool = False
+    traffic_reset_mode: str | None = None
 
     class Config:
         from_attributes = True

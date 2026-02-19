@@ -1,5 +1,5 @@
-import datetime
 import json
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from aiogram import Dispatcher, F, types
@@ -33,7 +33,7 @@ async def show_referral_statistics(callback: types.CallbackQuery, db_user: User,
         if stats.get('active_referrers', 0) > 0:
             avg_per_referrer = stats.get('total_paid_kopeks', 0) / stats['active_referrers']
 
-        current_time = datetime.datetime.now().strftime('%H:%M:%S')
+        current_time = datetime.now(UTC).strftime('%H:%M:%S')
 
         text = f"""
 🤝 <b>Реферальная статистика</b>
@@ -114,7 +114,7 @@ async def show_referral_statistics(callback: types.CallbackQuery, db_user: User,
     except Exception as e:
         logger.error('Ошибка в show_referral_statistics', error=e, exc_info=True)
 
-        current_time = datetime.datetime.now().strftime('%H:%M:%S')
+        current_time = datetime.now(UTC).strftime('%H:%M:%S')
         text = f"""
 🤝 <b>Реферальная статистика</b>
 
@@ -482,7 +482,9 @@ async def reject_withdrawal_request(callback: types.CallbackQuery, db_user: User
         await callback.answer('Заявка не найдена', show_alert=True)
         return
 
-    success = await referral_withdrawal_service.reject_request(db, request_id, db_user.id, 'Отклонено администратором')
+    success, _error = await referral_withdrawal_service.reject_request(
+        db, request_id, db_user.id, 'Отклонено администратором'
+    )
 
     if success:
         # Уведомляем пользователя (только если есть telegram_id)
@@ -708,7 +710,7 @@ async def process_withdrawal_check_user(message: types.Message, db_user: User, d
     await state.clear()
 
     stats = await referral_withdrawal_service.get_referral_balance_stats(db, target_user.id)
-    can_withdraw, reason = await referral_withdrawal_service.can_request_withdrawal(db, target_user.id)
+    can_withdraw, reason, _stats = await referral_withdrawal_service.can_request_withdrawal(db, target_user.id)
 
     user_display = target_user.full_name or target_user.username or f'ID{target_telegram_id}'
 
@@ -923,27 +925,27 @@ async def show_withdrawal_details(callback: types.CallbackQuery, db_user: User, 
     await callback.answer()
 
 
-def _get_period_dates(period: str) -> tuple[datetime.datetime, datetime.datetime]:
+def _get_period_dates(period: str) -> tuple[datetime, datetime]:
     """Возвращает начальную и конечную даты для заданного периода."""
-    now = datetime.datetime.now()
+    now = datetime.now(UTC)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     if period == 'today':
         start_date = today
-        end_date = today + datetime.timedelta(days=1)
+        end_date = today + timedelta(days=1)
     elif period == 'yesterday':
-        start_date = today - datetime.timedelta(days=1)
+        start_date = today - timedelta(days=1)
         end_date = today
     elif period == 'week':
-        start_date = today - datetime.timedelta(days=7)
-        end_date = today + datetime.timedelta(days=1)
+        start_date = today - timedelta(days=7)
+        end_date = today + timedelta(days=1)
     elif period == 'month':
-        start_date = today - datetime.timedelta(days=30)
-        end_date = today + datetime.timedelta(days=1)
+        start_date = today - timedelta(days=30)
+        end_date = today + timedelta(days=1)
     else:
         # По умолчанию — сегодня
         start_date = today
-        end_date = today + datetime.timedelta(days=1)
+        end_date = today + timedelta(days=1)
 
     return start_date, end_date
 
@@ -1422,9 +1424,7 @@ async def sync_referrals_with_contest(
     await callback.answer('🏆 Синхронизирую с конкурсами...')
 
     try:
-        from datetime import datetime
-
-        now_utc = datetime.utcnow()
+        now_utc = datetime.now(UTC)
 
         # Получаем активные конкурсы
         paid_contests = await get_contests_for_events(db, now_utc, contest_types=['referral_paid'])

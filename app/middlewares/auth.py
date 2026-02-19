@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -194,10 +194,10 @@ class AuthMiddleware(BaseMiddleware):
                     )
                     profile_updated = True
 
-                db_user.last_activity = datetime.utcnow()
+                db_user.last_activity = datetime.now(UTC)
 
                 if profile_updated:
-                    db_user.updated_at = datetime.utcnow()
+                    db_user.updated_at = datetime.now(UTC)
                     logger.info('💾 [Middleware] Профиль пользователя обновлен в middleware', user_id=user.id)
 
                     if db_user.remnawave_uuid:
@@ -222,6 +222,13 @@ class AuthMiddleware(BaseMiddleware):
                 except (InterfaceError, OperationalError) as conn_err:
                     # Соединение закрылось (таймаут после долгой операции) - просто логируем
                     logger.warning('⚠️ Соединение с БД закрыто после обработки, пропускаем commit', conn_err=conn_err)
+                except Exception as commit_err:
+                    # Transaction aborted (e.g. handler swallowed a ProgrammingError) — rollback
+                    logger.warning('⚠️ Не удалось commit после обработки, rollback', commit_err=commit_err)
+                    try:
+                        await db.rollback()
+                    except Exception:
+                        pass
                 return result
 
             except (InterfaceError, OperationalError) as conn_err:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from importlib import import_module
 from typing import Any
 
@@ -460,7 +460,7 @@ class WataPaymentMixin:
         was_first_topup = not user.has_made_first_topup
 
         user.balance_kopeks += payment.amount_kopeks
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(UTC)
         await db.commit()
         user = await payment_module.get_user_by_id(db, user.id)
         if not user:
@@ -561,7 +561,7 @@ class WataPaymentMixin:
                 cart_message = texts.t(
                     'BALANCE_TOPUP_CART_REMINDER_DETAILED',
                     '🛒 У вас есть неоформленный заказ.\n\nВы можете продолжить оформление с теми же параметрами.',
-                )
+                ).format(total_amount=settings.format_price(payment.amount_kopeks))
 
                 keyboard = types.InlineKeyboardMarkup(
                     inline_keyboard=[

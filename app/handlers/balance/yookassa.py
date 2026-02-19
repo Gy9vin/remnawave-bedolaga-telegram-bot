@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 import structlog
 from aiogram import types
@@ -236,7 +236,7 @@ async def process_yookassa_payment_amount(
                 await db.execute(
                     update(payment.__class__)
                     .where(payment.__class__.id == payment.id)
-                    .values(metadata_json=metadata, updated_at=datetime.utcnow())
+                    .values(metadata_json=metadata, updated_at=datetime.now(UTC))
                 )
                 await db.commit()
         except Exception as error:  # pragma: no cover - диагностический лог
@@ -464,7 +464,7 @@ async def process_yookassa_sbp_payment_amount(
                 await db.execute(
                     update(payment.__class__)
                     .where(payment.__class__.id == payment.id)
-                    .values(metadata_json=metadata, updated_at=datetime.utcnow())
+                    .values(metadata_json=metadata, updated_at=datetime.now(UTC))
                 )
                 await db.commit()
         except Exception as error:  # pragma: no cover - диагностический лог

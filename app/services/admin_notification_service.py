@@ -1,4 +1,5 @@
-from datetime import datetime
+import html
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -275,7 +276,7 @@ class AdminNotificationService:
                 transaction=None,
                 amount_kopeks=charged_amount_kopeks,
                 message='Trial activation',
-                occurred_at=datetime.utcnow(),
+                occurred_at=datetime.now(UTC),
                 extra={
                     'charged_amount_kopeks': charged_amount_kopeks,
                     'trial_duration_days': settings.TRIAL_DURATION_DAYS,
@@ -356,7 +357,7 @@ class AdminNotificationService:
                     message_lines.append(f'🔗 <b>Реферер:</b> {referrer_info}')
 
             message_lines.append('')
-            message_lines.append(f'⏰ <i>{format_local_datetime(datetime.utcnow(), "%d.%m.%Y %H:%M:%S")}</i>')
+            message_lines.append(f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>')
 
             return await self._send_message('\n'.join(message_lines))
 
@@ -403,7 +404,7 @@ class AdminNotificationService:
                 transaction=transaction,
                 amount_kopeks=total_amount,
                 message='Subscription purchase',
-                occurred_at=(transaction.completed_at or transaction.created_at) if transaction else datetime.utcnow(),
+                occurred_at=(transaction.completed_at or transaction.created_at) if transaction else datetime.now(UTC),
                 extra={
                     'period_days': period_days,
                     'was_trial_conversion': was_trial_conversion,
@@ -482,7 +483,7 @@ class AdminNotificationService:
             message_lines.extend(
                 [
                     '',
-                    f'<i>{format_local_datetime(datetime.utcnow(), "%d.%m.%Y %H:%M")}</i>',
+                    f'<i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M")}</i>',
                 ]
             )
 
@@ -503,7 +504,7 @@ class AdminNotificationService:
             repo = getattr(settings, 'VERSION_CHECK_REPO', 'fr1ngg/remnawave-bedolaga-telegram-bot')
             release_url = f'https://github.com/{repo}/releases/tag/{latest_version.tag_name}'
             repo_url = f'https://github.com/{repo}'
-            timestamp = format_local_datetime(datetime.utcnow(), '%d.%m.%Y %H:%M:%S')
+            timestamp = format_local_datetime(datetime.now(UTC), '%d.%m.%Y %H:%M:%S')
 
             if latest_version.prerelease:
                 header = '🧪 <b>Pre-release</b>'
@@ -568,7 +569,7 @@ class AdminNotificationService:
     🔄 Следующая попытка через час.
     ⚙️ Проверьте доступность GitHub API и настройки сети.
 
-    ⚙️ <i>Система автоматических обновлений • {format_local_datetime(datetime.utcnow(), '%d.%m.%Y %H:%M:%S')}</i>"""
+    ⚙️ <i>Система автоматических обновлений • {format_local_datetime(datetime.now(UTC), '%d.%m.%Y %H:%M:%S')}</i>"""
 
             return await self._send_message(message)
 
@@ -590,7 +591,7 @@ class AdminNotificationService:
         payment_method = self._get_payment_method_display(transaction.payment_method)
         balance_change = user.balance_kopeks - old_balance
         subscription_status = self._get_subscription_status(subscription)
-        timestamp = format_local_datetime(datetime.utcnow(), '%d.%m.%Y %H:%M:%S')
+        timestamp = format_local_datetime(datetime.now(UTC), '%d.%m.%Y %H:%M:%S')
         user_display = self._get_user_display(user)
         user_id_display = self._get_user_identifier_display(user)
 
@@ -867,7 +868,7 @@ class AdminNotificationService:
 {promo_block}
 
 💰 <b>Платеж:</b>
-💵 Сумма: {settings.format_price(transaction.amount_kopeks)}
+💵 Сумма: {settings.format_price(abs(transaction.amount_kopeks))}
 💳 Способ: {payment_method}
 🆔 ID транзакции: {transaction.id}
 
@@ -883,7 +884,7 @@ class AdminNotificationService:
 
 💰 <b>Баланс после операции:</b> {settings.format_price(current_balance)}
 
-⏰ <i>{format_local_datetime(datetime.utcnow(), '%d.%m.%Y %H:%M:%S')}</i>"""
+⏰ <i>{format_local_datetime(datetime.now(UTC), '%d.%m.%Y %H:%M:%S')}</i>"""
 
             return await self._send_message(message)
 
@@ -909,7 +910,7 @@ class AdminNotificationService:
                 transaction=None,
                 amount_kopeks=promocode_data.get('balance_bonus_kopeks'),
                 message='Promocode activation',
-                occurred_at=datetime.utcnow(),
+                occurred_at=datetime.now(UTC),
                 extra={
                     'code': promocode_data.get('code'),
                     'type': promocode_data.get('type'),
@@ -988,7 +989,7 @@ class AdminNotificationService:
                     '📝 <b>Эффект:</b>',
                     effect_description.strip() or '✅ Промокод активирован',
                     '',
-                    f'⏰ <i>{format_local_datetime(datetime.utcnow(), "%d.%m.%Y %H:%M:%S")}</i>',
+                    f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>',
                 ]
             )
 
@@ -1015,7 +1016,7 @@ class AdminNotificationService:
                     transaction=None,
                     amount_kopeks=None,
                     message='Referral link visit',
-                    occurred_at=datetime.utcnow(),
+                    occurred_at=datetime.now(UTC),
                     extra={
                         'campaign_id': campaign.id,
                         'campaign_name': campaign.name,
@@ -1067,7 +1068,7 @@ class AdminNotificationService:
             message_lines.extend(
                 [
                     '',
-                    f'⏰ <i>{format_local_datetime(datetime.utcnow(), "%d.%m.%Y %H:%M:%S")}</i>',
+                    f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>',
                 ]
             )
 
@@ -1096,7 +1097,7 @@ class AdminNotificationService:
                 subscription=None,
                 transaction=None,
                 message='Promo group change',
-                occurred_at=datetime.utcnow(),
+                occurred_at=datetime.now(UTC),
                 extra={
                     'old_group_id': getattr(old_group, 'id', None),
                     'old_group_name': getattr(old_group, 'name', None),
@@ -1157,7 +1158,7 @@ class AdminNotificationService:
                 [
                     '',
                     f'💰 Баланс пользователя: {settings.format_price(user.balance_kopeks)}',
-                    f'⏰ <i>{format_local_datetime(datetime.utcnow(), "%d.%m.%Y %H:%M:%S")}</i>',
+                    f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>',
                 ]
             )
 
@@ -1215,44 +1216,11 @@ class AdminNotificationService:
         """Public check for whether admin notifications are configured and active."""
         return self._is_enabled()
 
-    async def send_withdrawal_request_notification(
-        self,
-        text: str,
-        reply_markup: types.InlineKeyboardMarkup | None = None,
-        topic_id: int | None = None,
-    ) -> bool:
-        """Send withdrawal request notification to admin chat.
-
-        НЕ зависит от ADMIN_NOTIFICATIONS_ENABLED — заявки на вывод
-        критичны для бизнеса и всегда должны отправляться, если настроен chat_id.
-
-        Если задан withdrawal topic_id — отправляет только туда.
-        Иначе — в основной топик уведомлений.
-        """
-        if not self.chat_id:
-            logger.warning('Не удалось отправить уведомление о выводе: ADMIN_NOTIFICATIONS_CHAT_ID не настроен')
+    async def send_admin_notification(self, text: str, reply_markup: types.InlineKeyboardMarkup | None = None) -> bool:
+        """Send a generic notification to admin chat with optional inline keyboard."""
+        if not self._is_enabled():
             return False
-
-        target_topic_id = topic_id or self.topic_id
-
-        try:
-            message_kwargs = {
-                'chat_id': self.chat_id,
-                'text': text,
-                'parse_mode': 'HTML',
-                'disable_web_page_preview': True,
-            }
-            if target_topic_id:
-                message_kwargs['message_thread_id'] = target_topic_id
-            if reply_markup is not None:
-                message_kwargs['reply_markup'] = reply_markup
-
-            await self.bot.send_message(**message_kwargs)
-            logger.info(f'Уведомление о выводе отправлено в чат {self.chat_id}, топик {target_topic_id}')
-            return True
-        except Exception as e:
-            logger.error(f'Ошибка отправки уведомления о выводе в топик {target_topic_id}: {e}')
-            return False
+        return await self._send_message(text, reply_markup=reply_markup)
 
     async def send_webhook_notification(self, text: str) -> bool:
         """Send a generic webhook/infrastructure notification to admin chat.
@@ -1364,8 +1332,6 @@ class AdminNotificationService:
                 if details.get('enabled_at'):
                     enabled_at = details['enabled_at']
                     if isinstance(enabled_at, str):
-                        from datetime import datetime
-
                         enabled_at = datetime.fromisoformat(enabled_at)
                     message_parts.append(
                         f'🕐 <b>Время включения:</b> {format_local_datetime(enabled_at, "%d.%m.%Y %H:%M:%S")}'
@@ -1381,8 +1347,6 @@ class AdminNotificationService:
                 if details.get('disabled_at'):
                     disabled_at = details['disabled_at']
                     if isinstance(disabled_at, str):
-                        from datetime import datetime
-
                         disabled_at = datetime.fromisoformat(disabled_at)
                     message_parts.append(
                         f'🕐 <b>Время отключения:</b> {format_local_datetime(disabled_at, "%d.%m.%Y %H:%M:%S")}'
@@ -1448,7 +1412,7 @@ class AdminNotificationService:
                     message_parts.append('Автоматический мониторинг API остановлен.')
 
             message_parts.append('')
-            message_parts.append(f'⏰ <i>{format_local_datetime(datetime.utcnow(), "%d.%m.%Y %H:%M:%S")}</i>')
+            message_parts.append(f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>')
 
             message = '\n'.join(message_parts)
 
@@ -1485,8 +1449,6 @@ class AdminNotificationService:
             if details.get('last_check'):
                 last_check = details['last_check']
                 if isinstance(last_check, str):
-                    from datetime import datetime
-
                     last_check = datetime.fromisoformat(last_check)
                 message_parts.append(f'🕐 <b>Последняя проверка:</b> {format_local_datetime(last_check, "%H:%M:%S")}')
 
@@ -1535,7 +1497,7 @@ class AdminNotificationService:
                 message_parts.append('Панель временно недоступна для обслуживания.')
 
             message_parts.append('')
-            message_parts.append(f'⏰ <i>{format_local_datetime(datetime.utcnow(), "%d.%m.%Y %H:%M:%S")}</i>')
+            message_parts.append(f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>')
 
             message = '\n'.join(message_parts)
 
@@ -1628,7 +1590,7 @@ class AdminNotificationService:
             message_lines.extend(
                 [
                     '',
-                    f'<i>{format_local_datetime(datetime.utcnow(), "%d.%m.%Y %H:%M")}</i>',
+                    f'<i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M")}</i>',
                 ]
             )
 
@@ -1668,6 +1630,109 @@ class AdminNotificationService:
             return str(value)
         return str(value)
 
+    async def send_partner_application_notification(
+        self,
+        user: User,
+        application_data: dict[str, Any],
+    ) -> bool:
+        """Уведомление о новой заявке на партнёрку."""
+        if not self._is_enabled():
+            return False
+
+        try:
+            user_display = self._get_user_display(user)
+            user_id_display = self._get_user_identifier_display(user)
+
+            message_lines = [
+                '🤝 <b>ЗАЯВКА НА ПАРТНЁРКУ</b>',
+                '',
+                f'👤 {user_display} ({user_id_display})',
+            ]
+
+            username = getattr(user, 'username', None)
+            if username:
+                message_lines.append(f'📱 @{username}')
+
+            message_lines.append('')
+
+            if application_data.get('company_name'):
+                message_lines.append(f'🏢 Компания: {html.escape(str(application_data["company_name"]))}')
+            if application_data.get('telegram_channel'):
+                message_lines.append(f'📢 Канал: {html.escape(str(application_data["telegram_channel"]))}')
+            if application_data.get('website_url'):
+                message_lines.append(f'🌐 Сайт: {html.escape(str(application_data["website_url"]))}')
+            if application_data.get('description'):
+                desc = str(application_data['description'])
+                if len(desc) > 200:
+                    desc = desc[:197] + '...'
+                message_lines.append(f'📝 {html.escape(desc)}')
+            if application_data.get('expected_monthly_referrals'):
+                message_lines.append(f'👥 Ожидаемых рефералов: {application_data["expected_monthly_referrals"]}/мес')
+
+            message_lines.extend(
+                [
+                    '',
+                    f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>',
+                ]
+            )
+
+            return await self._send_message('\n'.join(message_lines))
+
+        except Exception as e:
+            logger.error('Ошибка отправки уведомления о заявке на партнёрку', error=e)
+            return False
+
+    async def send_withdrawal_request_notification(
+        self,
+        user: User,
+        amount_kopeks: int,
+        payment_details: str | None = None,
+    ) -> bool:
+        """Уведомление о запросе на вывод средств."""
+        if not self._is_enabled():
+            return False
+
+        try:
+            user_display = self._get_user_display(user)
+            user_id_display = self._get_user_identifier_display(user)
+
+            message_lines = [
+                '💸 <b>ЗАПРОС НА ВЫВОД СРЕДСТВ</b>',
+                '',
+                f'👤 {user_display} ({user_id_display})',
+            ]
+
+            username = getattr(user, 'username', None)
+            if username:
+                message_lines.append(f'📱 @{username}')
+
+            message_lines.extend(
+                [
+                    '',
+                    f'💵 <b>Сумма: {settings.format_price(amount_kopeks)}</b>',
+                    f'💰 Баланс: {settings.format_price(user.balance_kopeks)}',
+                ]
+            )
+
+            if payment_details:
+                details = str(payment_details)
+                if len(details) > 200:
+                    details = details[:197] + '...'
+                message_lines.extend(['', f'💳 Реквизиты: {html.escape(details)}'])
+
+            message_lines.extend(
+                [
+                    '',
+                    f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>',
+                ]
+            )
+
+            return await self._send_message('\n'.join(message_lines))
+
+        except Exception as e:
+            logger.error('Ошибка отправки уведомления о запросе на вывод', error=e)
+            return False
+
     async def send_bulk_ban_notification(
         self,
         admin_user_id: int,
@@ -1701,7 +1766,7 @@ class AdminNotificationService:
             message_lines.extend(
                 [
                     '',
-                    f'⏰ <i>{format_local_datetime(datetime.utcnow(), "%d.%m.%Y %H:%M:%S")}</i>',
+                    f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>',
                 ]
             )
 
