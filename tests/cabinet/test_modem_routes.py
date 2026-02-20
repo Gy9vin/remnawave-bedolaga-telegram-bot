@@ -2,7 +2,7 @@
 Тесты для Cabinet API эндпоинтов модема.
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.services.modem_service import (
@@ -22,8 +22,8 @@ def _make_user(balance=50000, modem_enabled=False, is_trial=False, device_limit=
         is_trial=is_trial,
         modem_enabled=modem_enabled,
         device_limit=device_limit,
-        end_date=datetime.utcnow() + timedelta(days=30),
-        updated_at=datetime.utcnow(),
+        end_date=datetime.now(UTC) + timedelta(days=30),
+        updated_at=datetime.now(UTC),
         status='active',
         tariff_id=None,
     )
@@ -50,7 +50,7 @@ def _make_price_result(base=10000, final=10000, discount=0, months=1, days=30):
         discount_amount=base - final,
         charged_months=months,
         remaining_days=days,
-        end_date=datetime.utcnow() + timedelta(days=days),
+        end_date=datetime.now(UTC) + timedelta(days=days),
     )
 
 

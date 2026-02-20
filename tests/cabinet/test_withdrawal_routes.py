@@ -2,7 +2,7 @@
 Тесты для Cabinet API эндпоинтов вывода реферального баланса.
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from app.database.models import WithdrawalRequestStatus
 
@@ -151,18 +151,18 @@ class TestWithdrawalValidation:
     def test_cooldown_active(self):
         """Cooldown ещё не прошёл — нельзя создать заявку."""
         cooldown_days = 30
-        last_request_date = datetime.utcnow() - timedelta(days=10)
+        last_request_date = datetime.now(UTC) - timedelta(days=10)
         cooldown_end = last_request_date + timedelta(days=cooldown_days)
 
-        assert datetime.utcnow() < cooldown_end  # Cooldown активен
+        assert datetime.now(UTC) < cooldown_end  # Cooldown активен
 
     def test_cooldown_expired(self):
         """Cooldown прошёл — можно создать заявку."""
         cooldown_days = 30
-        last_request_date = datetime.utcnow() - timedelta(days=31)
+        last_request_date = datetime.now(UTC) - timedelta(days=31)
         cooldown_end = last_request_date + timedelta(days=cooldown_days)
 
-        assert datetime.utcnow() >= cooldown_end  # Cooldown истёк
+        assert datetime.now(UTC) >= cooldown_end  # Cooldown истёк
 
     def test_pending_request_blocks_new(self):
         """Активная заявка блокирует новую."""
@@ -275,7 +275,7 @@ class TestWithdrawalSchemas:
             payment_details='+7 999 123-45-67',
             risk_score=15,
             admin_comment=None,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
             processed_at=None,
         )
         assert response.id == 1
@@ -290,7 +290,7 @@ class TestWithdrawalSchemas:
                 id=i,
                 amount_kopeks=50000,
                 status='pending',
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(UTC),
             )
             for i in range(3)
         ]

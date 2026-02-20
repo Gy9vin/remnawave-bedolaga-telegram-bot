@@ -9,7 +9,7 @@
 - Проверка blacklist и restrictions
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -127,10 +127,10 @@ def create_mock_subscription(
     subscription.device_limit = device_limit
     subscription.connected_squads = connected_squads or ['test-squad-uuid']
     # Использовать naive datetime для совместимости с кодом
-    subscription.start_date = start_date if start_date is not None else dt.utcnow()
-    subscription.end_date = end_date if end_date is not None else (dt.utcnow() + timedelta(days=30))
+    subscription.start_date = start_date if start_date is not None else dt.now(UTC)
+    subscription.end_date = end_date if end_date is not None else (dt.now(UTC) + timedelta(days=30))
     subscription.traffic_used_gb = 0.0
-    subscription.updated_at = dt.utcnow()
+    subscription.updated_at = dt.now(UTC)
 
     return subscription
 
@@ -304,7 +304,7 @@ async def test_purchase_extend_existing_subscription():
     existing_subscription = create_mock_subscription(
         user_id=1,
         is_trial=False,
-        end_date=dt.utcnow() + timedelta(days=10),  # Осталось 10 дней
+        end_date=dt.now(UTC) + timedelta(days=10),  # Осталось 10 дней
     )
     db = MockAsyncSession()
     service = MiniAppSubscriptionPurchaseService()
@@ -633,7 +633,7 @@ async def test_purchase_trial_conversion():
         user_id=1,
         is_trial=True,
         status=SubscriptionStatus.TRIAL.value,
-        end_date=dt.utcnow() + timedelta(days=5),  # Осталось 5 дней триала
+        end_date=dt.now(UTC) + timedelta(days=5),  # Осталось 5 дней триала
     )
     db = MockAsyncSession()
     service = MiniAppSubscriptionPurchaseService()

@@ -2,7 +2,7 @@
 Тесты для ModemService - управление модемом в подписке.
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -42,8 +42,8 @@ def create_sample_subscription():
         is_trial=False,
         modem_enabled=False,
         device_limit=2,
-        end_date=datetime.utcnow() + timedelta(days=30),
-        updated_at=datetime.utcnow(),
+        end_date=datetime.now(UTC) + timedelta(days=30),
+        updated_at=datetime.now(UTC),
     )
     return subscription
 
@@ -56,8 +56,8 @@ def create_trial_subscription():
         is_trial=True,
         modem_enabled=False,
         device_limit=1,
-        end_date=datetime.utcnow() + timedelta(days=7),
-        updated_at=datetime.utcnow(),
+        end_date=datetime.now(UTC) + timedelta(days=7),
+        updated_at=datetime.now(UTC),
     )
     return subscription
 
@@ -159,7 +159,7 @@ class TestModemServicePricing:
         """Расчёт цены на 1 месяц (30 дней)."""
         modem_service, _ = create_modem_service(monkeypatch)
         sample_subscription = create_sample_subscription()
-        sample_subscription.end_date = datetime.utcnow() + timedelta(days=30)
+        sample_subscription.end_date = datetime.now(UTC) + timedelta(days=30)
 
         result = modem_service.calculate_price(sample_subscription)
 
@@ -173,7 +173,7 @@ class TestModemServicePricing:
         """Расчёт цены на 3 месяца (90 дней)."""
         modem_service, _ = create_modem_service(monkeypatch)
         sample_subscription = create_sample_subscription()
-        sample_subscription.end_date = datetime.utcnow() + timedelta(days=90)
+        sample_subscription.end_date = datetime.now(UTC) + timedelta(days=90)
 
         result = modem_service.calculate_price(sample_subscription)
 
@@ -185,7 +185,7 @@ class TestModemServicePricing:
         """Расчёт цены со скидкой."""
         modem_service, mock_settings = create_modem_service(monkeypatch)
         sample_subscription = create_sample_subscription()
-        sample_subscription.end_date = datetime.utcnow() + timedelta(days=90)
+        sample_subscription.end_date = datetime.now(UTC) + timedelta(days=90)
         mock_settings.get_modem_period_discount.return_value = 10  # 10% скидка
 
         result = modem_service.calculate_price(sample_subscription)
@@ -200,7 +200,7 @@ class TestModemServicePricing:
         """Расчёт цены за ~6 дней — платить пропорционально, не за целый месяц."""
         modem_service, _ = create_modem_service(monkeypatch)
         sample_subscription = create_sample_subscription()
-        sample_subscription.end_date = datetime.utcnow() + timedelta(days=6)
+        sample_subscription.end_date = datetime.now(UTC) + timedelta(days=6)
 
         result = modem_service.calculate_price(sample_subscription)
 

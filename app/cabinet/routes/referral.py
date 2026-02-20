@@ -1,6 +1,7 @@
 """Referral program routes for cabinet."""
 
 import logging
+import math
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import desc, func, select
