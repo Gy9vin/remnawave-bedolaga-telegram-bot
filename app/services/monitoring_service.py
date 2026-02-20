@@ -1135,7 +1135,7 @@ class MonitoringService:
             return
 
         try:
-            current_time = datetime.utcnow()
+            current_time = datetime.now(UTC)
             check_minutes = settings.AUTO_RENEW_CHECK_MINUTES
             threshold_time = current_time + timedelta(minutes=check_minutes)
 
@@ -1292,7 +1292,7 @@ class MonitoringService:
         """Проверяет наличие транзакции продления за последние N секунд."""
         from app.database.models import Transaction
 
-        cutoff_time = datetime.utcnow() - timedelta(seconds=seconds)
+        cutoff_time = datetime.now(UTC) - timedelta(seconds=seconds)
 
         result = await db.execute(
             select(Transaction)

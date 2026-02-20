@@ -58,9 +58,9 @@ async def get_modem_status(
 
     subscription = user.subscription
     if subscription and subscription.end_date:
-        from datetime import datetime
+        from datetime import UTC, datetime
 
-        remaining_days = max(0, (subscription.end_date - datetime.utcnow()).days)
+        remaining_days = max(0, (subscription.end_date - datetime.now(UTC)).days)
         result['remaining_days'] = remaining_days
         result['warning_level'] = modem_service.get_period_warning_level(remaining_days)
 

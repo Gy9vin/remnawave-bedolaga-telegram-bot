@@ -670,7 +670,7 @@ class ReferralWithdrawalService:
             amount_kopeks=-request.amount_kopeks,
             description=f'Вывод реферального баланса (заявка #{request.id})',
             is_completed=True,
-            completed_at=datetime.utcnow(),
+            completed_at=datetime.now(UTC),
         )
         db.add(withdrawal_tx)
 

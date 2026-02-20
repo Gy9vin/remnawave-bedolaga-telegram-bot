@@ -463,7 +463,7 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
 
         if referral_code and not user.referred_by_id:
             # Try to apply referral retroactively (e.g., user was created via Cabinet before bot processed the code)
-            recently_created = user.created_at and (datetime.utcnow() - user.created_at).total_seconds() < 600
+            recently_created = user.created_at and (datetime.now(UTC) - user.created_at).total_seconds() < 600
             if recently_created:
                 try:
                     referrer = await get_user_by_referral_code(db, referral_code)

@@ -7,7 +7,7 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -168,7 +168,7 @@ class ModemService:
         """
         modem_price_per_month = settings.get_modem_price_per_month()
 
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         remaining_days = max(1, (subscription.end_date - now).days)
 
         # Подневный расчёт: дневная ставка × оставшиеся дни
@@ -260,7 +260,7 @@ class ModemService:
 
             subscription.modem_enabled = True
             subscription.device_limit = (subscription.device_limit or 1) + 1
-            subscription.updated_at = datetime.utcnow()
+            subscription.updated_at = datetime.now(UTC)
 
             await db.commit()
 
@@ -298,7 +298,7 @@ class ModemService:
             subscription.modem_enabled = False
             if subscription.device_limit and subscription.device_limit > 1:
                 subscription.device_limit = subscription.device_limit - 1
-            subscription.updated_at = datetime.utcnow()
+            subscription.updated_at = datetime.now(UTC)
 
             await db.commit()
 
