@@ -23,8 +23,14 @@ from ..auth.oauth_providers import (
     get_provider,
     validate_oauth_state,
 )
-from ..dependencies import get_cabinet_db
-from ..schemas.auth import AuthResponse
+from ..dependencies import get_cabinet_db, get_current_cabinet_user
+from ..schemas.auth import (
+    AuthResponse,
+    ConnectionInfo,
+    ConnectionsResponse,
+    LinkOAuthRequest,
+    LinkResponse,
+)
 from .auth import _create_auth_response, _process_campaign_bonus, _store_refresh_token
 
 
@@ -207,3 +213,192 @@ async def oauth_callback(
     )
     logger.info('OAuth new user created via with id', provider=provider, user_id=user.id)
     return await _finalize_oauth_login(db, user, provider, request.campaign_slug, request.referral_code)
+
+
+# --- Account Linking Endpoints ---
+
+_PROVIDER_COLUMNS = {
+    'google': 'google_id',
+    'yandex': 'yandex_id',
+    'discord': 'discord_id',
+    'vk': 'vk_id',
+}
+
+
+def _count_auth_methods(user: User) -> int:
+    """Count how many auth methods a user has (to prevent unlinking the last one)."""
+    count = 0
+    if user.telegram_id:
+        count += 1
+    if user.email and user.email_verified and user.password_hash:
+        count += 1
+    for col in _PROVIDER_COLUMNS.values():
+        if getattr(user, col, None):
+            count += 1
+    return count
+
+
+@router.get('/connections', response_model=ConnectionsResponse)
+async def get_connections(
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Get all connected accounts for current user."""
+    connections = []
+
+    # Telegram
+    connections.append(
+        ConnectionInfo(
+            provider='telegram',
+            connected=user.telegram_id is not None,
+            identifier=f'@{user.username}' if user.username else (str(user.telegram_id) if user.telegram_id else None),
+        )
+    )
+
+    # Email
+    connections.append(
+        ConnectionInfo(
+            provider='email',
+            connected=bool(user.email and user.email_verified),
+            identifier=user.email if user.email and user.email_verified else None,
+        )
+    )
+
+    # OAuth providers
+    providers_config = settings.get_oauth_providers_config()
+    for provider_name, col_name in _PROVIDER_COLUMNS.items():
+        cfg = providers_config.get(provider_name, {})
+        if not cfg.get('enabled'):
+            continue
+        provider_id = getattr(user, col_name, None)
+        connections.append(
+            ConnectionInfo(
+                provider=provider_name,
+                connected=provider_id is not None,
+                identifier=str(provider_id) if provider_id else None,
+            )
+        )
+
+    total = sum(1 for c in connections if c.connected)
+    return ConnectionsResponse(connections=connections, total_connected=total)
+
+
+@router.get('/{provider}/link', response_model=OAuthAuthorizeResponse)
+async def get_link_authorize_url(
+    provider: str,
+    user: User = Depends(get_current_cabinet_user),
+):
+    """Get authorization URL to link an OAuth provider to current account."""
+    if provider not in _PROVIDER_COLUMNS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Unknown provider: {provider}')
+
+    # Check if already linked
+    if getattr(user, _PROVIDER_COLUMNS[provider], None):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'{provider} already linked')
+
+    oauth_provider = get_provider(provider)
+    if not oauth_provider:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Provider {provider} is not enabled')
+
+    state = await generate_oauth_state(provider)
+    authorize_url = oauth_provider.get_authorization_url(state)
+    return OAuthAuthorizeResponse(authorize_url=authorize_url, state=state)
+
+
+@router.post('/{provider}/link', response_model=LinkResponse)
+async def link_oauth_provider(
+    provider: str,
+    request: LinkOAuthRequest,
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Link an OAuth provider to current account."""
+    if provider not in _PROVIDER_COLUMNS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Unknown provider: {provider}')
+
+    # Check if already linked
+    col_name = _PROVIDER_COLUMNS[provider]
+    if getattr(user, col_name, None):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'{provider} already linked')
+
+    # Validate state
+    if not await validate_oauth_state(request.state, provider):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid or expired state')
+
+    # Get provider and exchange code
+    oauth_provider = get_provider(provider)
+    if not oauth_provider:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Provider {provider} is not enabled')
+
+    try:
+        token_data = await oauth_provider.exchange_code(request.code)
+    except Exception as exc:
+        logger.error('OAuth link code exchange failed', provider=provider, exc=exc)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Failed to exchange code') from exc
+
+    try:
+        user_info: OAuthUserInfo = await oauth_provider.get_user_info(token_data)
+    except Exception as exc:
+        logger.error('OAuth link user info failed', provider=provider, exc=exc)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Failed to get user info') from exc
+
+    # Check that this provider_id is not linked to another user
+    existing = await get_user_by_oauth_provider(db, provider, user_info.provider_id)
+    if existing and existing.id != user.id:
+        # If the other user is "empty" (no telegram, no subscription, no balance),
+        # auto-transfer the provider_id to the current user
+        is_empty = not existing.telegram_id and not existing.remnawave_uuid and (existing.balance_kopeks or 0) == 0
+        if is_empty:
+            logger.info(
+                'Auto-transferring provider from empty user',
+                provider=provider,
+                from_user_id=existing.id,
+                to_user_id=user.id,
+            )
+            # Remove provider_id from the empty user
+            setattr(existing, col_name, None)
+            existing.updated_at = datetime.now(UTC)
+            # Flush to DB BEFORE setting new value — otherwise SQLAlchemy batches
+            # both UPDATEs into one executemany and the unique constraint fails
+            await db.flush()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f'This {provider} account is already linked to another user',
+            )
+
+    # Link provider
+    await set_user_oauth_provider_id(db, user, provider, user_info.provider_id)
+    await db.commit()
+
+    logger.info('OAuth provider linked', provider=provider, user_id=user.id, provider_id=user_info.provider_id)
+    return LinkResponse(success=True, message=f'{provider} linked successfully', provider=provider)
+
+
+@router.delete('/{provider}/link', response_model=LinkResponse)
+async def unlink_oauth_provider(
+    provider: str,
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Unlink an OAuth provider from current account."""
+    if provider not in _PROVIDER_COLUMNS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Unknown provider: {provider}')
+
+    col_name = _PROVIDER_COLUMNS[provider]
+    if not getattr(user, col_name, None):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'{provider} is not linked')
+
+    # Ensure at least one other auth method remains
+    if _count_auth_methods(user) <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Cannot unlink the last authentication method',
+        )
+
+    setattr(user, col_name, None)
+    user.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    logger.info('OAuth provider unlinked', provider=provider, user_id=user.id)
+    return LinkResponse(success=True, message=f'{provider} unlinked successfully', provider=provider)

@@ -163,3 +163,39 @@ class EmailChangeResponse(BaseModel):
     message: str = Field(..., description='Success message')
     new_email: str = Field(..., description='New email address pending verification')
     expires_in_minutes: int = Field(..., description='Code expiration time in minutes')
+
+
+class ConnectionInfo(BaseModel):
+    """Info about a single connected account."""
+
+    provider: str = Field(..., description='Provider name: telegram, email, google, yandex, discord, vk')
+    connected: bool = Field(..., description='Whether this provider is linked')
+    identifier: str | None = Field(None, description='Display identifier (username, email, provider ID)')
+
+
+class ConnectionsResponse(BaseModel):
+    """Response with all connected accounts for current user."""
+
+    connections: list[ConnectionInfo]
+    total_connected: int = Field(..., description='Total number of connected providers')
+
+
+class LinkOAuthRequest(BaseModel):
+    """Request to link OAuth provider to current account."""
+
+    code: str = Field(..., description='OAuth authorization code')
+    state: str = Field(..., description='OAuth CSRF state')
+
+
+class LinkTelegramRequest(BaseModel):
+    """Request to link Telegram to current account."""
+
+    init_data: str = Field(..., description='Telegram WebApp initData string')
+
+
+class LinkResponse(BaseModel):
+    """Response for link/unlink operations."""
+
+    success: bool
+    message: str
+    provider: str

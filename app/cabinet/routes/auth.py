@@ -62,6 +62,8 @@ from ..schemas.auth import (
     EmailRegisterRequest,
     EmailRegisterStandaloneRequest,
     EmailVerifyRequest,
+    LinkResponse,
+    LinkTelegramRequest,
     PasswordForgotRequest,
     PasswordResetRequest,
     RefreshTokenRequest,
@@ -1310,3 +1312,126 @@ async def get_email_change_status(
         'new_email': user.email_change_new,
         'expires_at': user.email_change_expires.isoformat() if user.email_change_expires else None,
     }
+
+
+@router.post('/telegram/link', response_model=LinkResponse)
+async def link_telegram(
+    request: LinkTelegramRequest,
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Link Telegram account to current user (for email/OAuth users)."""
+    if user.telegram_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Telegram already linked to this account',
+        )
+
+    # Validate initData
+    user_data = validate_telegram_init_data(request.init_data)
+    if not user_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid Telegram initData',
+        )
+
+    telegram_id = user_data.get('id')
+    if not telegram_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Telegram ID not found in initData',
+        )
+
+    # Check if this telegram_id is already linked to another user
+    existing = await get_user_by_telegram_id(db, telegram_id)
+    if existing and existing.id != user.id:
+        # Auto-transfer if the other user is empty (no subscription, no balance)
+        is_empty = not existing.remnawave_uuid and (existing.balance_kopeks or 0) == 0
+        if is_empty:
+            logger.info(f'Auto-transferring telegram_id from empty user {existing.id} to user {user.id}')
+            existing.telegram_id = None
+            existing.updated_at = datetime.now(UTC)
+            # Flush to DB BEFORE setting new value — otherwise SQLAlchemy batches
+            # both UPDATEs into one executemany and the unique constraint fails
+            await db.flush()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail='This Telegram account is already linked to another user',
+            )
+
+    # Link Telegram
+    user.telegram_id = telegram_id
+    user.username = user_data.get('username') or user.username
+    user.first_name = user_data.get('first_name') or user.first_name
+    user.last_name = user_data.get('last_name') or user.last_name
+    user.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    logger.info(f'Telegram linked to user {user.id}: telegram_id={telegram_id}')
+    return LinkResponse(success=True, message='Telegram linked successfully', provider='telegram')
+
+
+@router.post('/telegram/link/widget', response_model=LinkResponse)
+async def link_telegram_widget(
+    request: TelegramWidgetAuthRequest,
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Link Telegram account via Login Widget (for browser users without Telegram WebApp)."""
+    if user.telegram_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Telegram already linked to this account',
+        )
+
+    # Validate widget data
+    widget_data = {
+        'id': request.id,
+        'first_name': request.first_name,
+        'auth_date': request.auth_date,
+        'hash': request.hash,
+    }
+    if request.last_name:
+        widget_data['last_name'] = request.last_name
+    if request.username:
+        widget_data['username'] = request.username
+    if request.photo_url:
+        widget_data['photo_url'] = request.photo_url
+
+    if not validate_telegram_login_widget(widget_data):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid Telegram widget data',
+        )
+
+    telegram_id = request.id
+
+    # Check if this telegram_id is already linked to another user
+    existing = await get_user_by_telegram_id(db, telegram_id)
+    if existing and existing.id != user.id:
+        # Auto-transfer if the other user is empty (no subscription, no balance)
+        is_empty = not existing.remnawave_uuid and (existing.balance_kopeks or 0) == 0
+        if is_empty:
+            logger.info(f'Auto-transferring telegram_id from empty user {existing.id} to user {user.id}')
+            existing.telegram_id = None
+            existing.updated_at = datetime.now(UTC)
+            # Flush to DB BEFORE setting new value — otherwise SQLAlchemy batches
+            # both UPDATEs into one executemany and the unique constraint fails
+            await db.flush()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail='This Telegram account is already linked to another user',
+            )
+
+    # Link Telegram
+    user.telegram_id = telegram_id
+    user.username = request.username or user.username
+    user.first_name = request.first_name or user.first_name
+    user.last_name = request.last_name or user.last_name
+    user.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    logger.info(f'Telegram linked via widget to user {user.id}: telegram_id={telegram_id}')
+    return LinkResponse(success=True, message='Telegram linked successfully', provider='telegram')
