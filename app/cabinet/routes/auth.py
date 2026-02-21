@@ -27,10 +27,6 @@ from app.database.crud.user import (
     verify_and_apply_email_change,
 )
 from app.database.models import CabinetRefreshToken, User
-from app.middlewares.channel_checker import (
-    delete_pending_payload_from_redis,
-    get_pending_payload_from_redis,
-)
 from app.services.campaign_service import AdvertisingCampaignService
 from app.services.disposable_email_service import disposable_email_service
 from app.services.referral_service import process_referral_registration
@@ -376,18 +372,6 @@ async def auth_telegram(
     if not user:
         # Create new user from Telegram initData
         logger.info(f'Creating new user from cabinet (initData): telegram_id={telegram_id}')
-
-        # Check Redis for pending referral payload (saved by channel checker when user clicked /start refXXX)
-        referred_by_id = None
-        pending_payload = await get_pending_payload_from_redis(telegram_id)
-        if pending_payload:
-            referrer = await get_user_by_referral_code(db, pending_payload)
-            if referrer and referrer.telegram_id != telegram_id:
-                referred_by_id = referrer.id
-                logger.info(
-                    f'Found pending referral code {pending_payload} for user {telegram_id}, referrer_id={referred_by_id}'
-                )
-
         user = await create_user(
             db=db,
             telegram_id=telegram_id,
@@ -395,18 +379,9 @@ async def auth_telegram(
             first_name=tg_first_name,
             last_name=tg_last_name,
             language=tg_language,
-            referred_by_id=referred_by_id,
+            referred_by_id=referrer_id,
         )
         logger.info(f'User created successfully: id={user.id}, telegram_id={user.telegram_id}')
-
-        # Process referral registration and clean up Redis payload
-        if referred_by_id:
-            try:
-                await process_referral_registration(db, user.id, referred_by_id)
-                logger.info(f'✅ Referral registration processed for user {user.id}, referrer_id={referred_by_id}')
-            except Exception as e:
-                logger.error(f'Error processing referral registration: {e}')
-            await delete_pending_payload_from_redis(telegram_id)
     else:
         # Update user info from initData (like bot middleware does)
         updated = False
@@ -482,18 +457,6 @@ async def auth_telegram_widget(
     if not user:
         # Create new user from Telegram data
         logger.info(f'Creating new user from cabinet: telegram_id={request.id}, username={request.username}')
-
-        # Check Redis for pending referral payload
-        referred_by_id = None
-        pending_payload = await get_pending_payload_from_redis(request.id)
-        if pending_payload:
-            referrer = await get_user_by_referral_code(db, pending_payload)
-            if referrer and referrer.telegram_id != request.id:
-                referred_by_id = referrer.id
-                logger.info(
-                    f'Found pending referral code {pending_payload} for user {request.id}, referrer_id={referred_by_id}'
-                )
-
         user = await create_user(
             db=db,
             telegram_id=request.id,
@@ -501,17 +464,9 @@ async def auth_telegram_widget(
             first_name=request.first_name,
             last_name=request.last_name,
             language='ru',
-            referred_by_id=referred_by_id,
+            referred_by_id=referrer_id,
         )
         logger.info(f'User created successfully: id={user.id}, telegram_id={user.telegram_id}')
-
-        if referred_by_id:
-            try:
-                await process_referral_registration(db, user.id, referred_by_id)
-                logger.info(f'✅ Referral registration processed for user {user.id}, referrer_id={referred_by_id}')
-            except Exception as e:
-                logger.error(f'Error processing referral registration: {e}')
-            await delete_pending_payload_from_redis(request.id)
 
     if user.status != 'active':
         raise HTTPException(
