@@ -205,8 +205,8 @@ class YandexProvider(OAuthProvider):
     name = 'yandex'
     display_name = 'Yandex'
 
-    AUTHORIZE_URL = 'https://oauth.yandex.com/authorize'
-    TOKEN_URL = 'https://oauth.yandex.com/token'
+    AUTHORIZE_URL = 'https://oauth.yandex.ru/authorize'
+    TOKEN_URL = 'https://oauth.yandex.ru/token'
     USERINFO_URL = 'https://login.yandex.ru/info'
 
     def get_authorization_url(self, state: str) -> str:
