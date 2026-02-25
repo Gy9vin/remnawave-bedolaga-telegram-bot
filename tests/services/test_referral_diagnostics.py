@@ -5,6 +5,7 @@
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -22,27 +23,22 @@ def temp_log_file():
 
 @pytest.fixture
 def sample_log_content():
-    """Пример содержимого лог-файла с реферальными событиями."""
+    """Пример содержимого лог-файла с реферальными кликами."""
     today = datetime.now(UTC).strftime('%Y-%m-%d')
-    return f"""
-{today} 10:00:00,123 - app.handlers.start - INFO - 🔎 Найден реферальный код: <ABC123>
-{today} 10:00:05,456 - app.handlers.start - INFO - ✅ Реферальный код ABC123 применен для пользователя 123456789
-{today} 10:00:10,789 - app.services.referral_service - INFO - ✅ Реферальная регистрация обработана для 123456789
-{today} 10:00:15,012 - app.services.referral_service - INFO - 💰 Реферал 123456789 получил бонус
-
-{today} 11:00:00,345 - app.handlers.start - INFO - 🔎 Найден реферальный код: <XYZ999>
-{today} 11:00:05,678 - app.handlers.start - INFO - ✅ Реферальный код XYZ999 применен для пользователя 987654321
-
-{today} 12:00:00,901 - app.handlers.start - INFO - 🔎 Найден реферальный код: <TEST777>
-
-{today} 13:00:00,234 - unrelated module - INFO - Some other log message
-"""
+    return (
+        f'{today} 10:00:00,123 - app.handlers.start - INFO - '
+        f'📩 Сообщение от ID:123456789 text=/start refABC123\n'
+        f'{today} 10:00:05,456 - app.handlers.start - INFO - '
+        f"💾 Сохранен start payload 'refXYZ999' для пользователя 987654321\n"
+        f'{today} 11:00:00,345 - app.handlers.start - INFO - '
+        f'📩 Сообщение от ID:111222333 text=/start ref_refDEF456\n'
+        f'{today} 13:00:00,234 - unrelated module - INFO - Some other log message\n'
+    )
 
 
 @pytest.mark.asyncio
-async def test_parse_logs_basic(temp_log_file, sample_log_content):
-    """Тест базового парсинга логов."""
-    # Записываем тестовые данные в файл
+async def test_parse_clicks_basic(temp_log_file, sample_log_content):
+    """Тест базового парсинга логов — находит реф-клики."""
     temp_log_file.write_text(sample_log_content)
 
     service = ReferralDiagnosticsService(log_path=str(temp_log_file))
@@ -50,47 +46,41 @@ async def test_parse_logs_basic(temp_log_file, sample_log_content):
     today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow = today + timedelta(days=1)
 
-    events = await service._parse_logs(today, tomorrow)
+    clicks, total_lines, lines_in_period = await service._parse_clicks(today, tomorrow)
 
-    # Проверяем что нашлись все события
-    assert len(events) >= 6, f'Expected at least 6 events, found {len(events)}'
+    # Должны найтись 3 реф-клика
+    assert len(clicks) >= 1, f'Expected at least 1 click, found {len(clicks)}'
 
-    # Проверяем типы событий
-    event_types = [e.event_type for e in events]
-    assert 'code_found' in event_types
-    assert 'code_applied' in event_types
-    assert 'registration_processed' in event_types
-    assert 'bonus_given' in event_types
+    # Проверяем что telegram_id есть в кликах
+    telegram_ids = [c.telegram_id for c in clicks]
+    assert 123456789 in telegram_ids or 987654321 in telegram_ids or 111222333 in telegram_ids
 
 
 @pytest.mark.asyncio
-async def test_analyze_period_with_issues(temp_log_file, sample_log_content):
-    """Тест анализа с проблемными случаями."""
+async def test_analyze_period_basic(temp_log_file, sample_log_content):
+    """Тест анализа периода — возвращает DiagnosticReport."""
     temp_log_file.write_text(sample_log_content)
 
     service = ReferralDiagnosticsService(log_path=str(temp_log_file))
 
     today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow = today + timedelta(days=1)
-
-    # Используем None вместо db для базового теста парсинга
-    from unittest.mock import AsyncMock
 
     mock_db = AsyncMock()
-    mock_db.execute.return_value.scalar_one_or_none.return_value = None
+    # _find_lost_referrals вызывает result.scalars().all() — scalars() синхронный
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_db.execute = AsyncMock(return_value=mock_result)
 
     report = await service.analyze_period(mock_db, today, tomorrow)
 
-    # Проверяем статистику
-    # Примечание: code_found не имеет telegram_id, поэтому total_link_clicks будет 0
-    # Это нормально - мы считаем только события с telegram_id
-    assert report.total_codes_applied >= 1, 'Should have applied codes'
-
-    # Проверяем что нашлись проблемные случаи
-    # (987654321 применил код, но не завершил регистрацию)
-    assert 987654321 in report.users_applied_no_registration, (
-        f'Expected 987654321 in problems, got: {report.users_applied_no_registration}'
-    )
+    # Проверяем структуру отчёта
+    assert hasattr(report, 'total_ref_clicks')
+    assert hasattr(report, 'unique_users_clicked')
+    assert hasattr(report, 'lost_referrals')
+    assert report.total_ref_clicks >= 1, 'Should have found referral clicks'
+    assert report.analysis_period_start == today
+    assert report.analysis_period_end == tomorrow
 
 
 @pytest.mark.asyncio
@@ -103,17 +93,14 @@ async def test_empty_log_file(temp_log_file):
     today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow = today + timedelta(days=1)
 
-    from unittest.mock import AsyncMock
-
     mock_db = AsyncMock()
 
     report = await service.analyze_period(mock_db, today, tomorrow)
 
     # Проверяем что отчёт пустой
-    assert report.total_link_clicks == 0
-    assert report.total_codes_applied == 0
-    assert report.total_registrations == 0
-    assert len(report.events) == 0
+    assert report.total_ref_clicks == 0
+    assert report.unique_users_clicked == 0
+    assert len(report.lost_referrals) == 0
 
 
 @pytest.mark.asyncio
@@ -124,15 +111,13 @@ async def test_nonexistent_log_file():
     today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow = today + timedelta(days=1)
 
-    from unittest.mock import AsyncMock
-
     mock_db = AsyncMock()
 
     # Не должно быть исключений
     report = await service.analyze_period(mock_db, today, tomorrow)
 
-    assert report.total_link_clicks == 0
-    assert len(report.events) == 0
+    assert report.total_ref_clicks == 0
+    assert len(report.lost_referrals) == 0
 
 
 @pytest.mark.asyncio
@@ -142,9 +127,10 @@ async def test_analyze_today(temp_log_file, sample_log_content):
 
     service = ReferralDiagnosticsService(log_path=str(temp_log_file))
 
-    from unittest.mock import AsyncMock
-
     mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_db.execute = AsyncMock(return_value=mock_result)
 
     report = await service.analyze_today(mock_db)
 

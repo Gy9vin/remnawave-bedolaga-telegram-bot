@@ -40,8 +40,14 @@ class StubSettings:
 @pytest.mark.parametrize(
     'forced_amount, expected',
     [
-        (None, None),
-        (0, 0),
+        # forced_amount=None: get_disabled_mode_device_limit() returns None ->
+        # no explicit override -> falls back to subscription.device_limit=42
+        (None, 42),
+        # forced_amount=0: get_disabled_mode_device_limit() returns 0 ->
+        # condition `forced_limit is not None and forced_limit > 0` is False ->
+        # falls back to subscription.device_limit=42
+        (0, 42),
+        # forced_amount=5: explicit positive override -> returns 5
         (5, 5),
     ],
 )
@@ -94,7 +100,9 @@ def test_resolve_hwid_device_limit_for_payload_returns_subscription_limit(monkey
         StubSettings(enabled=False, disabled_amount=None, disabled_selection_amount=None),
     )
 
-    assert resolve_hwid_device_limit(subscription) is None
+    # When selection is disabled and no explicit override is configured,
+    # resolve_hwid_device_limit falls back to subscription.device_limit
+    assert resolve_hwid_device_limit(subscription) == 42
     assert resolve_hwid_device_limit_for_payload(subscription) == 42
 
 
@@ -132,8 +140,10 @@ def test_resolve_hwid_device_limit_for_payload_handles_zero(monkeypatch):
         StubSettings(enabled=False, disabled_amount=0, disabled_selection_amount=0),
     )
 
-    assert resolve_hwid_device_limit(subscription) == 0
-    assert resolve_hwid_device_limit_for_payload(subscription) == 0
+    # forced_amount=0: condition `forced_limit is not None and forced_limit > 0` is False
+    # -> falls back to subscription.device_limit=42
+    assert resolve_hwid_device_limit(subscription) == 42
+    assert resolve_hwid_device_limit_for_payload(subscription) == 42
 
 
 @pytest.mark.parametrize(

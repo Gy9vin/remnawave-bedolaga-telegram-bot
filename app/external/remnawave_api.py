@@ -461,9 +461,19 @@ class RemnaWaveAPI:
         if active_internal_squads:
             data['activeInternalSquads'] = active_internal_squads
 
-        logger.debug('Создание пользователя в панели', data=data)
+        logger.info(
+            'POST /api/users payload',
+            username=data.get('username'),
+            hwidDeviceLimit=data.get('hwidDeviceLimit'),
+            status=data.get('status'),
+        )
         response = await self._make_request('POST', '/api/users', data)
         user = self._parse_user(response['response'])
+        logger.info(
+            'POST /api/users response',
+            uuid=user.uuid,
+            response_hwidDeviceLimit=user.hwid_device_limit,
+        )
         return await self.enrich_user_with_happ_link(user)
 
     async def get_user_by_uuid(self, uuid: str) -> RemnaWaveUser | None:
@@ -553,8 +563,19 @@ class RemnaWaveAPI:
         if active_internal_squads is not None:
             data['activeInternalSquads'] = active_internal_squads
 
+        logger.info(
+            'PATCH /api/users payload',
+            uuid=uuid,
+            hwidDeviceLimit=data.get('hwidDeviceLimit'),
+            status=data.get('status'),
+        )
         response = await self._make_request('PATCH', '/api/users', data)
         user = self._parse_user(response['response'])
+        logger.info(
+            'PATCH /api/users response',
+            uuid=uuid,
+            response_hwidDeviceLimit=user.hwid_device_limit,
+        )
         return await self.enrich_user_with_happ_link(user)
 
     async def delete_user(self, uuid: str) -> bool:

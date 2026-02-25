@@ -141,12 +141,12 @@ class TestWithdrawalValidation:
         assert request_amount > available
 
     def test_payment_details_min_length(self):
-        """Реквизиты минимум 10 символов."""
-        short_details = '12345'
-        valid_details = '+7 999 123-45-67 Сбербанк'
+        """Реквизиты минимум 5 символов (по схеме WithdrawalCreateRequest)."""
+        short_details = '1234'
+        valid_details = '12345'
 
-        assert len(short_details.strip()) < 10
-        assert len(valid_details.strip()) >= 10
+        assert len(short_details.strip()) < 5
+        assert len(valid_details.strip()) >= 5
 
     def test_cooldown_active(self):
         """Cooldown ещё не прошёл — нельзя создать заявку."""
@@ -211,69 +211,67 @@ class TestWithdrawalSchemas:
 
     def test_balance_response_schema(self):
         """WithdrawalBalanceResponse корректно создаётся."""
-        from app.cabinet.schemas.referral import WithdrawalBalanceResponse
+        from app.cabinet.schemas.withdrawals import WithdrawalBalanceResponse
 
         response = WithdrawalBalanceResponse(
-            balance_kopeks=150000,
-            total_earned_kopeks=100000,
-            referral_spent_kopeks=30000,
-            withdrawn_kopeks=10000,
-            approved_kopeks=10000,
-            pending_kopeks=10000,
-            available_kopeks=40000,
-            can_withdraw=True,
-            cannot_withdraw_reason=None,
-            min_amount_kopeks=50000,
-            cooldown_days=30,
+            total_earned=100000,
+            referral_spent=30000,
+            withdrawn=10000,
+            pending=10000,
+            available_referral=50000,
+            available_total=40000,
             only_referral_mode=True,
+            min_amount_kopeks=50000,
+            is_withdrawal_enabled=True,
+            can_request=True,
+            cannot_request_reason=None,
         )
-        assert response.available_kopeks == 40000
-        assert response.can_withdraw is True
-        assert response.approved_kopeks == 10000
-        assert response.balance_kopeks == 150000
+        assert response.available_total == 40000
+        assert response.can_request is True
+        assert response.pending == 10000
+        assert response.total_earned == 100000
 
     def test_balance_response_cannot_withdraw(self):
         """WithdrawalBalanceResponse с причиной отказа."""
-        from app.cabinet.schemas.referral import WithdrawalBalanceResponse
+        from app.cabinet.schemas.withdrawals import WithdrawalBalanceResponse
 
         response = WithdrawalBalanceResponse(
-            balance_kopeks=10000,
-            total_earned_kopeks=10000,
-            referral_spent_kopeks=10000,
-            withdrawn_kopeks=0,
-            approved_kopeks=0,
-            pending_kopeks=0,
-            available_kopeks=0,
-            can_withdraw=False,
-            cannot_withdraw_reason='Минимальная сумма вывода: 500₽. Доступно: 0₽',
-            min_amount_kopeks=50000,
-            cooldown_days=30,
+            total_earned=10000,
+            referral_spent=10000,
+            withdrawn=0,
+            pending=0,
+            available_referral=0,
+            available_total=0,
             only_referral_mode=True,
+            min_amount_kopeks=50000,
+            is_withdrawal_enabled=True,
+            can_request=False,
+            cannot_request_reason='Минимальная сумма вывода: 500₽. Доступно: 0₽',
         )
-        assert response.can_withdraw is False
-        assert response.cannot_withdraw_reason is not None
+        assert response.can_request is False
+        assert response.cannot_request_reason is not None
 
     def test_create_request_schema(self):
         """WithdrawalCreateRequest валидация."""
-        from app.cabinet.schemas.referral import WithdrawalCreateRequest
+        from app.cabinet.schemas.withdrawals import WithdrawalCreateRequest
 
         req = WithdrawalCreateRequest(
             amount_kopeks=50000,
             payment_details='+7 999 123-45-67 Сбербанк',
         )
         assert req.amount_kopeks == 50000
-        assert len(req.payment_details) >= 10
+        assert len(req.payment_details) >= 5
 
-    def test_request_response_schema(self):
-        """WithdrawalRequestResponse корректно создаётся."""
-        from app.cabinet.schemas.referral import WithdrawalRequestResponse
+    def test_item_response_schema(self):
+        """WithdrawalItemResponse корректно создаётся."""
+        from app.cabinet.schemas.withdrawals import WithdrawalItemResponse
 
-        response = WithdrawalRequestResponse(
+        response = WithdrawalItemResponse(
             id=1,
             amount_kopeks=50000,
+            amount_rubles=500.0,
             status='pending',
             payment_details='+7 999 123-45-67',
-            risk_score=15,
             admin_comment=None,
             created_at=datetime.now(UTC),
             processed_at=None,
@@ -281,26 +279,24 @@ class TestWithdrawalSchemas:
         assert response.id == 1
         assert response.status == 'pending'
 
-    def test_requests_list_response_schema(self):
-        """WithdrawalRequestsListResponse с пагинацией."""
-        from app.cabinet.schemas.referral import WithdrawalRequestResponse, WithdrawalRequestsListResponse
+    def test_list_response_schema(self):
+        """WithdrawalListResponse без пагинации."""
+        from app.cabinet.schemas.withdrawals import WithdrawalItemResponse, WithdrawalListResponse
 
         items = [
-            WithdrawalRequestResponse(
+            WithdrawalItemResponse(
                 id=i,
                 amount_kopeks=50000,
+                amount_rubles=500.0,
                 status='pending',
                 created_at=datetime.now(UTC),
             )
             for i in range(3)
         ]
 
-        response = WithdrawalRequestsListResponse(
+        response = WithdrawalListResponse(
             items=items,
             total=3,
-            page=1,
-            per_page=20,
-            pages=1,
         )
         assert len(response.items) == 3
         assert response.total == 3

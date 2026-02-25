@@ -65,6 +65,9 @@ async def test_promo_group_promocode_full_workflow(
     check_usage_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.check_user_promocode_usage', check_usage_mock)
 
+    count_activations_mock = AsyncMock(return_value=0)
+    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', count_activations_mock)
+
     get_promo_group_mock = AsyncMock(return_value=sample_promo_group)
     monkeypatch.setattr('app.services.promocode_service.get_promo_group_by_id', get_promo_group_mock)
 
@@ -148,6 +151,9 @@ async def test_duplicate_promo_group_assignment_edge_case(
     check_usage_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.check_user_promocode_usage', check_usage_mock)
 
+    count_activations_mock = AsyncMock(return_value=0)
+    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', count_activations_mock)
+
     # User ALREADY HAS this promo group
     has_promo_group_mock = AsyncMock(return_value=True)
     monkeypatch.setattr('app.services.promocode_service.has_user_promo_group', has_promo_group_mock)
@@ -216,6 +222,9 @@ async def test_missing_promo_group_graceful_failure(
 
     check_usage_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.check_user_promocode_usage', check_usage_mock)
+
+    count_activations_mock = AsyncMock(return_value=0)
+    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', count_activations_mock)
 
     has_promo_group_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.has_user_promo_group', has_promo_group_mock)

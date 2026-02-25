@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from aiogram.types import InlineKeyboardMarkup
@@ -12,6 +13,19 @@ from sqlalchemy.exc import MissingGreenlet
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+# Мокаем cabinet.routes.websocket до импорта PaymentCommonMixin,
+# чтобы избежать цепочки импортов через backup_service (требует /app).
+# Добавляем нужный атрибут в существующую заглушку (если есть), чтобы не сломать
+# другие тесты, которые зависят от notify_user_subscription_activated и пр.
+if 'app.cabinet.routes.websocket' in sys.modules:
+    _ws_stub = sys.modules['app.cabinet.routes.websocket']
+    if not hasattr(_ws_stub, 'notify_user_balance_topup'):
+        _ws_stub.notify_user_balance_topup = AsyncMock()  # type: ignore[attr-defined]
+else:
+    _ws_stub = ModuleType('app.cabinet.routes.websocket')
+    _ws_stub.notify_user_balance_topup = AsyncMock()  # type: ignore[attr-defined]
+    sys.modules['app.cabinet.routes.websocket'] = _ws_stub
 
 from app.services.payment.common import PaymentCommonMixin
 
@@ -51,6 +65,12 @@ class _PaymentServiceStub(PaymentCommonMixin):
 
 @pytest.mark.anyio
 async def test_send_payment_success_notification_recovers_missing_greenlet(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Гарантируем, что стаб с нужным атрибутом стоит в sys.modules на момент теста
+    ws_mock = AsyncMock()
+    ws_stub = ModuleType('app.cabinet.routes.websocket')
+    ws_stub.notify_user_balance_topup = ws_mock  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'app.cabinet.routes.websocket', ws_stub)
+
     service = _PaymentServiceStub()
     lazy_user = _LazyUser()
 

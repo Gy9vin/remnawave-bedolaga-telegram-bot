@@ -36,6 +36,8 @@ async def test_commission_accrues_before_minimum_first_topup(monkeypatch):
     monkeypatch.setattr(referral_service, 'add_user_balance', add_user_balance_mock)
     create_referral_earning_mock = AsyncMock()
     monkeypatch.setattr(referral_service, 'create_referral_earning', create_referral_earning_mock)
+    get_user_campaign_id_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(referral_service, 'get_user_campaign_id', get_user_campaign_id_mock)
 
     monkeypatch.setattr(referral_service.settings, 'REFERRAL_MINIMUM_TOPUP_KOPEKS', 20000)
     monkeypatch.setattr(referral_service.settings, 'REFERRAL_FIRST_TOPUP_BONUS_KOPEKS', 5000)

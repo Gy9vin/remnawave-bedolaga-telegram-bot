@@ -564,15 +564,24 @@ class RemnaWaveWebhookService:
             except (ValueError, TypeError):
                 pass
 
-        # Sync expire date
+        # Sync expire date (only if panel date is LATER than local to prevent race condition
+        # where webhook with stale expireAt overwrites a freshly extended subscription)
         expire_at = data.get('expireAt')
         if expire_at:
             try:
                 parsed_dt = datetime.fromisoformat(expire_at.replace('Z', '+00:00'))
                 new_end_date = parsed_dt.astimezone(UTC)
                 if subscription.end_date != new_end_date:
-                    subscription.end_date = new_end_date
-                    changed = True
+                    if not subscription.end_date or new_end_date > subscription.end_date:
+                        subscription.end_date = new_end_date
+                        changed = True
+                    else:
+                        logger.warning(
+                            'Webhook: пропуск перезаписи end_date — локальная дата позже',
+                            subscription_id=subscription.id,
+                            local_end_date=subscription.end_date,
+                            webhook_end_date=new_end_date,
+                        )
             except (ValueError, TypeError):
                 pass
 
@@ -604,6 +613,16 @@ class RemnaWaveWebhookService:
             and subscription.subscription_url != subscription_url
         ):
             subscription.subscription_url = subscription_url
+            changed = True
+
+        # Sync subscription crypto link (for HAPP_CRYPT4_LINK)
+        subscription_crypto_link = data.get('subscriptionCryptoLink')
+        if (
+            subscription_crypto_link
+            and self._is_valid_link(subscription_crypto_link)
+            and subscription.subscription_crypto_link != subscription_crypto_link
+        ):
+            subscription.subscription_crypto_link = subscription_crypto_link
             changed = True
 
         # Always stamp to protect from sync overwrite, even if no fields changed

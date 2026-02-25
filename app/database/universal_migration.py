@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 import structlog
 from sqlalchemy import select, text
@@ -4720,7 +4720,7 @@ async def ensure_default_web_api_token() -> bool:
                     updated = True
 
                 if updated:
-                    existing.updated_at = datetime.utcnow()
+                    existing.updated_at = datetime.now(UTC)
                     await session.commit()
                 return True
 

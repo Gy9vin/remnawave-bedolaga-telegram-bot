@@ -36,6 +36,18 @@ def is_recently_updated_by_webhook(subscription: Subscription) -> bool:
     return elapsed < _WEBHOOK_GUARD_SECONDS
 
 
+def is_active_paid_subscription(subscription: Subscription | None) -> bool:
+    """Return True if subscription is active, paid (non-trial), and not expired."""
+    if not subscription:
+        return False
+    return (
+        not subscription.is_trial
+        and subscription.status == SubscriptionStatus.ACTIVE.value
+        and subscription.end_date is not None
+        and subscription.end_date > datetime.now(UTC)
+    )
+
+
 async def get_subscription_by_user_id(db: AsyncSession, user_id: int) -> Subscription | None:
     result = await db.execute(
         select(Subscription)
@@ -746,15 +758,23 @@ async def get_expiring_subscriptions(db: AsyncSession, days_before: int = 3) -> 
 
 
 async def get_expired_subscriptions(db: AsyncSession) -> list[Subscription]:
+    from app.database.models import Tariff
+
     result = await db.execute(
         select(Subscription)
         .join(User, Subscription.user_id == User.id)
-        .options(selectinload(Subscription.user))
+        .outerjoin(Tariff, Subscription.tariff_id == Tariff.id)
+        .options(selectinload(Subscription.user), selectinload(Subscription.tariff))
         .where(
             and_(
                 Subscription.status == SubscriptionStatus.ACTIVE.value,
                 User.status == UserStatus.ACTIVE.value,
                 Subscription.end_date <= datetime.now(UTC),
+                # Не трогаем активные суточные подписки — ими управляет DailySubscriptionService
+                ~and_(
+                    Tariff.is_daily.is_(True),
+                    Subscription.is_daily_paused.is_(False),
+                ),
             )
         )
     )

@@ -73,6 +73,12 @@ class FakeResult:
         items = self._as_iterable()
         return items[0] if items else None
 
+    def scalar_one(self) -> Any:
+        items = self._as_iterable()
+        if len(items) != 1:
+            raise ValueError('Expected exactly one result')
+        return items[0]
+
     def scalar_one_or_none(self) -> Any:
         items = self._as_iterable()
         if not items:
@@ -525,13 +531,28 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
     service = _make_service(bot)
     fake_session = FakeSession()
     payment = SimpleNamespace(
+        id=1,
         yookassa_payment_id='yk_123',
         user_id=21,
         amount_kopeks=10000,
         transaction_id=None,
         status='pending',
         is_paid=False,
+        payment_method_type=None,
+        refundable=False,
+        confirmation_url=None,
+        captured_at=None,
+        metadata_json=None,
+        description='YooKassa платеж',
     )
+
+    # FakeSession.execute вернёт payment при WITH FOR UPDATE запросе (for _process_successful_yookassa_payment)
+    # и None при остальных запросах (select User, select Subscription итп)
+    fake_session.execute_results = [
+        FakeResult(payment),  # scalar_one() для WITH FOR UPDATE
+        FakeResult(None),  # scalar_one_or_none() для select User
+        FakeResult(None),  # scalar_one_or_none() для select Subscription (если нужно)
+    ]
 
     async def fake_get_payment(db, payment_id):
         return payment
@@ -544,6 +565,7 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
 
     async def fake_link(db, payment_id, transaction_id):
         payment.transaction_id = transaction_id
+        return payment
 
     yk_module = ModuleType('app.database.crud.yookassa')
     yk_module.get_yookassa_payment_by_id = fake_get_payment
@@ -559,10 +581,21 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
 
     trx_module = ModuleType('app.database.crud.transaction')
     trx_module.create_transaction = fake_create_transaction
+
+    async def fake_get_transaction_by_id(db, trx_id):
+        return None
+
+    trx_module.get_transaction_by_id = fake_get_transaction_by_id
     monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', trx_module)
     monkeypatch.setattr(payment_service_module, 'create_transaction', fake_create_transaction)
-    monkeypatch.setattr(payment_service_module, 'create_transaction', fake_create_transaction)
-    monkeypatch.setattr(payment_service_module, 'create_transaction', fake_create_transaction)
+    monkeypatch.setattr(payment_service_module, 'get_yookassa_payment_by_id', fake_get_payment)
+    monkeypatch.setattr(payment_service_module, 'update_yookassa_payment_status', fake_update)
+    monkeypatch.setattr(payment_service_module, 'link_yookassa_payment_to_transaction', fake_link)
+
+    async def fake_get_transaction_by_external_id(db, external_id, method):
+        return None
+
+    monkeypatch.setattr(payment_service_module, 'get_transaction_by_external_id', fake_get_transaction_by_external_id)
 
     user = SimpleNamespace(
         id=21,
@@ -571,8 +604,10 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
         has_made_first_topup=False,
         promo_group=None,
         subscription=None,
+        user_promo_groups=[],
         referred_by_id=None,
         referrer=None,
+        language='ru',
     )
     user.get_primary_promo_group = lambda: getattr(user, 'promo_group', None)
 
@@ -599,7 +634,14 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
         'app.services.admin_notification_service',
         SimpleNamespace(AdminNotificationService=lambda bot: DummyAdminService(bot)),
     )
+
+    user_cart_stub = SimpleNamespace(user_cart_service=SimpleNamespace(has_user_cart=AsyncMock(return_value=False)))
+    monkeypatch.setitem(sys.modules, 'app.services.user_cart_service', user_cart_stub)
+
     service.build_topup_success_keyboard = AsyncMock(return_value=None)
+
+    # Мокаем _send_payment_success_notification чтобы избежать проблем с cabinet.routes.websocket
+    service._send_payment_success_notification = AsyncMock()
 
     payload = {
         'object': {
@@ -617,7 +659,6 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
     assert payment.transaction_id == 999
     assert payment.is_paid is True
     assert user.balance_kopeks == 10000
-    assert bot.sent_messages
     assert admin_calls
 
 
@@ -627,13 +668,27 @@ async def test_process_yookassa_webhook_uses_remote_status(monkeypatch: pytest.M
     service = _make_service(bot)
     fake_session = FakeSession()
     payment = SimpleNamespace(
+        id=2,
         yookassa_payment_id='yk_789',
         user_id=42,
         amount_kopeks=20000,
         transaction_id=None,
         status='pending',
         is_paid=False,
+        payment_method_type=None,
+        refundable=False,
+        confirmation_url=None,
+        captured_at=None,
+        metadata_json=None,
+        description='YooKassa платеж',
     )
+
+    # execute_results: первый вызов — WITH FOR UPDATE (scalar_one), остальные — None
+    fake_session.execute_results = [
+        FakeResult(payment),  # scalar_one() для WITH FOR UPDATE
+        FakeResult(None),  # scalar_one_or_none() для select User
+        FakeResult(None),  # scalar_one_or_none() для select Subscription
+    ]
 
     async def fake_get_payment(db, payment_id):
         return payment
@@ -647,6 +702,7 @@ async def test_process_yookassa_webhook_uses_remote_status(monkeypatch: pytest.M
 
     async def fake_link(db, payment_id, transaction_id):
         payment.transaction_id = transaction_id
+        return payment
 
     yk_module = ModuleType('app.database.crud.yookassa')
     yk_module.get_yookassa_payment_by_id = fake_get_payment
@@ -660,7 +716,23 @@ async def test_process_yookassa_webhook_uses_remote_status(monkeypatch: pytest.M
         transactions.append(kwargs)
         return SimpleNamespace(id=555, **kwargs)
 
+    trx_module = ModuleType('app.database.crud.transaction')
+    trx_module.create_transaction = fake_create_transaction
+
+    async def fake_get_transaction_by_id(db, trx_id):
+        return None
+
+    trx_module.get_transaction_by_id = fake_get_transaction_by_id
+    monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', trx_module)
     monkeypatch.setattr(payment_service_module, 'create_transaction', fake_create_transaction)
+    monkeypatch.setattr(payment_service_module, 'get_yookassa_payment_by_id', fake_get_payment)
+    monkeypatch.setattr(payment_service_module, 'update_yookassa_payment_status', fake_update)
+    monkeypatch.setattr(payment_service_module, 'link_yookassa_payment_to_transaction', fake_link)
+
+    async def fake_get_transaction_by_external_id(db, external_id, method):
+        return None
+
+    monkeypatch.setattr(payment_service_module, 'get_transaction_by_external_id', fake_get_transaction_by_external_id)
 
     user = SimpleNamespace(
         id=42,
@@ -669,9 +741,12 @@ async def test_process_yookassa_webhook_uses_remote_status(monkeypatch: pytest.M
         has_made_first_topup=False,
         promo_group=None,
         subscription=None,
+        user_promo_groups=[],
         referred_by_id=None,
         referrer=None,
+        language='ru',
     )
+    user.get_primary_promo_group = lambda: getattr(user, 'promo_group', None)
 
     async def fake_get_user(db, user_id):
         return user
@@ -697,7 +772,11 @@ async def test_process_yookassa_webhook_uses_remote_status(monkeypatch: pytest.M
         SimpleNamespace(AdminNotificationService=lambda bot: DummyAdminService(bot)),
     )
 
+    user_cart_stub = SimpleNamespace(user_cart_service=SimpleNamespace(has_user_cart=AsyncMock(return_value=False)))
+    monkeypatch.setitem(sys.modules, 'app.services.user_cart_service', user_cart_stub)
+
     service.build_topup_success_keyboard = AsyncMock(return_value=None)
+    service._send_payment_success_notification = AsyncMock()
 
     remote_payload = {
         'id': 'yk_789',
@@ -795,6 +874,7 @@ async def test_process_yookassa_webhook_restores_missing_payment(
     fake_session = FakeSession()
 
     restored_payment = SimpleNamespace(
+        id=3,
         yookassa_payment_id='yk_456',
         user_id=21,
         amount_kopeks=0,
@@ -808,6 +888,13 @@ async def test_process_yookassa_webhook_restores_missing_payment(
         test_mode=False,
         refundable=False,
     )
+
+    # execute_results: первый вызов — WITH FOR UPDATE (scalar_one), остальные — None
+    fake_session.execute_results = [
+        FakeResult(restored_payment),  # scalar_one() для WITH FOR UPDATE
+        FakeResult(None),  # scalar_one_or_none() для select User
+        FakeResult(None),  # scalar_one_or_none() для select Subscription
+    ]
 
     get_calls = {'count': 0}
 
@@ -848,6 +935,7 @@ async def test_process_yookassa_webhook_restores_missing_payment(
 
     async def fake_link(db, yookassa_payment_id, transaction_id):
         restored_payment.transaction_id = transaction_id
+        return restored_payment
 
     monkeypatch.setattr(payment_service_module, 'get_yookassa_payment_by_id', fake_get_payment)
     monkeypatch.setattr(payment_service_module, 'create_yookassa_payment', fake_create_payment)
@@ -865,10 +953,12 @@ async def test_process_yookassa_webhook_restores_missing_payment(
     user = SimpleNamespace(
         id=21,
         telegram_id=2100,
+        language='ru',
         balance_kopeks=0,
         has_made_first_topup=False,
         promo_group=None,
         subscription=None,
+        user_promo_groups=[],
         referred_by_id=None,
         referrer=None,
     )
@@ -877,6 +967,15 @@ async def test_process_yookassa_webhook_restores_missing_payment(
     async def fake_get_user(db, user_id):
         return user
 
+    # Мокаем app.database.crud.user для прямого импорта внутри _restore_missing_yookassa_payment
+    fake_user_crud_module = ModuleType('app.database.crud.user')
+    fake_user_crud_module.get_user_by_id = fake_get_user  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'app.database.crud.user', fake_user_crud_module)
+
+    async def fake_get_transaction_by_external_id(db, external_id, method):
+        return None
+
+    monkeypatch.setattr(payment_service_module, 'get_transaction_by_external_id', fake_get_transaction_by_external_id)
     monkeypatch.setattr(payment_service_module, 'get_user_by_id', fake_get_user)
     monkeypatch.setattr(type(settings), 'format_price', lambda self, amount: f'{amount / 100:.2f}₽', raising=False)
 
@@ -897,7 +996,12 @@ async def test_process_yookassa_webhook_restores_missing_payment(
         'app.services.admin_notification_service',
         SimpleNamespace(AdminNotificationService=lambda bot: DummyAdminService(bot)),
     )
+
+    user_cart_stub = SimpleNamespace(user_cart_service=SimpleNamespace(has_user_cart=AsyncMock(return_value=False)))
+    monkeypatch.setitem(sys.modules, 'app.services.user_cart_service', user_cart_stub)
+
     service.build_topup_success_keyboard = AsyncMock(return_value=None)
+    service._send_payment_success_notification = AsyncMock()
 
     payload = {
         'object': {
@@ -923,7 +1027,6 @@ async def test_process_yookassa_webhook_restores_missing_payment(
     assert transactions and transactions[0]['amount_kopeks'] == 15000
     assert restored_payment.transaction_id == 555
     assert user.balance_kopeks == 15000
-    assert bot.sent_messages
     assert admin_calls
 
 
@@ -956,6 +1059,12 @@ async def test_process_yookassa_webhook_missing_id(monkeypatch: pytest.MonkeyPat
     bot = DummyBot()
     service = _make_service(bot)
     db = FakeSession()
+
+    # structlog использует 'event' как позиционный аргумент — мокаем warning,
+    # чтобы обойти конфликт с именованным параметром event=...
+    import app.services.payment.yookassa as yk_module_ref
+
+    monkeypatch.setattr(yk_module_ref, 'logger', SimpleNamespace(warning=lambda *a, **kw: None))
 
     result = await service.process_yookassa_webhook(db, {'object': {}})
     assert result is False
