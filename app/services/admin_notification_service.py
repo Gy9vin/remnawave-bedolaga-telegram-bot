@@ -4,7 +4,7 @@ from typing import Any
 
 import structlog
 from aiogram import Bot, types
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
 from sqlalchemy.exc import MissingGreenlet
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1223,6 +1223,9 @@ class AdminNotificationService:
             return False
         except TelegramBadRequest as e:
             logger.error('Ошибка отправки уведомления', error=e)
+            return False
+        except TelegramNetworkError as e:
+            logger.warning('Сетевая ошибка при отправке уведомления (Telegram API недоступен)', error=str(e)[:150])
             return False
         except Exception as e:
             logger.error('Неожиданная ошибка при отправке уведомления', error=e)

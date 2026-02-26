@@ -4,6 +4,7 @@ from typing import Any
 
 import structlog
 from aiogram import BaseMiddleware
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
@@ -95,11 +96,17 @@ class ThrottlingMiddleware(BaseMiddleware):
                 if is_ticket_state:
                     return None
                 # В остальных случаях — явный блок
-                await event.answer('⏳ Пожалуйста, не отправляйте сообщения так часто!')
+                try:
+                    await event.answer('⏳ Пожалуйста, не отправляйте сообщения так часто!')
+                except TelegramAPIError:
+                    pass
                 return None
             # Для callback допустим краткое уведомление
             if isinstance(event, CallbackQuery):
-                await event.answer('⏳ Слишком быстро! Подождите немного.', show_alert=True)
+                try:
+                    await event.answer('⏳ Слишком быстро! Подождите немного.', show_alert=True)
+                except TelegramAPIError:
+                    pass
                 return None
 
         self.user_buckets[user_id] = now

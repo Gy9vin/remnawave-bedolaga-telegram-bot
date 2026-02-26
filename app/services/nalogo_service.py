@@ -69,6 +69,8 @@ class NaloGoService:
             or 'service unavailable' in error_str
             or 'ведутся работы' in error_str
             or ('health' in error_str and 'false' in error_str)
+            # nalog.ru может возвращать authentication.failed при временных проблемах
+            or 'authentication.failed' in error_str
             # Таймауты и сетевые ошибки — временные проблемы
             or 'timeout' in error_type
             or 'timeout' in error_str
@@ -281,7 +283,7 @@ class NaloGoService:
             return True
         except Exception as error:
             if self._is_service_unavailable(error):
-                logger.warning('NaloGO временно недоступен (техработы)', error=str(error)[:200])
+                logger.warning('NaloGO временно недоступен', error=str(error)[:200])
             else:
                 logger.error('Ошибка аутентификации в NaloGO', error=error, exc_info=True)
             return False
