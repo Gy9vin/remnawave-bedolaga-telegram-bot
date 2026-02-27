@@ -5,6 +5,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,7 +58,7 @@ from ..schemas.subscription import (
 )
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix='/subscription', tags=['Cabinet Subscription'])
 
