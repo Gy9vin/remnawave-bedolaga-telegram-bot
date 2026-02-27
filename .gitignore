@@ -9,7 +9,6 @@
 !.gitignore
 !.python-version
 !Dockerfile
-!docker-compose.yml
 !docker-compose.local.yml
 !Makefile
 !pyproject.toml
