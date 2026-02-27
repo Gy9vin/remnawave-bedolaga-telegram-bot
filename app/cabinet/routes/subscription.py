@@ -1,7 +1,6 @@
 """Subscription management routes for cabinet."""
 
 import base64
-import logging
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -2934,7 +2933,7 @@ async def _load_app_config_async() -> dict[str, Any] | None:
                     raw['_isRemnawave'] = True
                     return raw
         except Exception as e:
-            logger.warning(f'Failed to load RemnaWave config: {e}')
+            logger.warning('Failed to load RemnaWave config', error=e)
 
     return None
 
