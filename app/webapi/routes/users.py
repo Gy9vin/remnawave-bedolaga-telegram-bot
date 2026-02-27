@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import structlog
+from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from fastapi import APIRouter, Depends, HTTPException, Query, Security, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +34,11 @@ from app.services.subscription_service import SubscriptionService
 from ..dependencies import get_db_session, require_api_token
 from ..schemas.users import (
     BalanceUpdateRequest,
+    BlockUserRequest,
+    BlockUserResponse,
     PromoGroupSummary,
+    SendMessageRequest,
+    SendMessageResponse,
     SubscriptionSummary,
     UserCreateRequest,
     UserListResponse,
@@ -38,6 +46,9 @@ from ..schemas.users import (
     UserSubscriptionCreateRequest,
     UserUpdateRequest,
 )
+
+
+logger = structlog.get_logger()
 
 
 router = APIRouter()
@@ -477,3 +488,127 @@ async def delete_user_subscription(
     # Перезагружаем пользователя
     user = await get_user_by_id(db, user.id)
     return _serialize_user(user)
+
+
+# === Block / Unblock ===
+
+
+def _get_bot() -> Bot:
+    """Создать экземпляр бота для API операций."""
+    return Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+
+
+@router.post('/{user_id}/block', response_model=BlockUserResponse)
+async def block_user(
+    user_id: int,
+    payload: BlockUserRequest = BlockUserRequest(),
+    _: Any = Security(require_api_token),
+    db: AsyncSession = Depends(get_db_session),
+) -> BlockUserResponse:
+    """
+    Заблокировать пользователя по telegram_id или внутреннему ID.
+    Блокирует в боте + деактивирует в Remnawave панели (как в админке).
+    """
+    user = await _get_user_by_id_or_telegram_id(db, user_id)
+    old_status = user.status
+
+    if old_status == UserStatus.BLOCKED.value:
+        return BlockUserResponse(
+            success=True,
+            old_status=old_status,
+            new_status=old_status,
+            message='User is already blocked',
+        )
+
+    from app.services.user_service import UserService
+
+    user_service = UserService()
+    reason = payload.reason or 'Заблокирован через API'
+    success = await user_service.block_user(db, user.id, admin_id=0, reason=reason)
+
+    if not success:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, 'Failed to block user')
+
+    return BlockUserResponse(
+        success=True,
+        old_status=old_status,
+        new_status=UserStatus.BLOCKED.value,
+        message='User blocked successfully',
+    )
+
+
+@router.post('/{user_id}/unblock', response_model=BlockUserResponse)
+async def unblock_user(
+    user_id: int,
+    _: Any = Security(require_api_token),
+    db: AsyncSession = Depends(get_db_session),
+) -> BlockUserResponse:
+    """
+    Разблокировать пользователя по telegram_id или внутреннему ID.
+    Разблокирует в боте + восстанавливает в Remnawave панели (как в админке).
+    """
+    user = await _get_user_by_id_or_telegram_id(db, user_id)
+    old_status = user.status
+
+    if old_status == UserStatus.ACTIVE.value:
+        return BlockUserResponse(
+            success=True,
+            old_status=old_status,
+            new_status=old_status,
+            message='User is already active',
+        )
+
+    from app.services.user_service import UserService
+
+    user_service = UserService()
+    success = await user_service.unblock_user(db, user.id, admin_id=0)
+
+    if not success:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, 'Failed to unblock user')
+
+    return BlockUserResponse(
+        success=True,
+        old_status=old_status,
+        new_status=UserStatus.ACTIVE.value,
+        message='User unblocked successfully',
+    )
+
+
+# === Send Message ===
+
+
+@router.post('/{user_id}/send-message', response_model=SendMessageResponse)
+async def send_message_to_user(
+    user_id: int,
+    payload: SendMessageRequest,
+    _: Any = Security(require_api_token),
+    db: AsyncSession = Depends(get_db_session),
+) -> SendMessageResponse:
+    """
+    Отправить сообщение пользователю в Telegram по telegram_id или внутреннему ID.
+    """
+    user = await _get_user_by_id_or_telegram_id(db, user_id)
+
+    if not user.telegram_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'User has no telegram_id')
+
+    bot = _get_bot()
+    try:
+        await bot.send_message(
+            chat_id=user.telegram_id,
+            text=payload.text,
+            parse_mode=payload.parse_mode,
+        )
+        return SendMessageResponse(
+            success=True,
+            message='Message sent successfully',
+            telegram_id=user.telegram_id,
+        )
+    except Exception as e:
+        logger.error('Failed to send message via API', user_id=user.id, telegram_id=user.telegram_id, error=str(e))
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f'Failed to send message: {e}') from e
+    finally:
+        await bot.session.close()

@@ -87,6 +87,28 @@ class BalanceUpdateRequest(BaseModel):
     create_transaction: bool = True
 
 
+class BlockUserRequest(BaseModel):
+    reason: str | None = None
+
+
+class SendMessageRequest(BaseModel):
+    text: str
+    parse_mode: str | None = Field(default='HTML', description='HTML or Markdown')
+
+
+class BlockUserResponse(BaseModel):
+    success: bool
+    old_status: str
+    new_status: str
+    message: str
+
+
+class SendMessageResponse(BaseModel):
+    success: bool
+    message: str
+    telegram_id: int | None = None
+
+
 class UserSubscriptionCreateRequest(BaseModel):
     """Схема для создания подписки через users API (user_id берется из URL)"""
 
