@@ -1,8 +1,10 @@
 from typing import Any
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database.crud.required_channel import get_active_channels
 from app.localization.texts import get_texts
 
 
@@ -2288,26 +2290,42 @@ def get_broadcast_button_labels(language: str) -> dict[str, str]:
     return {key: value['text'] for key, value in get_broadcast_button_config(language).items()}
 
 
-def is_broadcast_url_button_available(button_key: str) -> bool:
+async def is_broadcast_url_button_available(button_key: str, db: AsyncSession | None = None) -> bool:
     """Проверяет, доступна ли URL-кнопка (настроен ли соответствующий URL)."""
     if button_key == 'channel':
-        return bool(getattr(settings, 'CHANNEL_LINK', None))
+        if settings.CHANNEL_LINK:
+            return True
+        if db:
+            channels = await get_active_channels(db)
+            return any(ch.channel_link for ch in channels)
+        return False
     if button_key == 'cabinet':
         return bool(settings.get_main_menu_miniapp_url())
     return True
 
 
-def get_broadcast_button_url(button_key: str) -> str | None:
+async def get_broadcast_button_url(button_key: str, db: AsyncSession | None = None) -> str | None:
     """Возвращает URL для кнопки, если она динамическая."""
     if button_key == 'channel':
-        return getattr(settings, 'CHANNEL_LINK', None)
+        if settings.CHANNEL_LINK:
+            return settings.CHANNEL_LINK
+        if db:
+            channels = await get_active_channels(db)
+            for ch in channels:
+                if ch.channel_link:
+                    return ch.channel_link
+        return None
     if button_key == 'cabinet':
         return settings.get_main_menu_miniapp_url()
     return None
 
 
-def get_message_buttons_selector_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
-    return get_updated_message_buttons_selector_keyboard_with_media(list(DEFAULT_BROADCAST_BUTTONS), False, language)
+async def get_message_buttons_selector_keyboard(
+    language: str = 'ru', db: AsyncSession | None = None
+) -> InlineKeyboardMarkup:
+    return await get_updated_message_buttons_selector_keyboard_with_media(
+        list(DEFAULT_BROADCAST_BUTTONS), False, language, db
+    )
 
 
 def get_broadcast_media_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
@@ -2359,8 +2377,8 @@ def get_media_confirm_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
     )
 
 
-def get_updated_message_buttons_selector_keyboard_with_media(
-    selected_buttons: list, has_media: bool = False, language: str = 'ru'
+async def get_updated_message_buttons_selector_keyboard_with_media(
+    selected_buttons: list, has_media: bool = False, language: str = 'ru', db: AsyncSession | None = None
 ) -> InlineKeyboardMarkup:
     selected_buttons = selected_buttons or []
 
@@ -2372,7 +2390,7 @@ def get_updated_message_buttons_selector_keyboard_with_media(
         row_buttons: list[InlineKeyboardButton] = []
         for button_key in row:
             # Пропускаем URL-кнопки, если соответствующий URL не настроен
-            if not is_broadcast_url_button_available(button_key):
+            if not await is_broadcast_url_button_available(button_key, db):
                 continue
 
             button_config = button_config_map[button_key]

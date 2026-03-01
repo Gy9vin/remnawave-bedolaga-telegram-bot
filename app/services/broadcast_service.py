@@ -179,7 +179,7 @@ class BroadcastService:
                 await self._mark_finished(broadcast_id, sent_count, failed_count, blocked_count, cancelled=False)
                 return
 
-            keyboard = self._build_keyboard(config.selected_buttons)
+            keyboard = await self._build_keyboard(config.selected_buttons)
 
             logger.info(
                 'Рассылка : начинаем отправку получателям (batch delay=s)',
@@ -358,10 +358,10 @@ class BroadcastService:
 
         return sent_count, failed_count, blocked_count, False
 
-    def _build_keyboard(self, selected_buttons: list[str] | None) -> InlineKeyboardMarkup | None:
+    async def _build_keyboard(self, selected_buttons: list[str] | None) -> InlineKeyboardMarkup | None:
         if selected_buttons is None:
             selected_buttons = []
-        return create_broadcast_keyboard(selected_buttons)
+        return await create_broadcast_keyboard(selected_buttons)
 
     async def _deliver_message(
         self,

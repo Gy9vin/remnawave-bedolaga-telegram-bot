@@ -87,17 +87,21 @@ TEXT_MENU_MINIAPP_BUTTON_KEYS = {
 }
 
 
-def get_message_buttons_selector_keyboard(language: str = 'ru') -> types.InlineKeyboardMarkup:
-    return get_updated_message_buttons_selector_keyboard(list(DEFAULT_SELECTED_BUTTONS), language)
-
-
-def get_updated_message_buttons_selector_keyboard(
-    selected_buttons: list, language: str = 'ru'
+async def get_message_buttons_selector_keyboard(
+    language: str = 'ru', db: AsyncSession | None = None
 ) -> types.InlineKeyboardMarkup:
-    return get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, False, language)
+    return await get_updated_message_buttons_selector_keyboard(list(DEFAULT_SELECTED_BUTTONS), language, db)
 
 
-def create_broadcast_keyboard(selected_buttons: list, language: str = 'ru') -> types.InlineKeyboardMarkup | None:
+async def get_updated_message_buttons_selector_keyboard(
+    selected_buttons: list, language: str = 'ru', db: AsyncSession | None = None
+) -> types.InlineKeyboardMarkup:
+    return await get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, False, language, db)
+
+
+async def create_broadcast_keyboard(
+    selected_buttons: list, language: str = 'ru', db: AsyncSession | None = None
+) -> types.InlineKeyboardMarkup | None:
     selected_buttons = selected_buttons or []
     keyboard: list[list[types.InlineKeyboardButton]] = []
     button_config_map = get_broadcast_button_config(language)
@@ -109,14 +113,14 @@ def create_broadcast_keyboard(selected_buttons: list, language: str = 'ru') -> t
                 continue
 
             # Пропускаем URL-кнопки, если URL не настроен
-            if not is_broadcast_url_button_available(button_key):
+            if not await is_broadcast_url_button_available(button_key, db):
                 continue
 
             button_config = button_config_map[button_key]
 
             # URL-кнопки (channel, cabinet)
             if 'url' in button_config:
-                url = get_broadcast_button_url(button_key)
+                url = await get_broadcast_button_url(button_key, db)
                 if url:
                     # Кнопка "Личный кабинет" должна открывать миниапп
                     if button_key == 'cabinet':
@@ -848,7 +852,7 @@ async def handle_media_selection(callback: types.CallbackQuery, db_user: User, s
 
 @admin_required
 @error_handler
-async def process_broadcast_media(message: types.Message, db_user: User, state: FSMContext):
+async def process_broadcast_media(message: types.Message, db_user: User, state: FSMContext, db: AsyncSession):
     data = await state.get_data()
     expected_type = data.get('media_type')
 
@@ -937,7 +941,9 @@ async def handle_change_media(callback: types.CallbackQuery, db_user: User, stat
 
 @admin_required
 @error_handler
-async def show_button_selector_callback(callback: types.CallbackQuery, db_user: User, state: FSMContext):
+async def show_button_selector_callback(
+    callback: types.CallbackQuery, db_user: User, state: FSMContext, db: AsyncSession
+):
     data = await state.get_data()
     has_media = data.get('has_media', False)
     selected_buttons = data.get('selected_buttons')
@@ -970,7 +976,9 @@ async def show_button_selector_callback(callback: types.CallbackQuery, db_user: 
 Выберите нужные кнопки и нажмите "Продолжить":
 """
 
-    keyboard = get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
+    keyboard = await get_updated_message_buttons_selector_keyboard_with_media(
+        selected_buttons, has_media, db_user.language, db
+    )
 
     # Проверяем, является ли текущее сообщение медиа-сообщением
     # (фото, видео, документ и т.д.) - для них нельзя использовать edit_text
@@ -1025,14 +1033,16 @@ async def show_button_selector(message: types.Message, db_user: User, state: FSM
 Выберите нужные кнопки и нажмите "Продолжить":
 """
 
-    keyboard = get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
+    keyboard = await get_updated_message_buttons_selector_keyboard_with_media(
+        selected_buttons, has_media, db_user.language, db
+    )
 
     await message.answer(text, reply_markup=keyboard, parse_mode='HTML')
 
 
 @admin_required
 @error_handler
-async def toggle_button_selection(callback: types.CallbackQuery, db_user: User, state: FSMContext):
+async def toggle_button_selection(callback: types.CallbackQuery, db_user: User, state: FSMContext, db: AsyncSession):
     button_type = callback.data.replace('btn_', '')
     data = await state.get_data()
     selected_buttons = data.get('selected_buttons')
@@ -1049,7 +1059,9 @@ async def toggle_button_selection(callback: types.CallbackQuery, db_user: User, 
     await state.update_data(selected_buttons=selected_buttons)
 
     has_media = data.get('has_media', False)
-    keyboard = get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
+    keyboard = await get_updated_message_buttons_selector_keyboard_with_media(
+        selected_buttons, has_media, db_user.language, db
+    )
 
     await callback.message.edit_reply_markup(reply_markup=keyboard)
     await callback.answer()
@@ -1222,7 +1234,7 @@ async def confirm_broadcast(callback: types.CallbackQuery, db_user: User, state:
     sent_count = 0
     failed_count = 0
 
-    broadcast_keyboard = create_broadcast_keyboard(selected_buttons, admin_language)
+    broadcast_keyboard = await create_broadcast_keyboard(selected_buttons, admin_language)
 
     # =========================================================================
     # Rate limiting: Telegram допускает ~30 msg/sec для бота.
