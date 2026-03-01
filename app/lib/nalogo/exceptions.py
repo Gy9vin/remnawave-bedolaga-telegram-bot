@@ -29,7 +29,9 @@ class DomainException(Exception):  # noqa: N818 для совместимост�
         safe_url = self._mask_sensitive_url(str(response.url))
         safe_headers = self._mask_sensitive_headers(dict(response.headers))
 
-        logger.error(
+        # 5xx ошибки — это проблемы на стороне NaloGO, не наши — warning
+        log_func = logger.warning if response.status_code >= 500 else logger.error
+        log_func(
             'API Error: %s | Status: %d | URL: %s | Headers: %s | Body: %s',
             message,
             response.status_code,

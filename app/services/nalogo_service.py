@@ -78,6 +78,10 @@ class NaloGoService:
             or 'connecttimeout' in error_type
             or 'connectionerror' in error_type
             or 'connecterror' in error_type
+            or 'readerror' in error_type
+            or 'readerror' in error_str
+            or '502' in error_str
+            or 'bad gateway' in error_str
         )
 
     async def _queue_receipt(
@@ -403,8 +407,8 @@ class NaloGoService:
             # При таймауте чек МОГ быть создан на сервере — НЕ добавляем в очередь!
             if self._is_service_unavailable(error):
                 error_msg = str(error)[:200]
-                logger.error(
-                    '⚠️ ТАЙМАУТ после успешной аутентификации! Чек МОГ быть создан! (payment_id=, сумма=₽). Сохраняем в очередь проверки. Проверьте lknpd.nalog.ru',
+                logger.warning(
+                    'NaloGO таймаут после аутентификации, чек мог быть создан (payment_id=, сумма=₽). Сохраняем в очередь проверки',
                     payment_id=payment_id,
                     amount=amount,
                 )
