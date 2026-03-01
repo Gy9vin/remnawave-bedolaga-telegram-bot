@@ -2291,7 +2291,7 @@ def get_broadcast_button_labels(language: str) -> dict[str, str]:
 def is_broadcast_url_button_available(button_key: str) -> bool:
     """Проверяет, доступна ли URL-кнопка (настроен ли соответствующий URL)."""
     if button_key == 'channel':
-        return bool(settings.CHANNEL_LINK)
+        return bool(getattr(settings, 'CHANNEL_LINK', None))
     if button_key == 'cabinet':
         return bool(settings.get_main_menu_miniapp_url())
     return True
@@ -2300,7 +2300,7 @@ def is_broadcast_url_button_available(button_key: str) -> bool:
 def get_broadcast_button_url(button_key: str) -> str | None:
     """Возвращает URL для кнопки, если она динамическая."""
     if button_key == 'channel':
-        return settings.CHANNEL_LINK
+        return getattr(settings, 'CHANNEL_LINK', None)
     if button_key == 'cabinet':
         return settings.get_main_menu_miniapp_url()
     return None
