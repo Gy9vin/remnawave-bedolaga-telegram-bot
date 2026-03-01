@@ -852,7 +852,7 @@ async def handle_media_selection(callback: types.CallbackQuery, db_user: User, s
 
 @admin_required
 @error_handler
-async def process_broadcast_media(message: types.Message, db_user: User, state: FSMContext, db: AsyncSession):
+async def process_broadcast_media(message: types.Message, db_user: User, state: FSMContext):
     data = await state.get_data()
     expected_type = data.get('media_type')
 
@@ -942,7 +942,7 @@ async def handle_change_media(callback: types.CallbackQuery, db_user: User, stat
 @admin_required
 @error_handler
 async def show_button_selector_callback(
-    callback: types.CallbackQuery, db_user: User, state: FSMContext, db: AsyncSession
+    callback: types.CallbackQuery, db_user: User, state: FSMContext, db: AsyncSession | None = None
 ):
     data = await state.get_data()
     has_media = data.get('has_media', False)
@@ -1034,7 +1034,7 @@ async def show_button_selector(message: types.Message, db_user: User, state: FSM
 """
 
     keyboard = await get_updated_message_buttons_selector_keyboard_with_media(
-        selected_buttons, has_media, db_user.language, db
+        selected_buttons, has_media, db_user.language
     )
 
     await message.answer(text, reply_markup=keyboard, parse_mode='HTML')
@@ -1042,7 +1042,7 @@ async def show_button_selector(message: types.Message, db_user: User, state: FSM
 
 @admin_required
 @error_handler
-async def toggle_button_selection(callback: types.CallbackQuery, db_user: User, state: FSMContext, db: AsyncSession):
+async def toggle_button_selection(callback: types.CallbackQuery, db_user: User, state: FSMContext):
     button_type = callback.data.replace('btn_', '')
     data = await state.get_data()
     selected_buttons = data.get('selected_buttons')
@@ -1060,7 +1060,7 @@ async def toggle_button_selection(callback: types.CallbackQuery, db_user: User, 
 
     has_media = data.get('has_media', False)
     keyboard = await get_updated_message_buttons_selector_keyboard_with_media(
-        selected_buttons, has_media, db_user.language, db
+        selected_buttons, has_media, db_user.language
     )
 
     await callback.message.edit_reply_markup(reply_markup=keyboard)
