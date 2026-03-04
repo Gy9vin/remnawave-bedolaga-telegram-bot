@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import (
     ENV_OVERRIDE_KEYS,
     Settings,
+    clear_db_period_prices,
     refresh_period_prices,
     refresh_traffic_prices,
     settings,
@@ -221,6 +222,7 @@ class BotConfigurationService:
         'SALES_MODE': 'SUBSCRIPTIONS_CORE',
         'DEFAULT_TRAFFIC_RESET_STRATEGY': 'TRAFFIC',
         'RESET_TRAFFIC_ON_PAYMENT': 'TRAFFIC',
+        'RESET_TRAFFIC_ON_TARIFF_SWITCH': 'TRAFFIC',
         'TRAFFIC_SELECTION_MODE': 'TRAFFIC',
         'FIXED_TRAFFIC_LIMIT_GB': 'TRAFFIC',
         'AVAILABLE_SUBSCRIPTION_PERIODS': 'PERIODS',
@@ -898,6 +900,24 @@ class BotConfigurationService:
             'example': '3:15,6:20,12:25',
             'warning': 'Скидка применяется для оставшегося периода подписки.',
         },
+        'RESET_TRAFFIC_ON_TARIFF_SWITCH': {
+            'description': (
+                'Автоматически сбрасывает счётчик использованного трафика '
+                'при переключении пользователя на другой тарифный план. '
+                'Сброс происходит через RemnaWave API.'
+            ),
+            'format': 'Булево значение: выберите "Включить" или "Выключить".',
+            'example': 'Включено — трафик обнуляется при каждой смене тарифа.',
+            'warning': 'При отключении использованный трафик сохранится после смены тарифа.',
+        },
+        'RESET_TRAFFIC_ON_PAYMENT': {
+            'description': (
+                'Автоматически сбрасывает счётчик использованного трафика при любой оплате или продлении подписки.'
+            ),
+            'format': 'Булево значение: выберите "Включить" или "Выключить".',
+            'example': 'Выключено по умолчанию.',
+            'warning': 'При включении трафик будет обнуляться при каждом продлении подписки.',
+        },
     }
 
     @classmethod
@@ -1458,6 +1478,11 @@ class BotConfigurationService:
 
         await cls._sync_default_web_api_token()
 
+        # После загрузки всех overrides (включая SALES_MODE) — пересчитать цены,
+        # т.к. ensure_tariffs_synced мог загрузить тарифные цены до того как
+        # SALES_MODE=classic был применён из system_settings
+        refresh_period_prices()
+
     @classmethod
     async def reload(cls) -> None:
         cls._overrides_raw.clear()
@@ -1570,6 +1595,11 @@ class BotConfigurationService:
         if key in {'WEB_API_DEFAULT_TOKEN', 'WEB_API_DEFAULT_TOKEN_NAME'}:
             await cls._sync_default_web_api_token()
 
+        if key == 'SALES_MODE' and settings.is_tariffs_mode():
+            from app.database.crud.tariff import load_period_prices_from_db
+
+            await load_period_prices_from_db(db)
+
     @classmethod
     async def reset_value(
         cls,
@@ -1592,6 +1622,11 @@ class BotConfigurationService:
         if key in {'WEB_API_DEFAULT_TOKEN', 'WEB_API_DEFAULT_TOKEN_NAME'}:
             await cls._sync_default_web_api_token()
 
+        if key == 'SALES_MODE' and settings.is_tariffs_mode():
+            from app.database.crud.tariff import load_period_prices_from_db
+
+            await load_period_prices_from_db(db)
+
     @classmethod
     def _apply_to_settings(cls, key: str, value: Any) -> None:
         if cls._is_env_override(key):
@@ -1599,7 +1634,11 @@ class BotConfigurationService:
             return
         try:
             setattr(settings, key, value)
-            if key in {
+            if key == 'SALES_MODE':
+                if settings.is_classic_mode():
+                    clear_db_period_prices()
+                refresh_period_prices()
+            elif key in {
                 'PRICE_14_DAYS',
                 'PRICE_30_DAYS',
                 'PRICE_60_DAYS',

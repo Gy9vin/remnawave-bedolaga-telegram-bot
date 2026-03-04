@@ -451,11 +451,13 @@ async def handle_simple_subscription_pay_with_balance(
             was_trial = getattr(existing_subscription, 'is_trial', False)
 
             subscription = await extend_subscription(
-                db=db, subscription=existing_subscription, days=subscription_params['period_days']
+                db=db,
+                subscription=existing_subscription,
+                days=subscription_params['period_days'],
+                traffic_limit_gb=subscription_params['traffic_limit_gb'],
+                device_limit=subscription_params['device_limit'],
+                connected_squads=[resolved_squad_uuid] if resolved_squad_uuid else None,
             )
-            # Обновляем параметры подписки
-            subscription.traffic_limit_gb = subscription_params['traffic_limit_gb']
-            subscription.device_limit = subscription_params['device_limit']
 
             # Если текущая подписка была пробной, и мы обновляем её
             # нужно изменить статус подписки
@@ -465,10 +467,6 @@ async def handle_simple_subscription_pay_with_balance(
                 # Переводим подписку из пробной в активную платную
                 subscription.status = SubscriptionStatus.ACTIVE.value
                 subscription.is_trial = False
-
-            # Устанавливаем новый выбранный сквад
-            if resolved_squad_uuid:
-                subscription.connected_squads = [resolved_squad_uuid]
 
             await db.commit()
             await db.refresh(subscription)
@@ -2157,11 +2155,13 @@ async def confirm_simple_subscription_purchase(
             was_trial = getattr(existing_subscription, 'is_trial', False)
 
             subscription = await extend_subscription(
-                db=db, subscription=existing_subscription, days=subscription_params['period_days']
+                db=db,
+                subscription=existing_subscription,
+                days=subscription_params['period_days'],
+                traffic_limit_gb=subscription_params['traffic_limit_gb'],
+                device_limit=subscription_params['device_limit'],
+                connected_squads=[resolved_squad_uuid] if resolved_squad_uuid else None,
             )
-            # Обновляем параметры подписки
-            subscription.traffic_limit_gb = subscription_params['traffic_limit_gb']
-            subscription.device_limit = subscription_params['device_limit']
 
             # Если текущая подписка была пробной, и мы обновляем её
             # нужно изменить статус подписки
@@ -2171,10 +2171,6 @@ async def confirm_simple_subscription_purchase(
                 # Переводим подписку из пробной в активную платную
                 subscription.status = SubscriptionStatus.ACTIVE.value
                 subscription.is_trial = False
-
-            # Устанавливаем новый выбранный сквад
-            if resolved_squad_uuid:
-                subscription.connected_squads = [resolved_squad_uuid]
 
             await db.commit()
             await db.refresh(subscription)

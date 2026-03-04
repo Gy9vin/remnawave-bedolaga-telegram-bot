@@ -28,7 +28,7 @@ from app.services.subscription_purchase_service import (
 )
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
-from app.utils.pricing_utils import apply_percentage_discount, format_period_description
+from app.utils.pricing_utils import format_period_description
 from app.utils.timezone import format_local_datetime
 
 
@@ -144,10 +144,15 @@ async def _get_tariff_price_for_period(
     user: User,
     tariff_id: int,
     period_days: int,
-) -> int | None:
-    """Получает актуальную цену тарифа для заданного периода с учётом скидки пользователя."""
+) -> tuple[int, int] | None:
+    """Получает базовую цену тарифа и процент скидки (без применения).
+
+    Returns:
+        (base_price, discount_percent) или None если тариф/период недоступен.
+        Скидка НЕ применяется — вызывающий код должен сначала добавить доп. устройства,
+        затем применить скидку к полной сумме (как в cabinet).
+    """
     from app.database.crud.tariff import get_tariff_by_id
-    from app.utils.promo_offer import get_user_active_promo_discount_percent
 
     tariff = await get_tariff_by_id(db, tariff_id)
     if not tariff or not tariff.is_active:
@@ -166,17 +171,17 @@ async def _get_tariff_price_for_period(
         )
         return None
 
-    # Получаем скидку пользователя
+    # Возвращаем только promo_group скидку.
+    # Promo_offer скидку вызывающий код должен применить отдельно (последовательно, как в cabinet).
     discount_percent = 0
-    promo_group = getattr(user, 'promo_group', None)
-    if promo_group:
-        discount_percent = getattr(promo_group, 'server_discount_percent', 0)
+    if hasattr(user, 'get_promo_discount'):
+        discount_percent = user.get_promo_discount('period', period_days)
+    else:
+        promo_group = getattr(user, 'promo_group', None)
+        if promo_group and hasattr(promo_group, 'get_discount_percent'):
+            discount_percent = promo_group.get_discount_percent('period', period_days)
 
-    personal_discount = get_user_active_promo_discount_percent(user)
-    discount_percent = max(discount_percent, personal_discount)
-
-    final_price, _ = apply_percentage_discount(base_price, discount_percent)
-    return final_price
+    return (int(base_price), discount_percent)
 
 
 async def _prepare_auto_extend_context(
@@ -219,8 +224,8 @@ async def _prepare_auto_extend_context(
     tariff_id = cart_data.get('tariff_id')
     if tariff_id:
         tariff_id = _safe_int(tariff_id)
-        price_kopeks = await _get_tariff_price_for_period(db, user, tariff_id, period_days)
-        if price_kopeks is None:
+        tariff_result = await _get_tariff_price_for_period(db, user, tariff_id, period_days)
+        if tariff_result is None:
             # Тариф недоступен или период отсутствует - используем сохранённую цену как fallback
             price_kopeks = _safe_int(
                 cart_data.get('total_price') or cart_data.get('price') or cart_data.get('final_price'),
@@ -230,19 +235,37 @@ async def _prepare_auto_extend_context(
                 tariff_id=tariff_id,
                 price_kopeks=price_kopeks,
             )
-        # Добавляем стоимость докупленных устройств при продлении того же тарифа
-        elif subscription.tariff_id == tariff_id:
-            from app.database.crud.tariff import get_tariff_by_id as _get_tariff
+        else:
+            base_price, discount_percent = tariff_result
+            price_kopeks = base_price
 
-            _tariff = await _get_tariff(db, tariff_id)
-            if _tariff:
-                extra_devices = max(0, (subscription.device_limit or 0) - (_tariff.device_limit or 0))
-                if extra_devices > 0:
-                    from app.utils.pricing_utils import calculate_months_from_days
+            # Добавляем стоимость докупленных устройств ДО применения скидки (как в cabinet)
+            if subscription.tariff_id == tariff_id:
+                from app.database.crud.tariff import get_tariff_by_id as _get_tariff
 
-                    device_price_per_month = _tariff.device_price_kopeks or settings.PRICE_PER_DEVICE
-                    months = calculate_months_from_days(period_days)
-                    price_kopeks += extra_devices * device_price_per_month * months
+                _tariff = await _get_tariff(db, tariff_id)
+                if _tariff:
+                    extra_devices = max(0, (subscription.device_limit or 0) - (_tariff.device_limit or 0))
+                    if extra_devices > 0:
+                        from app.utils.pricing_utils import calculate_months_from_days
+
+                        device_price_per_month = (
+                            _tariff.device_price_kopeks
+                            if _tariff.device_price_kopeks is not None
+                            else settings.PRICE_PER_DEVICE
+                        )
+                        months = calculate_months_from_days(period_days)
+                        price_kopeks += extra_devices * device_price_per_month * months
+
+            # Применяем promo_group скидку к полной сумме (база + доп. устройства)
+            price_kopeks = _apply_promo_discount_for_tariff(price_kopeks, discount_percent)
+
+            # Применяем promo_offer скидку отдельно (последовательно, как в cabinet)
+            from app.utils.promo_offer import get_user_active_promo_discount_percent
+
+            promo_offer_percent = get_user_active_promo_discount_percent(user)
+            if promo_offer_percent > 0:
+                price_kopeks = _apply_promo_discount_for_tariff(price_kopeks, promo_offer_percent)
     else:
         price_kopeks = _safe_int(
             cart_data.get('total_price') or cart_data.get('price') or cart_data.get('final_price'),
@@ -299,9 +322,8 @@ def _apply_extension_updates(context: AutoExtendContext) -> None:
     """
     subscription = context.subscription
 
-    # Обновляем tariff_id если указан в контексте
-    if context.tariff_id is not None:
-        subscription.tariff_id = context.tariff_id
+    # НЕ обновляем tariff_id здесь — это делает extend_subscription(),
+    # чтобы корректно определить is_tariff_change внутри CRUD
 
     # Обновляем allowed_squads если указаны (заменяем полностью)
     if context.allowed_squads is not None:
@@ -446,8 +468,11 @@ async def _auto_extend_subscription(
         )
 
     subscription_service = SubscriptionService()
-    # При смене тарифа ВСЕГДА сбрасываем трафик, иначе по настройке
-    should_reset_traffic = is_tariff_change or settings.RESET_TRAFFIC_ON_PAYMENT
+    # Сброс трафика: при смене тарифа — по RESET_TRAFFIC_ON_TARIFF_SWITCH, при оплате — по RESET_TRAFFIC_ON_PAYMENT
+    if is_tariff_change:
+        should_reset_traffic = settings.RESET_TRAFFIC_ON_TARIFF_SWITCH
+    else:
+        should_reset_traffic = settings.RESET_TRAFFIC_ON_PAYMENT
     try:
         await subscription_service.update_remnawave_user(
             db,
@@ -592,7 +617,6 @@ async def _auto_purchase_tariff(
 
     tariff_id = _safe_int(cart_data.get('tariff_id'))
     period_days = _safe_int(cart_data.get('period_days'))
-    discount_percent = _safe_int(cart_data.get('discount_percent'))
 
     if not tariff_id or period_days <= 0:
         logger.warning(
@@ -621,21 +645,38 @@ async def _auto_purchase_tariff(
         )
         return False
 
-    final_price, _ = apply_percentage_discount(base_price, discount_percent)
+    final_price = int(base_price)
 
     # Проверяем есть ли уже подписка (нужно до расчёта цены для учёта доп. устройств)
     existing_subscription = await get_subscription_by_user_id(db, user.id)
 
-    # Добавляем стоимость докупленных устройств при продлении того же тарифа
+    # Добавляем стоимость докупленных устройств ДО скидки (как в cabinet)
     if existing_subscription and existing_subscription.tariff_id == tariff_id:
         extra_devices = max(0, (existing_subscription.device_limit or 0) - (tariff.device_limit or 0))
         if extra_devices > 0:
             from app.utils.pricing_utils import calculate_months_from_days
 
-            device_price_per_month = tariff.device_price_kopeks or settings.PRICE_PER_DEVICE
+            device_price_per_month = (
+                tariff.device_price_kopeks if tariff.device_price_kopeks is not None else settings.PRICE_PER_DEVICE
+            )
             months = calculate_months_from_days(period_days)
             extra_devices_cost = extra_devices * device_price_per_month * months
             final_price += extra_devices_cost
+
+    # Пересчитываем скидку из актуальных данных пользователя (не из stale корзины)
+    # Promo_group и promo_offer применяются последовательно (как в cabinet)
+    from app.utils.promo_offer import get_user_active_promo_discount_percent
+
+    discount_percent = 0
+    if hasattr(user, 'get_promo_discount'):
+        discount_percent = user.get_promo_discount('period', period_days)
+
+    if discount_percent > 0:
+        final_price = _apply_promo_discount_for_tariff(final_price, discount_percent)
+
+    promo_offer_percent = get_user_active_promo_discount_percent(user)
+    if promo_offer_percent > 0:
+        final_price = _apply_promo_discount_for_tariff(final_price, promo_offer_percent)
 
     if user.balance_kopeks < final_price:
         logger.info(

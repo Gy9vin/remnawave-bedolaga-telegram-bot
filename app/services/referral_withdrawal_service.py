@@ -14,6 +14,7 @@ from app.config import settings
 from app.database.models import (
     ReferralEarning,
     Transaction,
+    TransactionType,
     User,
     WithdrawalRequest,
     WithdrawalRequestStatus,
@@ -41,10 +42,14 @@ class ReferralWithdrawalService:
     async def get_user_own_deposits(self, db: AsyncSession, user_id: int) -> int:
         """
         Получает сумму собственных пополнений пользователя (НЕ реферальные).
+        Фильтрует по payment_method IS NOT NULL — реальные платежи всегда имеют payment_method.
         """
         result = await db.execute(
             select(func.coalesce(func.sum(Transaction.amount_kopeks), 0)).where(
-                Transaction.user_id == user_id, Transaction.type == 'deposit', Transaction.is_completed == True
+                Transaction.user_id == user_id,
+                Transaction.type == TransactionType.DEPOSIT.value,
+                Transaction.is_completed == True,
+                Transaction.payment_method.isnot(None),
             )
         )
         return result.scalar() or 0
@@ -66,7 +71,7 @@ class ReferralWithdrawalService:
         result = await db.execute(
             select(func.coalesce(func.sum(Transaction.amount_kopeks), 0)).where(
                 Transaction.user_id == user_id,
-                Transaction.type == 'subscription_payment',
+                Transaction.type.in_([TransactionType.SUBSCRIPTION_PAYMENT.value, TransactionType.WITHDRAWAL.value]),
                 Transaction.is_completed == True,
             )
         )
@@ -85,7 +90,7 @@ class ReferralWithdrawalService:
         result = await db.execute(
             select(func.coalesce(func.sum(Transaction.amount_kopeks), 0)).where(
                 Transaction.user_id == user_id,
-                Transaction.type == 'subscription_payment',
+                Transaction.type.in_([TransactionType.SUBSCRIPTION_PAYMENT.value, TransactionType.WITHDRAWAL.value]),
                 Transaction.is_completed == True,
                 Transaction.created_at >= first_earning_date,
             )
@@ -132,15 +137,9 @@ class ReferralWithdrawalService:
         """
         Получает полную статистику реферального баланса.
 
-        Формула доступного баланса:
-        available = total_earned - referral_spent - withdrawn - approved - pending
-
-        withdrawn = только COMPLETED (деньги реально переведены)
-        approved = только APPROVED (одобрено, ожидает перевода)
-        pending = только PENDING (на рассмотрении)
-
-        ВАЖНО: available_total ограничен фактическим balance_kopeks пользователя.
-        Нельзя вывести больше, чем реально есть на балансе.
+        Доступный реферальный баланс = min(баланс кошелька, заработано - выведено - в ожидании).
+        Партнёр не может вывести больше, чем реально лежит в кошельке (User.balance_kopeks),
+        и не больше, чем заработал минус уже выведенные/замороженные средства.
         """
         # Получаем фактический баланс пользователя
         user_result = await db.execute(select(User.balance_kopeks).where(User.id == user_id))
@@ -154,20 +153,25 @@ class ReferralWithdrawalService:
         approved = await self.get_approved_withdrawal_amount(db, user_id)
         pending = await self.get_pending_withdrawal_amount(db, user_id)
 
-        # Сколько реф. баланса потрачено = мин(траты ПОСЛЕ первого начисления, реф_заработок)
-        # Логика: только траты после получения реф. дохода могут быть из реф. баланса
+        # Текущий баланс кошелька — реальный ограничитель вывода
+        user = await db.get(User, user_id)
+        user_balance = user.balance_kopeks if user else 0
+
+        # referral_spent — для аналитики/отображения, больше НЕ влияет на available_referral
         referral_spent = min(spending_after_earning, total_earned)
 
-        # Доступный реферальный баланс (учитываем все замороженные суммы)
-        available_referral = max(0, total_earned - referral_spent - withdrawn - approved - pending)
+        # Реферальное право: сколько заработано минус выведено/заморожено
+        referral_entitlement = max(0, total_earned - withdrawn - pending)
+
+        # Доступный реферальный баланс: мин(кошелёк, реферальное право)
+        # Нельзя вывести больше, чем лежит в кошельке
+        available_referral = min(user_balance, referral_entitlement)
 
         # Если разрешено выводить и свой баланс
         if not settings.REFERRAL_WITHDRAWAL_ONLY_REFERRAL_BALANCE:
-            # Свой остаток = пополнения - (траты - реф_потрачено)
-            own_remaining = max(0, own_deposits - max(0, spending - referral_spent))
-            available_total = available_referral + own_remaining
+            # Весь кошелёк доступен к выводу (уже ограничен user_balance)
+            available_total = user_balance
         else:
-            own_remaining = 0
             available_total = available_referral
 
         # Ограничиваем доступную сумму фактическим балансом (минус замороженные)
@@ -179,10 +183,10 @@ class ReferralWithdrawalService:
             'total_earned': total_earned,  # Всего заработано с рефералов
             'own_deposits': own_deposits,  # Собственные пополнения
             'spending': spending,  # Потрачено на подписки и пр.
-            'referral_spent': referral_spent,  # Сколько реф. баланса потрачено
-            'withdrawn': withdrawn,  # Реально выведено (COMPLETED)
+            'referral_spent': referral_spent,  # Сколько реф. баланса потрачено (аналитика)
+            'withdrawn': withdrawn,  # Уже выведено
             'approved': approved,  # Одобрено, ожидает перевода (APPROVED)
-            'pending': pending,  # На рассмотрении (PENDING)
+            'pending': pending,  # На рассмотрении
             'available_referral': available_referral,  # Доступно реф. баланса
             'available_total': available_total,  # Всего доступно к выводу
             'actual_balance': actual_balance,  # Фактический баланс
@@ -367,7 +371,7 @@ class ReferralWithdrawalService:
                 )
                 .where(
                     Transaction.user_id.in_(referral_ids),
-                    Transaction.type == 'deposit',
+                    Transaction.type == TransactionType.DEPOSIT.value,
                     Transaction.is_completed == True,
                     Transaction.created_at >= month_ago,
                 )
@@ -416,7 +420,7 @@ class ReferralWithdrawalService:
                     func.coalesce(func.sum(Transaction.amount_kopeks), 0).label('total_amount'),
                 ).where(
                     Transaction.user_id.in_(referral_ids),
-                    Transaction.type == 'deposit',
+                    Transaction.type == TransactionType.DEPOSIT.value,
                     Transaction.is_completed == True,
                 )
             )
@@ -594,7 +598,7 @@ class ReferralWithdrawalService:
         # Создаём транзакцию списания
         withdrawal_tx = Transaction(
             user_id=request.user_id,
-            type='withdrawal',
+            type=TransactionType.WITHDRAWAL.value,
             amount_kopeks=-request.amount_kopeks,
             description=f'Вывод реферального баланса (заявка #{request.id})',
             is_completed=True,

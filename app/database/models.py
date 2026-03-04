@@ -908,6 +908,11 @@ class Tariff(Base):
         prices = self.period_prices or {}
         return sorted([int(p) for p in prices.keys()])
 
+    def get_shortest_period(self) -> int | None:
+        """Возвращает минимальный доступный период в днях (для автопродления)."""
+        periods = self.get_available_periods()
+        return periods[0] if periods else None
+
     def get_price_rubles(self, period_days: int) -> float | None:
         """Возвращает цену в рублях для указанного периода."""
         price_kopeks = self.get_price_for_period(period_days)
@@ -1155,6 +1160,10 @@ class User(Base):
 
 class Subscription(Base):
     __tablename__ = 'subscriptions'
+    __table_args__ = (
+        Index('ix_subscriptions_status_trial', 'status', 'is_trial'),
+        Index('ix_subscriptions_trial_created', 'is_trial', 'created_at'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True)
@@ -1368,6 +1377,7 @@ class TrafficPurchase(Base):
     """Докупка трафика с индивидуальной датой истечения."""
 
     __tablename__ = 'traffic_purchases'
+    __table_args__ = (Index('ix_traffic_purchases_created_at', 'created_at'),)
 
     id = Column(Integer, primary_key=True, index=True)
     subscription_id = Column(Integer, ForeignKey('subscriptions.id', ondelete='CASCADE'), nullable=False, index=True)
@@ -1387,6 +1397,11 @@ class TrafficPurchase(Base):
 
 class Transaction(Base):
     __tablename__ = 'transactions'
+    __table_args__ = (
+        Index('ix_transactions_type_created_completed', 'type', 'created_at', 'is_completed'),
+        Index('ix_transactions_user_created', 'user_id', 'created_at'),
+        Index('ix_transactions_type_method_created', 'type', 'payment_method', 'created_at'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
@@ -1416,6 +1431,10 @@ class Transaction(Base):
 
 class SubscriptionConversion(Base):
     __tablename__ = 'subscription_conversions'
+    __table_args__ = (
+        Index('ix_sub_conversions_converted_at', 'converted_at'),
+        Index('ix_sub_conversions_user_id', 'user_id'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
@@ -1583,6 +1602,7 @@ class PartnerApplication(Base):
     telegram_channel = Column(String(255), nullable=True)
     description = Column(Text, nullable=True)
     expected_monthly_referrals = Column(Integer, nullable=True)
+    desired_commission_percent = Column(Integer, nullable=True)
 
     status = Column(String(20), default=PartnerStatus.PENDING.value, nullable=False)
 
