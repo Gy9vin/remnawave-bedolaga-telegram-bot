@@ -217,7 +217,7 @@ async def oauth_callback(
         db=db,
         provider=provider,
         provider_id=user_info.provider_id,
-        email=user_info.email if user_info.email_verified else None,
+        email=user_info.email or None,
         email_verified=user_info.email_verified,
         first_name=user_info.first_name,
         last_name=user_info.last_name,
