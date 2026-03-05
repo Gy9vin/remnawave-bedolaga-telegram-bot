@@ -70,10 +70,44 @@ async def _has_orphaned_revision() -> bool:
 
 _INITIAL_REVISION = '0001'
 
+# Паттерн наших "правильных" файлов миграций: 0001_..., 0002_... и т.д.
+import re as _re
+
+
+_OUR_MIGRATION_PATTERN = _re.compile(r'^00\d{2}_')
+
+
+def _cleanup_foreign_migration_files() -> int:
+    """Удалить посторонние файлы миграций (upstream hash-based) из директории versions.
+
+    Upstream BEDOLAGA-DEV использует hash-based ID (например cbd1be472f3d),
+    а наш форк использует числовые ID (0001, 0002, ...).
+    При деплое на сервер, куда ранее устанавливался upstream, эти файлы могут смешаться.
+    """
+    cfg = _get_alembic_config()
+    script = ScriptDirectory.from_config(cfg)
+    versions_dir = Path(script.dir) / 'versions'
+
+    removed = 0
+    for f in versions_dir.glob('*.py'):
+        if f.name == '__init__.py':
+            continue
+        if not _OUR_MIGRATION_PATTERN.match(f.name):
+            logger.warning('Удаляю посторонний файл миграции (upstream)', file=f.name)
+            f.unlink()
+            removed += 1
+
+    if removed:
+        logger.info('Очищено посторонних файлов миграций', count=removed)
+    return removed
+
 
 async def run_alembic_upgrade() -> None:
     """Run ``alembic upgrade head``, auto-stamping existing databases first."""
     import asyncio
+
+    # Сначала чистим посторонние файлы (могут появиться при деплое поверх upstream)
+    _cleanup_foreign_migration_files()
 
     if await _needs_auto_stamp():
         logger.warning(
