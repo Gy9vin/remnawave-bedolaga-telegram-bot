@@ -427,6 +427,37 @@ class NaloGoService:
                 logger.error('Ошибка создания чека в NaloGO', error=error, exc_info=True)
             return None
 
+    async def queue_receipt_for_transaction(
+        self,
+        payment_id: str,
+        amount_kopeks: int,
+        name: str,
+        telegram_user_id: int | None = None,
+    ) -> bool:
+        """Добавить чек транзакции в очередь для принудительной отправки.
+
+        Args:
+            payment_id: Уникальный ID транзакции для дедупликации
+            amount_kopeks: Сумма в копейках
+            name: Описание услуги для чека
+            telegram_user_id: Telegram ID пользователя
+
+        Returns:
+            True если успешно добавлен в очередь, False если уже был отправлен или ошибка
+        """
+        if not self.configured:
+            return False
+        amount = amount_kopeks / 100.0
+        return await self._queue_receipt(
+            name=name,
+            amount=amount,
+            quantity=1,
+            client_info=None,
+            payment_id=payment_id,
+            telegram_user_id=telegram_user_id,
+            amount_kopeks=amount_kopeks,
+        )
+
     async def get_queue_length(self) -> int:
         """Получить количество чеков в очереди."""
         return await cache.llen(NALOGO_QUEUE_KEY)

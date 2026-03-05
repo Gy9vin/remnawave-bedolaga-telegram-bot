@@ -951,6 +951,14 @@ async def monitoring_statistics_callback(callback: CallbackQuery):
                     InlineKeyboardButton(text='📊 Сверка чеков', callback_data='admin_mon_receipts_missing')
                 )
                 buttons.append(nalogo_buttons)
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            text='💸 Отправить чеки за сегодня',
+                            callback_data='admin_mon_nalogo_force_today',
+                        )
+                    ]
+                )
 
             buttons.append([InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_monitoring')])
             keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -1206,6 +1214,82 @@ async def nalogo_clear_pending_callback(callback: CallbackQuery):
 
     except Exception as e:
         logger.error('Ошибка очистки очереди', error=e)
+        await callback.answer(f'❌ Ошибка: {e!s}', show_alert=True)
+
+
+@router.callback_query(F.data == 'admin_mon_nalogo_force_today')
+@admin_required
+async def nalogo_force_today_callback(callback: CallbackQuery):
+    """Принудительная отправка чеков за текущий день из транзакций БД."""
+    try:
+        from sqlalchemy import and_, select
+
+        from app.database.models import Transaction, TransactionType, User
+        from app.services.nalogo_service import NaloGoService
+
+        await callback.answer('🔄 Ищу транзакции без чеков за сегодня...', show_alert=False)
+
+        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+
+        async with AsyncSessionLocal() as db:
+            query = (
+                select(Transaction, User.telegram_id)
+                .join(User, Transaction.user_id == User.id)
+                .where(
+                    and_(
+                        Transaction.type == TransactionType.DEPOSIT.value,
+                        Transaction.is_completed == True,
+                        Transaction.receipt_uuid.is_(None),
+                        Transaction.created_at >= today_start,
+                        Transaction.created_at < today_end,
+                    )
+                )
+                .order_by(Transaction.created_at.asc())
+            )
+            result = await db.execute(query)
+            rows = result.all()
+
+        if not rows:
+            await callback.answer('✅ Нет транзакций без чеков за сегодня', show_alert=True)
+            return
+
+        nalogo_service = NaloGoService()
+        if not nalogo_service.configured:
+            await callback.answer('❌ NaloGO не настроен', show_alert=True)
+            return
+
+        queued = 0
+        skipped = 0
+        total_amount = 0.0
+
+        for transaction, telegram_id in rows:
+            payment_id = transaction.external_id or f'tx_{transaction.id}'
+            name = settings.get_balance_payment_description(transaction.amount_kopeks, telegram_id)
+            added = await nalogo_service.queue_receipt_for_transaction(
+                payment_id=payment_id,
+                amount_kopeks=transaction.amount_kopeks,
+                name=name,
+                telegram_user_id=telegram_id,
+            )
+            if added:
+                queued += 1
+                total_amount += transaction.amount_rubles
+            else:
+                skipped += 1
+
+        if queued > 0:
+            text = f'✅ Добавлено в очередь: {queued} чек(ов) на {total_amount:,.2f} ₽'
+            if skipped > 0:
+                text += f'\n⏭ Пропущено (уже в очереди/отправлены): {skipped}'
+            text += '\n\n⏳ Чеки будут отправлены в ближайшее время'
+        else:
+            text = f'⏭ Все {skipped} транзакций уже имеют чеки или находятся в очереди'
+
+        await callback.answer(text, show_alert=True)
+
+    except Exception as e:
+        logger.error('Ошибка принудительной отправки чеков за сегодня', error=e)
         await callback.answer(f'❌ Ошибка: {e!s}', show_alert=True)
 
 
