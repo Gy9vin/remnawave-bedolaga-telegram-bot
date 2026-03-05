@@ -338,6 +338,24 @@ async def get_revenue_by_period(db: AsyncSession, days: int = 30) -> list[dict]:
     return [{'date': row.date, 'amount_kopeks': row.amount} for row in result]
 
 
+async def get_alltime_payments_stats(db: AsyncSession) -> dict:
+    """Суммарная статистика реальных платежей за всё время."""
+    result = await db.execute(
+        select(
+            func.count(Transaction.id).label('count'),
+            func.coalesce(func.sum(Transaction.amount_kopeks), 0).label('total'),
+        ).where(
+            and_(
+                Transaction.type == TransactionType.DEPOSIT.value,
+                Transaction.is_completed == True,
+                Transaction.payment_method.in_(REAL_PAYMENT_METHODS),
+            )
+        )
+    )
+    row = result.one()
+    return {'count': int(row.count), 'total_kopeks': int(row.total)}
+
+
 async def find_tribute_transactions_by_payment_id(
     db: AsyncSession, payment_id: str, user_telegram_id: int | None = None
 ) -> list[Transaction]:

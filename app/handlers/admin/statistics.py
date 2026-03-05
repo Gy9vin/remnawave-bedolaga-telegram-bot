@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.crud.referral import get_referral_statistics
 from app.database.crud.subscription import get_subscriptions_statistics
-from app.database.crud.transaction import get_revenue_by_period, get_transactions_statistics
+from app.database.crud.transaction import get_alltime_payments_stats, get_revenue_by_period, get_transactions_statistics
 from app.database.models import User
 from app.keyboards.admin import get_admin_statistics_keyboard
 from app.services.user_service import UserService
@@ -137,7 +137,7 @@ async def show_revenue_statistics(callback: types.CallbackQuery, db_user: User, 
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     month_stats = await get_transactions_statistics(db, month_start, now)
-    all_time_stats = await get_transactions_statistics(db)
+    alltime = await get_alltime_payments_stats(db)
     current_time = format_datetime(datetime.now(UTC))
 
     text = f"""
@@ -154,8 +154,8 @@ async def show_revenue_statistics(callback: types.CallbackQuery, db_user: User, 
 - Доходы: {settings.format_price(month_stats['today']['income_kopeks'])}
 
 <b>За все время:</b>
-- Общий доход: {settings.format_price(all_time_stats['totals']['income_kopeks'])}
-- Общая прибыль: {settings.format_price(all_time_stats['totals']['profit_kopeks'])}
+- Платежей: {alltime['count']}
+- Общий доход: {settings.format_price(alltime['total_kopeks'])}
 
 <b>Способы оплаты:</b>
 """
