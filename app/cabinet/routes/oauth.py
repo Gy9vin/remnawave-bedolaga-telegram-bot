@@ -23,9 +23,9 @@ from ..auth.oauth_providers import (
     get_provider,
     validate_oauth_state,
 )
-from ..dependencies import get_cabinet_db
+from ..dependencies import get_cabinet_db, get_current_cabinet_user
 from ..routes.account_linking import OAuthProviderName
-from ..schemas.auth import AuthResponse
+from ..schemas.auth import AuthResponse, ConnectionInfo, ConnectionsResponse, LinkOAuthRequest, LinkResponse
 from .auth import _create_auth_response, _process_campaign_bonus, _store_refresh_token
 
 
