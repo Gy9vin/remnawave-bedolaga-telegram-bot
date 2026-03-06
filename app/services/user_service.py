@@ -664,28 +664,32 @@ class UserService:
 
             from app.database.crud.subscription import deactivate_subscription, is_active_paid_subscription
 
-            if is_active_paid_subscription(user.subscription):
-                logger.info(
-                    '⏭️ Пропуск отключения RemnaWave и подписки: у пользователя активная оплаченная подписка',
-                    user_id=user_id,
-                    remnawave_uuid=user.remnawave_uuid,
-                )
+            if user.remnawave_uuid:
+                try:
+                    from app.services.subscription_service import SubscriptionService
+
+                    subscription_service = SubscriptionService()
+                    await subscription_service.disable_remnawave_user(user.remnawave_uuid)
+                    logger.info(
+                        '✅ RemnaWave пользователь деактивирован при блокировке',
+                        remnawave_uuid=user.remnawave_uuid,
+                    )
+                except Exception as e:
+                    logger.error('❌ Ошибка деактивации RemnaWave пользователя при блокировке', error=e)
             else:
-                if user.remnawave_uuid:
-                    try:
-                        from app.services.subscription_service import SubscriptionService
+                logger.warning(
+                    'Пользователь заблокирован, но remnawave_uuid отсутствует — панель не обновлена',
+                    user_id=user_id,
+                )
 
-                        subscription_service = SubscriptionService()
-                        await subscription_service.disable_remnawave_user(user.remnawave_uuid)
-                        logger.info(
-                            '✅ RemnaWave пользователь деактивирован при блокировке',
-                            remnawave_uuid=user.remnawave_uuid,
-                        )
-                    except Exception as e:
-                        logger.error('❌ Ошибка деактивации RemnaWave пользователя при блокировке', error=e)
-
+            if not is_active_paid_subscription(user.subscription):
                 if user.subscription:
                     await deactivate_subscription(db, user.subscription)
+            else:
+                logger.info(
+                    '⏭️ Пропуск деактивации подписки в БД: активная оплаченная подписка',
+                    user_id=user_id,
+                )
 
             await update_user(db, user, status=UserStatus.BLOCKED.value)
 
