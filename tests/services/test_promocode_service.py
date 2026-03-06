@@ -51,7 +51,10 @@ async def test_activate_promo_group_promocode_success(
     add_promo_group_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.add_user_to_promo_group', add_promo_group_mock)
 
-    create_usage_mock = AsyncMock()
+    from unittest.mock import MagicMock
+
+    promo_use_obj = MagicMock()
+    create_usage_mock = AsyncMock(return_value=promo_use_obj)
     monkeypatch.setattr('app.services.promocode_service.create_promocode_use', create_usage_mock)
 
     # Execute
@@ -74,11 +77,11 @@ async def test_activate_promo_group_promocode_success(
         mock_db_session, sample_user.id, sample_promo_group.id, assigned_by='promocode'
     )
 
-    # Verify usage recorded
+    # Verify usage recorded (now called first as race-condition lock)
     create_usage_mock.assert_awaited_once_with(mock_db_session, sample_promocode_promo_group.id, sample_user.id)
 
-    # Verify counter incremented
-    assert sample_promocode_promo_group.current_uses == 21
+    # Verify counter incremented via SQL UPDATE (not in-memory)
+    mock_db_session.execute.assert_awaited()
     mock_db_session.commit.assert_awaited()
 
 

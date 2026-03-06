@@ -155,6 +155,7 @@ async def test_process_mulenpay_callback_avoids_duplicate_transactions(
 
     class DummyPayment:
         def __init__(self) -> None:
+            self.id = 501
             self.user_id = 42
             self.amount_kopeks = 1500
             self.description = 'Пополнение'
@@ -196,6 +197,7 @@ async def test_process_mulenpay_callback_avoids_duplicate_transactions(
             self.balance_kopeks = 0
             self.has_made_first_topup = False
             self.language = 'ru'
+            self.updated_at = None
             self.promo_group = None
             self.subscription = None
             self.user_promo_groups = []
@@ -255,6 +257,26 @@ async def test_process_mulenpay_callback_avoids_duplicate_transactions(
     )
     monkeypatch.setitem(sys.modules, 'app.services.user_cart_service', user_cart_module)
 
+    # Мок для SELECT FOR UPDATE блокировки платежа (новый upstream-паттерн)
+    async def fake_get_for_update_mulen(_db: Any, payment_id: int) -> DummyPayment:
+        return payment
+
+    mulenpay_crud_module = ModuleType('app.database.crud.mulenpay')
+    mulenpay_crud_module.get_mulenpay_payment_by_id_for_update = fake_get_for_update_mulen  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'app.database.crud.mulenpay', mulenpay_crud_module)
+
+    # Мок emit_transaction_side_effects (новый upstream-паттерн для отложенных эффектов)
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    trx_crud_module = ModuleType('app.database.crud.transaction')
+    trx_crud_module.emit_transaction_side_effects = _AsyncMock()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', trx_crud_module)
+
+    # Мок common модуля для send_cart_notification_after_topup
+    common_mulen_module = ModuleType('app.services.payment.common')
+    common_mulen_module.send_cart_notification_after_topup = _AsyncMock(return_value=False)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'app.services.payment.common', common_mulen_module)
+
     monkeypatch.setattr(
         payment_service_module,
         'get_mulenpay_payment_by_uuid',
@@ -285,12 +307,6 @@ async def test_process_mulenpay_callback_avoids_duplicate_transactions(
         fake_get_user_by_id,
         raising=False,
     )
-    monkeypatch.setattr(
-        payment_service_module,
-        'add_user_balance',
-        fake_add_user_balance,
-        raising=False,
-    )
 
     result = await service.process_mulenpay_callback(
         db,
@@ -299,6 +315,6 @@ async def test_process_mulenpay_callback_avoids_duplicate_transactions(
 
     assert result is True
     assert transaction_calls, 'create_transaction should be called'
-    assert balance_call['create_transaction'] is False
+    # Баланс теперь начисляется напрямую (user.balance_kopeks +=), а не через add_user_balance
     assert dummy_user.balance_kopeks == payment.amount_kopeks
     assert payment.transaction_id is not None

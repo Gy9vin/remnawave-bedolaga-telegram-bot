@@ -74,8 +74,23 @@ if 'redis.asyncio' not in sys.modules:
 
     redis_async_module.from_url = _from_url
     redis_async_module.Redis = _FakeRedisClient
+
+    # Заглушка для redis.exceptions (нужна для cache.py)
+    redis_exceptions_module = types.ModuleType('redis.exceptions')
+
+    class _FakeNoScriptError(Exception):
+        pass
+
+    class _FakeRedisError(Exception):
+        pass
+
+    redis_exceptions_module.NoScriptError = _FakeNoScriptError
+    redis_exceptions_module.RedisError = _FakeRedisError
+    redis_module.exceptions = redis_exceptions_module
+
     sys.modules['redis'] = redis_module
     sys.modules['redis.asyncio'] = redis_async_module
+    sys.modules['redis.exceptions'] = redis_exceptions_module
 
 # Минимальная реализация SDK YooKassa, чтобы импорт сервисов не падал.
 if 'yookassa' not in sys.modules:

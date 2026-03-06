@@ -33,6 +33,8 @@ async def test_auto_purchase_saved_cart_after_topup_success(monkeypatch):
     user.telegram_id = 4242
     user.balance_kopeks = 200_000
     user.language = 'ru'
+    user.promo_offer_discount_percent = 0
+    user.promo_offer_discount_expires_at = None
     user.subscription = None
     user.get_primary_promo_group = MagicMock(return_value=None)
 
@@ -207,6 +209,8 @@ async def test_auto_purchase_saved_cart_after_topup_extension(monkeypatch):
     user.telegram_id = 7007
     user.balance_kopeks = 200_000
     user.language = 'ru'
+    user.promo_offer_discount_percent = 0
+    user.promo_offer_discount_expires_at = None
     user.subscription = subscription
     user.get_primary_promo_group = MagicMock(return_value=None)
 
@@ -281,6 +285,19 @@ async def test_auto_purchase_saved_cart_after_topup_extension(monkeypatch):
         lambda bot: admin_service_mock,
     )
 
+    # Мок для with_admin_notification_service (новый путь уведомлений)
+    with_admin_mock = AsyncMock()
+    monkeypatch.setattr(
+        'app.services.subscription_renewal_service.with_admin_notification_service',
+        with_admin_mock,
+    )
+
+    # Мок для get_user_transactions (новая защита от race condition)
+    monkeypatch.setattr(
+        'app.database.crud.transaction.get_user_transactions',
+        AsyncMock(return_value=[]),
+    )
+
     # Мок для get_subscription_by_user_id
     monkeypatch.setattr(
         'app.database.crud.subscription.get_subscription_by_user_id',
@@ -298,14 +315,14 @@ async def test_auto_purchase_saved_cart_after_topup_extension(monkeypatch):
         user,
         cart_data['total_price'],
         cart_data['description'],
-        consume_promo_offer=True,
+        consume_promo_offer=False,
+        mark_as_paid_subscription=True,
     )
     assert subscription.device_limit == 2
     assert subscription.traffic_limit_gb == 500
     assert 'squad-b' in subscription.connected_squads
     delete_cart_mock.assert_awaited_once_with(user.id)
     clear_draft_mock.assert_awaited_once_with(user.id)
-    admin_service_mock.send_subscription_extension_notification.assert_awaited()
     bot.send_message.assert_awaited()
     service_mock.update_remnawave_user.assert_awaited()
     create_transaction_mock.assert_awaited()
@@ -331,6 +348,8 @@ async def test_auto_purchase_trial_preserved_on_insufficient_balance(monkeypatch
     # но subtract_user_balance вернёт False (симуляция неудачи списания)
     user.balance_kopeks = 60_000
     user.language = 'ru'
+    user.promo_offer_discount_percent = 0
+    user.promo_offer_discount_expires_at = None
     user.subscription = subscription
     user.get_primary_promo_group = MagicMock(return_value=None)
 
@@ -413,6 +432,8 @@ async def test_auto_purchase_trial_converted_after_successful_extension(monkeypa
     user.telegram_id = 8888
     user.balance_kopeks = 200_000  # Достаточно денег
     user.language = 'ru'
+    user.promo_offer_discount_percent = 0
+    user.promo_offer_discount_expires_at = None
     user.subscription = subscription
     user.get_primary_promo_group = MagicMock(return_value=None)
 
@@ -529,6 +550,8 @@ async def test_auto_purchase_trial_preserved_on_extension_failure(monkeypatch):
     user.telegram_id = 7777
     user.balance_kopeks = 200_000  # Достаточно денег
     user.language = 'ru'
+    user.promo_offer_discount_percent = 0
+    user.promo_offer_discount_expires_at = None
     user.subscription = subscription
     user.get_primary_promo_group = MagicMock(return_value=None)
 
@@ -629,6 +652,8 @@ async def test_auto_purchase_trial_remaining_days_transferred(monkeypatch):
     user.telegram_id = 6666
     user.balance_kopeks = 200_000
     user.language = 'ru'
+    user.promo_offer_discount_percent = 0
+    user.promo_offer_discount_expires_at = None
     user.subscription = subscription
     user.get_primary_promo_group = MagicMock(return_value=None)
 

@@ -165,6 +165,7 @@ async def test_process_mulenpay_callback_success(monkeypatch: pytest.MonkeyPatch
     service = _make_service(bot)
     fake_session = FakeSession()
     payment = SimpleNamespace(
+        id=99,
         uuid='mulen_uuid',
         mulen_payment_id=123,
         amount_kopeks=5000,
@@ -179,8 +180,16 @@ async def test_process_mulenpay_callback_success(monkeypatch: pytest.MonkeyPatch
     async def fake_get_by_id(db, mid):
         return None
 
+    async def fake_get_for_update_mulen(db, payment_id):
+        return payment
+
     monkeypatch.setattr(payment_service_module, 'get_mulenpay_payment_by_uuid', fake_get_by_uuid)
     monkeypatch.setattr(payment_service_module, 'get_mulenpay_payment_by_mulen_id', fake_get_by_id)
+
+    # Мок для get_mulenpay_payment_by_id_for_update (новая защита от race condition)
+    mulen_crud_module = ModuleType('app.database.crud.mulenpay')
+    mulen_crud_module.get_mulenpay_payment_by_id_for_update = fake_get_for_update_mulen
+    monkeypatch.setitem(sys.modules, 'app.database.crud.mulenpay', mulen_crud_module)
 
     transactions: list[dict[str, Any]] = []
 
@@ -213,6 +222,8 @@ async def test_process_mulenpay_callback_success(monkeypatch: pytest.MonkeyPatch
         subscription=None,
         referred_by_id=None,
         referrer=None,
+        language='ru',
+        updated_at=None,
     )
     user.get_primary_promo_group = lambda: getattr(user, 'promo_group', None)
 
@@ -221,6 +232,13 @@ async def test_process_mulenpay_callback_success(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(payment_service_module, 'get_user_by_id', fake_get_user)
     monkeypatch.setattr(type(settings), 'format_price', lambda self, amount: f'{amount / 100:.2f}₽', raising=False)
+
+    # Мок для emit_transaction_side_effects (новая функция эмиссии side effects)
+    trx_side_effects_module = sys.modules.get('app.database.crud.transaction')
+    if trx_side_effects_module is None:
+        trx_side_effects_module = ModuleType('app.database.crud.transaction')
+        monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', trx_side_effects_module)
+    trx_side_effects_module.emit_transaction_side_effects = AsyncMock()
 
     referral_mock = SimpleNamespace(process_referral_topup=AsyncMock())
     monkeypatch.setitem(sys.modules, 'app.services.referral_service', referral_mock)
@@ -266,6 +284,7 @@ async def test_process_cryptobot_webhook_success(monkeypatch: pytest.MonkeyPatch
     service = _make_service(bot)
     fake_session = FakeSession()
     payment = SimpleNamespace(
+        id=88,
         invoice_id='inv_1',
         user_id=7,
         status='pending',
@@ -286,10 +305,14 @@ async def test_process_cryptobot_webhook_success(monkeypatch: pytest.MonkeyPatch
     async def fake_link(db, invoice_id, transaction_id):
         payment.transaction_id = transaction_id
 
+    async def fake_get_for_update_crypto(db, payment_id):
+        return payment
+
     fake_cryptobot_module = ModuleType('app.database.crud.cryptobot')
     fake_cryptobot_module.get_cryptobot_payment_by_invoice_id = fake_get_crypto
     fake_cryptobot_module.update_cryptobot_payment_status = fake_update_status
     fake_cryptobot_module.link_cryptobot_payment_to_transaction = fake_link
+    fake_cryptobot_module.get_cryptobot_payment_by_id_for_update = fake_get_for_update_crypto
     monkeypatch.setitem(sys.modules, 'app.database.crud.cryptobot', fake_cryptobot_module)
 
     transactions: list[dict[str, Any]] = []
@@ -303,6 +326,7 @@ async def test_process_cryptobot_webhook_success(monkeypatch: pytest.MonkeyPatch
 
     fake_transaction_module = ModuleType('app.database.crud.transaction')
     fake_transaction_module.create_transaction = fake_create_transaction
+    fake_transaction_module.emit_transaction_side_effects = AsyncMock()
 
     async def fake_get_transaction_by_id(db, transaction_id):
         return created_transaction
@@ -320,6 +344,8 @@ async def test_process_cryptobot_webhook_success(monkeypatch: pytest.MonkeyPatch
         subscription=None,
         referred_by_id=None,
         referrer=None,
+        language='ru',
+        updated_at=None,
     )
     user.get_primary_promo_group = lambda: getattr(user, 'promo_group', None)
 
@@ -390,6 +416,7 @@ async def test_process_heleket_webhook_success(monkeypatch: pytest.MonkeyPatch) 
     fake_session = FakeSession()
 
     payment = SimpleNamespace(
+        id=66,
         uuid='heleket-uuid',
         order_id='heleket-order',
         user_id=77,
@@ -445,11 +472,15 @@ async def test_process_heleket_webhook_success(monkeypatch: pytest.MonkeyPatch) 
         payment.transaction_id = transaction_id
         return payment
 
+    async def fake_get_for_update_heleket(db, payment_id):
+        return payment
+
     heleket_module = ModuleType('app.database.crud.heleket')
     heleket_module.get_heleket_payment_by_uuid = fake_get_by_uuid
     heleket_module.get_heleket_payment_by_order_id = fake_get_by_order
     heleket_module.update_heleket_payment = fake_update
     heleket_module.link_heleket_payment_to_transaction = fake_link
+    heleket_module.get_heleket_payment_by_id_for_update = fake_get_for_update_heleket
     monkeypatch.setitem(sys.modules, 'app.database.crud.heleket', heleket_module)
 
     transactions: list[dict[str, Any]] = []
@@ -459,6 +490,13 @@ async def test_process_heleket_webhook_success(monkeypatch: pytest.MonkeyPatch) 
         return SimpleNamespace(id=321, **kwargs)
 
     monkeypatch.setattr(payment_service_module, 'create_transaction', fake_create_transaction)
+
+    # Мок для emit_transaction_side_effects (новая функция для heleket)
+    heleket_trx_module = sys.modules.get('app.database.crud.transaction')
+    if heleket_trx_module is None:
+        heleket_trx_module = ModuleType('app.database.crud.transaction')
+        monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', heleket_trx_module)
+    heleket_trx_module.emit_transaction_side_effects = AsyncMock()
 
     user = SimpleNamespace(
         id=77,
@@ -1077,6 +1115,7 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
     service.pal24_service = SimpleNamespace(is_configured=True)
     fake_session = FakeSession()
     payment = SimpleNamespace(
+        id=55,
         bill_id='BILL-1',
         order_id='order-1',
         amount_kopeks=5000,
@@ -1105,11 +1144,15 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
     async def fake_link(db, payment_obj, transaction_id):
         payment.transaction_id = transaction_id
 
+    async def fake_get_for_update(db, payment_id):
+        return payment
+
     pal_module = ModuleType('app.database.crud.pal24')
     pal_module.get_pal24_payment_by_order_id = fake_get_by_order
     pal_module.get_pal24_payment_by_bill_id = fake_get_by_bill
     pal_module.update_pal24_payment_status = fake_update
     pal_module.link_pal24_payment_to_transaction = fake_link
+    pal_module.get_pal24_payment_by_id_for_update = fake_get_for_update
     monkeypatch.setitem(sys.modules, 'app.database.crud.pal24', pal_module)
     monkeypatch.setattr(payment_service_module, 'get_pal24_payment_by_order_id', fake_get_by_order)
     monkeypatch.setattr(payment_service_module, 'get_pal24_payment_by_bill_id', fake_get_by_bill)
@@ -1122,6 +1165,7 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
 
     trx_module = ModuleType('app.database.crud.transaction')
     trx_module.create_transaction = fake_create_transaction
+    trx_module.emit_transaction_side_effects = AsyncMock()
     monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', trx_module)
     monkeypatch.setattr(payment_service_module, 'create_transaction', fake_create_transaction)
 
@@ -1135,6 +1179,7 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
         referred_by_id=None,
         referrer=None,
         language='ru',
+        updated_at=None,
     )
     user.get_primary_promo_group = lambda: getattr(user, 'promo_group', None)
 
@@ -1165,6 +1210,10 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
     user_cart_stub = SimpleNamespace(user_cart_service=SimpleNamespace(has_user_cart=AsyncMock(return_value=True)))
     monkeypatch.setitem(sys.modules, 'app.services.user_cart_service', user_cart_stub)
 
+    auto_purchase_pal_module = ModuleType('app.services.subscription_auto_purchase_service')
+    auto_purchase_pal_module.auto_purchase_saved_cart_after_topup = AsyncMock(return_value=False)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'app.services.subscription_auto_purchase_service', auto_purchase_pal_module)
+
     class DummyTypes:
         class InlineKeyboardMarkup:
             def __init__(self, inline_keyboard=None, **kwargs):
@@ -1182,6 +1231,26 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
         'app.localization.texts',
         SimpleNamespace(get_texts=lambda language: SimpleNamespace(t=lambda key, default=None: default)),
     )
+
+    # Мок send_cart_notification_after_topup: симулируем отправку сообщения о корзине
+    async def fake_send_cart_notification_after_topup(user_obj, amount_kopeks, db_arg, bot_arg):
+        if not bot_arg or not getattr(user_obj, 'telegram_id', None):
+            return False
+        keyboard = DummyTypes.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [DummyTypes.InlineKeyboardButton(text='Checkout', callback_data='return_to_saved_cart')],
+            ]
+        )
+        await bot_arg.send_message(
+            chat_id=user_obj.telegram_id,
+            text='Корзина ждёт',
+            reply_markup=keyboard,
+        )
+        return True
+
+    common_pal_module = ModuleType('app.services.payment.common')
+    common_pal_module.send_cart_notification_after_topup = fake_send_cart_notification_after_topup  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'app.services.payment.common', common_pal_module)
 
     service.build_topup_success_keyboard = AsyncMock(return_value=None)
 
@@ -1280,6 +1349,15 @@ async def test_get_pal24_payment_status_auto_finalize(monkeypatch: pytest.Monkey
     monkeypatch.setattr(payment_service_module, 'get_pal24_payment_by_id', fake_get_payment_by_id)
     monkeypatch.setattr(payment_service_module, 'update_pal24_payment_status', fake_update_payment)
     monkeypatch.setattr(payment_service_module, 'link_pal24_payment_to_transaction', fake_link_payment)
+
+    # Мок для get_pal24_payment_by_id_for_update (новая защита от race condition)
+    pal24_crud_module = sys.modules.get('app.database.crud.pal24')
+    if pal24_crud_module is None:
+        pal24_crud_module = ModuleType('app.database.crud.pal24')
+        monkeypatch.setitem(sys.modules, 'app.database.crud.pal24', pal24_crud_module)
+    pal24_crud_module.get_pal24_payment_by_id_for_update = fake_get_payment_by_id
+    pal24_crud_module.update_pal24_payment_status = fake_update_payment
+    pal24_crud_module.link_pal24_payment_to_transaction = fake_link_payment
 
     transactions: list[dict[str, Any]] = []
 

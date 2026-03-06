@@ -77,7 +77,10 @@ async def test_promo_group_promocode_full_workflow(
     add_promo_group_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.add_user_to_promo_group', add_promo_group_mock)
 
-    create_usage_mock = AsyncMock()
+    from unittest.mock import MagicMock
+
+    promo_use_obj = MagicMock()
+    create_usage_mock = AsyncMock(return_value=promo_use_obj)
     monkeypatch.setattr('app.services.promocode_service.create_promocode_use', create_usage_mock)
 
     # Execute: User activates promocode
@@ -100,11 +103,11 @@ async def test_promo_group_promocode_full_workflow(
         mock_db_session, sample_user.id, sample_promo_group.id, assigned_by='promocode'
     )
 
-    # Verify: Usage recorded
+    # Verify: Usage recorded (now called first as race-condition lock)
     create_usage_mock.assert_awaited_once_with(mock_db_session, promocode.id, sample_user.id)
 
-    # Verify: Counter incremented
-    assert promocode.current_uses == 1
+    # Verify: Counter incremented via SQL UPDATE (not in-memory)
+    mock_db_session.execute.assert_awaited()
 
     # Verify: Database committed
     mock_db_session.commit.assert_awaited()
@@ -161,7 +164,10 @@ async def test_duplicate_promo_group_assignment_edge_case(
     add_promo_group_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.add_user_to_promo_group', add_promo_group_mock)
 
-    create_usage_mock = AsyncMock()
+    from unittest.mock import MagicMock
+
+    promo_use_obj = MagicMock()
+    create_usage_mock = AsyncMock(return_value=promo_use_obj)
     monkeypatch.setattr('app.services.promocode_service.create_promocode_use', create_usage_mock)
 
     # Execute
@@ -174,11 +180,11 @@ async def test_duplicate_promo_group_assignment_edge_case(
     # Verify: add_user_to_promo_group was NOT called (no duplicate)
     add_promo_group_mock.assert_not_awaited()
 
-    # Verify: Usage was still recorded
+    # Verify: Usage was still recorded (now called first as race-condition lock)
     create_usage_mock.assert_awaited_once()
 
-    # Verify: Counter still incremented
-    assert promocode.current_uses == 6
+    # Verify: Counter incremented via SQL UPDATE (not in-memory)
+    mock_db_session.execute.assert_awaited()
 
 
 async def test_missing_promo_group_graceful_failure(
@@ -236,7 +242,10 @@ async def test_missing_promo_group_graceful_failure(
     add_promo_group_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.add_user_to_promo_group', add_promo_group_mock)
 
-    create_usage_mock = AsyncMock()
+    from unittest.mock import MagicMock
+
+    promo_use_obj = MagicMock()
+    create_usage_mock = AsyncMock(return_value=promo_use_obj)
     monkeypatch.setattr('app.services.promocode_service.create_promocode_use', create_usage_mock)
 
     # Execute
@@ -252,8 +261,8 @@ async def test_missing_promo_group_graceful_failure(
     # Verify: add_user_to_promo_group was NOT called (group doesn't exist)
     add_promo_group_mock.assert_not_awaited()
 
-    # Verify: Usage was still recorded (promocode still works)
+    # Verify: Usage was still recorded (now called first as race-condition lock)
     create_usage_mock.assert_awaited_once()
 
-    # Verify: Counter still incremented
-    assert promocode.current_uses == 1
+    # Verify: Counter incremented via SQL UPDATE (not in-memory)
+    mock_db_session.execute.assert_awaited()
