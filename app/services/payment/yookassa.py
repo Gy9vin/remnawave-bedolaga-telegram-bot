@@ -569,15 +569,12 @@ class YooKassaPaymentMixin:
                     return True
 
             # --- Guest purchase flow (landing page) ---------------------------
-            webhook_amount_value = event_object.get('amount', {}).get('value', '0')
-            webhook_amount_kopeks = int(Decimal(str(webhook_amount_value)) * 100)
-
             from app.services.payment.common import try_fulfill_guest_purchase
 
             guest_result = await try_fulfill_guest_purchase(
                 db,
                 metadata=payment_metadata,
-                payment_amount_kopeks=webhook_amount_kopeks,
+                payment_amount_kopeks=payment.amount_kopeks,
                 provider_payment_id=payment.yookassa_payment_id,
                 provider_name='yookassa',
             )

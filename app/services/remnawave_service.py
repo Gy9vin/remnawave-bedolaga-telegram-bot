@@ -1243,10 +1243,10 @@ class RemnaWaveService:
             existing_subscriptions = existing_subscriptions_result.scalars().all()
 
             # Создадим словарь для быстрого доступа к подпискам
-            {sub.user_id: sub for sub in existing_subscriptions}
+            subs_by_user_id = {sub.user_id: sub for sub in existing_subscriptions}
 
             # Для оптимизации коммитим изменения каждые N пользователей
-            batch_size = 50
+            batch_size = 500
             pending_uuid_mutations: list[_UUIDMapMutation] = []
 
             for i, panel_user in enumerate(unique_panel_users):
@@ -1330,11 +1330,8 @@ class RemnaWaveService:
                             bot_users_by_uuid,
                         )
 
-                        # Используем async запрос вместо доступа к relationship,
-                        # чтобы избежать lazy-load в async контексте
-                        from app.database.crud.subscription import get_subscription_by_user_id as _get_sub
-
-                        existing_sub = await _get_sub(db, db_user.id)
+                        # Используем предзагруженный словарь подписок вместо N+1 запросов
+                        existing_sub = subs_by_user_id.get(db_user.id)
                         if existing_sub:
                             await self._update_subscription_from_panel_data(db, db_user, panel_user)
                         else:
