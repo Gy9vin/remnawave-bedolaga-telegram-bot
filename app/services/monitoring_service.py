@@ -1383,6 +1383,24 @@ class MonitoringService:
         except Exception as e:
             logger.error(f'Ошибка автопродления перед истечением: {e}')
 
+    def _get_user_promo_offer_discount_percent(self, user: User) -> int:
+        """Возвращает активный процент скидки promo-offer для пользователя (0 если нет или истёк)."""
+        from datetime import UTC, datetime
+
+        discount = getattr(user, 'promo_offer_discount_percent', 0) or 0
+        if discount <= 0:
+            return 0
+        expires_at = getattr(user, 'promo_offer_discount_expires_at', None)
+        if expires_at is not None and expires_at < datetime.now(UTC):
+            return 0
+        return int(discount)
+
+    async def _consume_user_promo_offer_discount(self, db: AsyncSession, user: User) -> None:
+        """Сбрасывает promo-offer скидку пользователя после использования."""
+        user.promo_offer_discount_percent = 0
+        user.promo_offer_discount_expires_at = None
+        await db.flush()
+
     async def _check_recent_renewal_transaction(self, db: AsyncSession, user_id: int, seconds: int) -> bool:
         """Проверяет наличие транзакции продления за последние N секунд."""
         from app.database.models import Transaction
