@@ -190,7 +190,12 @@ async def _process_campaign_bonus(
             user.referred_by_id = campaign.partner_user_id
             await db.flush()
             try:
-                await process_referral_registration(db, user.id, campaign.partner_user_id, bot=None)
+                from aiogram import Bot
+                from aiogram.client.default import DefaultBotProperties
+                from aiogram.enums import ParseMode
+
+                bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+                await process_referral_registration(db, user.id, campaign.partner_user_id, bot=bot)
                 logger.info(
                     'Referral set from campaign partner',
                     user_id=user.id,
@@ -244,7 +249,12 @@ async def _process_referral_code(
             return
         user.referred_by_id = referrer.id
         await db.flush()
-        await process_referral_registration(db, user.id, referrer.id, bot=None)
+        from aiogram import Bot
+        from aiogram.client.default import DefaultBotProperties
+        from aiogram.enums import ParseMode
+
+        bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        await process_referral_registration(db, user.id, referrer.id, bot=bot)
         logger.info('Referral applied from code', user_id=user.id, referrer_id=referrer.id, referral_code=referral_code)
     except Exception as e:
         logger.error('Failed to process referral code', error=e, referral_code=referral_code)
@@ -905,8 +915,15 @@ async def register_email_standalone(
     # Обработать реферальную регистрацию (если есть реферер)
     if referrer:
         try:
-            await process_referral_registration(db, user.id, referrer.id, bot=None)
-            logger.info(f'Processed referral registration: user_id={user.id}, referrer_id={referrer.id}')
+            from aiogram import Bot
+            from aiogram.client.default import DefaultBotProperties
+            from aiogram.enums import ParseMode
+
+            bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            await process_referral_registration(db, user.id, referrer.id, bot=bot)
+            logger.info(
+                'Processed referral registration: user_id=, referrer_id', user_id=user.id, referrer_id=referrer.id
+            )
         except Exception as e:
             logger.error(f'Failed to process referral registration: {e}')
             # Не прерываем регистрацию из-за ошибки реферальной системы
