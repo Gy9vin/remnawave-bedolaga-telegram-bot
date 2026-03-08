@@ -328,6 +328,8 @@ class ReferralContestService:
 
         channel_id = await channel_subscription_service.get_first_channel_id()
         if not channel_id:
+            channel_id = settings.REFERRAL_CONTEST_CHANNEL_ID
+        if not channel_id:
             return
 
         lines = [
@@ -359,6 +361,60 @@ class ReferralContestService:
             logger.info('Не удалось отправить сводку конкурса в канал', channel_id=channel_id)
         except Exception as exc:
             logger.error('Ошибка отправки сводки конкурса в канал', channel_id=channel_id, exc=exc)
+
+    async def force_send_to_channel(self, db: AsyncSession, contest_id: int) -> dict:
+        """Принудительно отправить промежуточные итоги конкурса в канал."""
+        from app.database.crud.referral_contest import (
+            get_contest_events_count,
+            get_contest_leaderboard_with_virtual,
+            get_referral_contest,
+            list_virtual_participants,
+        )
+
+        contest = await get_referral_contest(db, contest_id)
+        if not contest:
+            return {'error': 'Конкурс не найден'}
+
+        tz = self._get_timezone(contest)
+        leaderboard = await get_contest_leaderboard_with_virtual(db, contest_id)
+        virtual_participants = await list_virtual_participants(db, contest_id)
+        virtual_count = sum(vp.referral_count for vp in virtual_participants)
+        total_events = await get_contest_events_count(db, contest_id) + virtual_count
+
+        from datetime import UTC, datetime
+
+        now_utc = datetime.now(UTC)
+        now_local = now_utc.astimezone(tz)
+        from datetime import time as dt_time, timedelta
+
+        day_start_local = datetime.combine(now_local.date(), dt_time.min, tzinfo=tz)
+        day_end_local = day_start_local + timedelta(days=1)
+        today_events = await get_contest_events_count(
+            db,
+            contest_id,
+            start=day_start_local.astimezone(UTC),
+            end=day_end_local.astimezone(UTC),
+        )
+
+        from app.services.channel_subscription_service import channel_subscription_service
+
+        channel_id = await channel_subscription_service.get_first_channel_id()
+        if not channel_id:
+            channel_id = settings.REFERRAL_CONTEST_CHANNEL_ID
+        if not channel_id:
+            return {
+                'error': 'Канал не настроен (нет каналов в настройках подписки и не задан REFERRAL_CONTEST_CHANNEL_ID)'
+            }
+
+        await self._notify_public_channel(
+            contest=contest,
+            leaderboard=leaderboard,
+            total_events=total_events,
+            today_events=today_events,
+            is_final=False,
+            tz=tz,
+        )
+        return {'ok': True, 'channel_id': channel_id, 'participants': len(leaderboard)}
 
     def _build_participant_message(
         self,

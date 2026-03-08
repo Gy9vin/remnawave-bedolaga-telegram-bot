@@ -668,6 +668,12 @@ def get_referral_contest_manage_keyboard(
                 callback_data=f'admin_contest_debug_{contest_id}',
             ),
         ],
+        [
+            InlineKeyboardButton(
+                text='📢 Отправить в группу',
+                callback_data=f'admin_contest_send_channel_{contest_id}',
+            ),
+        ],
     ]
 
     if can_delete:

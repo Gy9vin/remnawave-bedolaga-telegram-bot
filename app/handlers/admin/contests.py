@@ -893,6 +893,44 @@ async def sync_contest(
 
 @admin_required
 @error_handler
+async def send_contest_to_channel(
+    callback: types.CallbackQuery,
+    db_user,
+    db: AsyncSession,
+):
+    """Принудительно отправить сводку конкурса в группу/канал."""
+    if not settings.is_contests_enabled():
+        await callback.answer(
+            get_texts(db_user.language).t('ADMIN_CONTESTS_DISABLED', 'Конкурсы отключены.'),
+            show_alert=True,
+        )
+        return
+
+    contest_id = int(callback.data.split('_')[-1])
+    contest = await get_referral_contest(db, contest_id)
+
+    if not contest:
+        await callback.answer('Конкурс не найден.', show_alert=True)
+        return
+
+    await callback.answer('📢 Отправка...', show_alert=False)
+
+    from app.services.referral_contest_service import referral_contest_service
+
+    result = await referral_contest_service.force_send_to_channel(db, contest_id)
+
+    if 'error' in result:
+        await callback.message.answer(f'❌ Ошибка: {result["error"]}')
+    else:
+        await callback.message.answer(
+            f'✅ Сводка конкурса отправлена в канал <code>{result["channel_id"]}</code>\n'
+            f'👥 Участников: <b>{result["participants"]}</b>',
+            parse_mode='HTML',
+        )
+
+
+@admin_required
+@error_handler
 async def debug_contest_transactions(
     callback: types.CallbackQuery,
     db_user,
@@ -1433,6 +1471,7 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(show_detailed_stats, F.data.startswith('admin_contest_detailed_stats_'))
     dp.callback_query.register(sync_contest, F.data.startswith('admin_contest_sync_'))
     dp.callback_query.register(debug_contest_transactions, F.data.startswith('admin_contest_debug_'))
+    dp.callback_query.register(send_contest_to_channel, F.data.startswith('admin_contest_send_channel_'))
     dp.callback_query.register(start_contest_creation, F.data == 'admin_contests_create')
     dp.callback_query.register(
         select_contest_mode,

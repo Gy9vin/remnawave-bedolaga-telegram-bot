@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     CHANNEL_DISABLE_TRIAL_ON_UNSUBSCRIBE: bool = True
     CHANNEL_REQUIRED_FOR_ALL: bool = False
     CHANNEL_LINK: str | None = None
+    REFERRAL_CONTEST_CHANNEL_ID: str | None = None
 
     DATABASE_URL: str | None = None
 
