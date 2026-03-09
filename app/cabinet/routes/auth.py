@@ -2,9 +2,9 @@
 
 import asyncio
 import hashlib
-import logging
 from datetime import UTC, datetime
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -84,7 +84,7 @@ from ..services.email_service import email_service
 from ..services.email_template_overrides import get_rendered_override
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix='/auth', tags=['Cabinet Auth'])
 
