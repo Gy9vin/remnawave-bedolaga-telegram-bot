@@ -3116,3 +3116,17 @@ class GuestPurchase(Base):
     def __repr__(self) -> str:
         token_prefix = self.token[:5] if self.token else '?'
         return f"<GuestPurchase token='{token_prefix}...' status='{self.status}'>"
+
+
+class BlacklistException(Base):
+    """Исключение из чёрного списка — пользователь, которого не нужно блокировать."""
+
+    __tablename__ = 'blacklist_exceptions'
+
+    id = Column(Integer, primary_key=True, index=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    comment = Column(Text, nullable=True)
+    created_at = Column(AwareDateTime(), server_default=func.now())
+
+    def __repr__(self) -> str:
+        return f'<BlacklistException telegram_id={self.telegram_id}>'
