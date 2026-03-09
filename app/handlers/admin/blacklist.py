@@ -8,7 +8,12 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.crud.blacklist_exception import get_exceptions_count
+from app.database.crud.blacklist_exception import (
+    add_exception as crud_add_exception,
+    get_all_exceptions,
+    get_exceptions_count,
+    remove_exception as crud_remove_exception,
+)
 from app.database.models import User
 from app.services.blacklist_service import blacklist_service
 from app.states import BlacklistStates
@@ -265,18 +270,17 @@ async def process_blacklist_url(message: types.Message, db_user: User, state: FS
 
 @admin_required
 @error_handler
-async def show_blacklist_exceptions(callback: types.CallbackQuery, db_user: User, state: FSMContext):
+async def show_blacklist_exceptions(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
     """Показывает список исключений из чёрного списка."""
-    exceptions = blacklist_service.get_exceptions()
+    exceptions = await get_all_exceptions(db)
 
     if not exceptions:
         text = '🛡️ <b>Исключения из чёрного списка</b>\n\nСписок пуст'
     else:
         text = f'🛡️ <b>Исключения из чёрного списка ({len(exceptions)})</b>\n\n'
-        for tg_id, info in list(exceptions.items())[:20]:
-            comment = info.get('comment', '')
-            comment_text = f' — {comment}' if comment else ''
-            text += f'<code>{tg_id}</code>{comment_text}\n'
+        for exc in exceptions[:20]:
+            comment_text = f' — {exc.comment}' if exc.comment else ''
+            text += f'<code>{exc.telegram_id}</code>{comment_text}\n'
 
         if len(exceptions) > 20:
             text += f'\n... и ещё {len(exceptions) - 20}'
@@ -285,13 +289,12 @@ async def show_blacklist_exceptions(callback: types.CallbackQuery, db_user: User
         [types.InlineKeyboardButton(text='➕ Добавить исключение', callback_data='admin_blacklist_exc_add')],
     ]
 
-    # Кнопки удаления для каждого исключения (первые 10)
-    for tg_id in list(exceptions.keys())[:10]:
+    for exc in exceptions[:10]:
         keyboard.append(
             [
                 types.InlineKeyboardButton(
-                    text=f'❌ Убрать {tg_id}',
-                    callback_data=f'admin_bl_exc_rm_{tg_id}',
+                    text=f'❌ Убрать {exc.telegram_id}',
+                    callback_data=f'admin_bl_exc_rm_{exc.telegram_id}',
                 )
             ]
         )
@@ -322,7 +325,7 @@ async def start_add_exception(callback: types.CallbackQuery, db_user: User, stat
 
 @admin_required
 @error_handler
-async def process_add_exception(message: types.Message, db_user: User, state: FSMContext):
+async def process_add_exception(message: types.Message, db_user: User, db: AsyncSession, state: FSMContext):
     """Обрабатывает ввод Telegram ID для исключения."""
     if await state.get_state() != BlacklistStates.waiting_for_exception_id.state:
         return
@@ -358,14 +361,12 @@ async def process_add_exception(message: types.Message, db_user: User, state: FS
 
     comment = parts[1] if len(parts) > 1 else ''
 
-    success = blacklist_service.add_exception(telegram_id, comment)
     await state.clear()
 
-    if success:
-        # Проверяем, был ли пользователь в blacklist
+    try:
+        await crud_add_exception(db, telegram_id, comment)
         bl_user = await blacklist_service.get_user_by_telegram_id(telegram_id)
         in_blacklist = '(найден в чёрном списке)' if bl_user else '(не найден в чёрном списке)'
-
         await message.answer(
             f'✅ Пользователь <code>{telegram_id}</code> добавлен в исключения {in_blacklist}',
             reply_markup=types.InlineKeyboardMarkup(
@@ -375,9 +376,9 @@ async def process_add_exception(message: types.Message, db_user: User, state: FS
                 ]
             ),
         )
-    else:
+    except Exception:
         await message.answer(
-            '❌ Ошибка сохранения исключения',
+            '❌ Ошибка сохранения исключения (возможно, уже добавлен)',
             reply_markup=types.InlineKeyboardMarkup(
                 inline_keyboard=[
                     [types.InlineKeyboardButton(text='🛡️ Исключения', callback_data='admin_blacklist_exceptions')]
@@ -388,43 +389,40 @@ async def process_add_exception(message: types.Message, db_user: User, state: FS
 
 @admin_required
 @error_handler
-async def remove_exception(callback: types.CallbackQuery, db_user: User, state: FSMContext):
+async def remove_exception(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
     """Удаляет пользователя из исключений."""
-    # Извлекаем telegram_id из callback_data: admin_bl_exc_rm_{id}
     try:
         telegram_id = int(callback.data.split('admin_bl_exc_rm_')[1])
     except (ValueError, IndexError):
         await callback.answer('❌ Ошибка', show_alert=True)
         return
 
-    success = blacklist_service.remove_exception(telegram_id)
-
-    if success:
+    removed = await crud_remove_exception(db, telegram_id)
+    if removed:
         await callback.answer(f'Пользователь {telegram_id} убран из исключений')
     else:
         await callback.answer(f'Пользователь {telegram_id} не найден в исключениях', show_alert=True)
 
     # Обновляем список
-    exceptions = blacklist_service.get_exceptions()
+    exceptions = await get_all_exceptions(db)
 
     if not exceptions:
         text = '🛡️ <b>Исключения из чёрного списка</b>\n\nСписок пуст'
     else:
         text = f'🛡️ <b>Исключения из чёрного списка ({len(exceptions)})</b>\n\n'
-        for tg_id, info in list(exceptions.items())[:20]:
-            comment = info.get('comment', '')
-            comment_text = f' — {comment}' if comment else ''
-            text += f'<code>{tg_id}</code>{comment_text}\n'
+        for exc in exceptions[:20]:
+            comment_text = f' — {exc.comment}' if exc.comment else ''
+            text += f'<code>{exc.telegram_id}</code>{comment_text}\n'
 
     keyboard = [
         [types.InlineKeyboardButton(text='➕ Добавить исключение', callback_data='admin_blacklist_exc_add')],
     ]
-    for tg_id in list(exceptions.keys())[:10]:
+    for exc in exceptions[:10]:
         keyboard.append(
             [
                 types.InlineKeyboardButton(
-                    text=f'❌ Убрать {tg_id}',
-                    callback_data=f'admin_bl_exc_rm_{tg_id}',
+                    text=f'❌ Убрать {exc.telegram_id}',
+                    callback_data=f'admin_bl_exc_rm_{exc.telegram_id}',
                 )
             ]
         )

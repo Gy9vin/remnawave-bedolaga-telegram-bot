@@ -150,6 +150,10 @@ async def edit_or_answer_photo(
         return
 
     media = _resolve_media(callback.message)
+    if media is None:
+        # LOGO_PATH недоступен (директория или не существует) — фоллбек на текст
+        await _answer_text(callback, caption, keyboard, resolved_parse_mode)
+        return
 
     # Retry logic для сетевых ошибок
     for attempt in range(MAX_RETRIES):

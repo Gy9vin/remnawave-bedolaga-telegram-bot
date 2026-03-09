@@ -62,10 +62,18 @@ def _persist_file_id(file_id: str) -> None:
 _load_cached_file_id()
 
 
+def is_logo_available() -> bool:
+    """Проверяет что LOGO_PATH существует и является файлом (не директорией)."""
+    return LOGO_PATH.is_file()
+
+
 def get_logo_media():
     """Возвращает кешированный file_id или FSInputFile для логотипа."""
     if _logo_file_id:
         return _logo_file_id
+    if not is_logo_available():
+        logger.warning('LOGO_PATH не является файлом, лого-режим недоступен', path=str(LOGO_PATH))
+        return None
     return FSInputFile(LOGO_PATH)
 
 
