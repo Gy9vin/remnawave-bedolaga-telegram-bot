@@ -271,10 +271,14 @@ async def _edit_with_photo(self: Message, text: str, **kwargs):
                 return await _text_answer(self, text, **kwargs)
         except Exception:
             pass
-        if LOGO_PATH.exists():
+        if is_logo_available():
             media = get_logo_media()
-        else:
+        elif self.photo:
             media = self.photo[-1].file_id
+        else:
+            media = None
+        if media is None:
+            return await _text_answer(self, text, **kwargs)
         media_kwargs = {'media': media, 'caption': text}
         edit_kwargs = dict(kwargs)
         if 'parse_mode' in edit_kwargs:
