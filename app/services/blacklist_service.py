@@ -11,6 +11,8 @@ import aiohttp
 import structlog
 
 from app.config import settings
+from app.database.crud.blacklist_exception import get_exception_by_telegram_id
+from app.database.database import AsyncSessionLocal
 
 
 logger = structlog.get_logger(__name__)
@@ -160,6 +162,17 @@ class BlacklistService:
         if self.should_ignore_admins() and self.is_admin(telegram_id):
             self._check_cache[telegram_id] = (False, None, now)
             return False, None
+
+        # Проверяем исключения из чёрного списка (DB)
+        try:
+            async with AsyncSessionLocal() as db:
+                exception = await get_exception_by_telegram_id(db, telegram_id)
+                if exception:
+                    logger.info('Пользователь в исключениях чёрного списка — пропуск', telegram_id=telegram_id)
+                    self._check_cache[telegram_id] = (False, None, now)
+                    return False, None
+        except Exception as e:
+            logger.warning('Ошибка проверки исключений чёрного списка', error=e)
 
         # Если черный список пуст или устарел, обновляем его
         interval_hours = self.get_blacklist_update_interval_hours()
