@@ -6,9 +6,7 @@ import structlog
 from aiogram import types
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.crud.blacklist_exception import get_exceptions_count
 from app.database.models import User
 from app.services.blacklist_service import blacklist_service
 from app.states import BlacklistStates
@@ -20,7 +18,7 @@ logger = structlog.get_logger(__name__)
 
 @admin_required
 @error_handler
-async def show_blacklist_settings(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
+async def show_blacklist_settings(callback: types.CallbackQuery, db_user: User, state: FSMContext):
     """
     Показывает настройки черного списка
     """
@@ -43,7 +41,7 @@ URL к черному списку: <code>{url_text}</code>
 Действия:
 """
 
-    exceptions_count = await get_exceptions_count(db)
+    exceptions_count = 0  # TODO: BlacklistException модель ещё не добавлена в models.py
 
     keyboard = [
         [
