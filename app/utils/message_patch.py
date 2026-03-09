@@ -3,12 +3,15 @@ import re
 from pathlib import Path
 from typing import Any
 
+import structlog
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import FSInputFile, InaccessibleMessage, InputMediaPhoto, Message
 
 from app.config import settings
 from app.localization.texts import get_texts
 
+
+logger = structlog.get_logger(__name__)
 
 LOGO_PATH = Path(settings.LOGO_FILE)
 
@@ -31,6 +34,33 @@ _PRIVACY_RESTRICTED_CODE = 'BUTTON_USER_PRIVACY_RESTRICTED'
 # который можно переиспользовать без повторной загрузки файла (экономит 3-4 сек)
 _logo_file_id: str | None = None
 
+# Файл для персистентного хранения file_id между перезапусками
+_LOGO_FILE_ID_CACHE = LOGO_PATH.parent / 'logo_file_id.cache'
+
+
+def _load_cached_file_id() -> None:
+    """Загрузить file_id из файла-кеша при старте."""
+    global _logo_file_id
+    try:
+        if _LOGO_FILE_ID_CACHE.exists():
+            cached = _LOGO_FILE_ID_CACHE.read_text().strip()
+            if cached:
+                _logo_file_id = cached
+    except Exception:
+        pass
+
+
+def _persist_file_id(file_id: str) -> None:
+    """Сохранить file_id на диск для переживания рестартов."""
+    try:
+        _LOGO_FILE_ID_CACHE.write_text(file_id)
+    except Exception:
+        pass
+
+
+# Загружаем при импорте модуля
+_load_cached_file_id()
+
 
 def get_logo_media():
     """Возвращает кешированный file_id или FSInputFile для логотипа."""
@@ -46,6 +76,8 @@ def _cache_logo_file_id(result: Message | None) -> None:
         return
     if hasattr(result, 'photo') and result.photo:
         _logo_file_id = result.photo[-1].file_id
+        _persist_file_id(_logo_file_id)
+        logger.info('Логотип закеширован', file_id=_logo_file_id)
 
 
 _TOPIC_REQUIRED_ERRORS = (
