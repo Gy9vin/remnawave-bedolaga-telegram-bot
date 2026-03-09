@@ -169,7 +169,11 @@ async def edit_or_answer_photo(
                 )
                 await asyncio.sleep(RETRY_DELAY * (attempt + 1))
                 continue
-            logger.error('Сетевая ошибка edit_media после попыток', MAX_RETRIES=MAX_RETRIES, net_error=net_error)
+            logger.warning(
+                'Сетевая ошибка edit_media после попыток, фоллбек на текст',
+                MAX_RETRIES=MAX_RETRIES,
+                net_error=net_error,
+            )
             # После всех попыток — фоллбек на текст
             try:
                 await callback.message.delete()
