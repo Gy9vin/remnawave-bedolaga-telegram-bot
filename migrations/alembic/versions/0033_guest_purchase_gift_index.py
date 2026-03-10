@@ -39,11 +39,14 @@ def _has_column(table: str, column: str) -> bool:
 
 
 def upgrade() -> None:
+    # Если buyer_user_id не была создана миграцией 0032 (например из-за конфликта версий),
+    # создаём её здесь чтобы индексы ниже не упали
+    if not _has_column('guest_purchases', 'buyer_user_id'):
+        op.add_column('guest_purchases', sa.Column('buyer_user_id', sa.Integer(), nullable=True))
+
     for index_name, columns in INDEXES:
         if not _has_index('guest_purchases', index_name):
-            # Пропускаем индекс если хотя бы одна колонка не существует
-            if all(_has_column('guest_purchases', col) for col in columns):
-                op.create_index(index_name, 'guest_purchases', columns)
+            op.create_index(index_name, 'guest_purchases', columns)
 
 
 def downgrade() -> None:

@@ -24,12 +24,26 @@ def _has_column(table: str, column: str) -> bool:
     return column in [c['name'] for c in inspector.get_columns(table)]
 
 
+def _has_index(table: str, index_name: str) -> bool:
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    return index_name in [idx['name'] for idx in inspector.get_indexes(table)]
+
+
+def _has_constraint(table: str, constraint_name: str) -> bool:
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    fks = inspector.get_foreign_keys(table)
+    return any(fk.get('name') == constraint_name for fk in fks)
+
+
 def upgrade() -> None:
     if not _has_column('guest_purchases', 'source'):
         op.add_column(
             'guest_purchases',
             sa.Column('source', sa.String(20), nullable=False, server_default='landing'),
         )
+    if not _has_index('guest_purchases', 'ix_guest_purchases_source'):
         op.create_index('ix_guest_purchases_source', 'guest_purchases', ['source'])
 
     if not _has_column('guest_purchases', 'buyer_user_id'):
@@ -37,6 +51,7 @@ def upgrade() -> None:
             'guest_purchases',
             sa.Column('buyer_user_id', sa.Integer(), nullable=True),
         )
+    if not _has_constraint('guest_purchases', 'fk_guest_purchases_buyer_user_id'):
         op.create_foreign_key(
             'fk_guest_purchases_buyer_user_id',
             'guest_purchases',
