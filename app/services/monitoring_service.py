@@ -1976,6 +1976,9 @@ class MonitoringService:
 
             for user in inactive_users:
                 if not user.subscription or not user.subscription.is_active:
+                    # Не удалять пользователей с ненулевым балансом — иначе потеряют деньги
+                    if user.balance_kopeks and user.balance_kopeks > 0:
+                        continue
                     success = await delete_user(db, user)
                     if success:
                         deleted_count += 1
