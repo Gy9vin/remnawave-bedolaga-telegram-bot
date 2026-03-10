@@ -32,10 +32,18 @@ def _has_index(table: str, index_name: str) -> bool:
     return index_name in [idx['name'] for idx in inspector.get_indexes(table)]
 
 
+def _has_column(table: str, column: str) -> bool:
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    return column in [c['name'] for c in inspector.get_columns(table)]
+
+
 def upgrade() -> None:
     for index_name, columns in INDEXES:
         if not _has_index('guest_purchases', index_name):
-            op.create_index(index_name, 'guest_purchases', columns)
+            # Пропускаем индекс если хотя бы одна колонка не существует
+            if all(_has_column('guest_purchases', col) for col in columns):
+                op.create_index(index_name, 'guest_purchases', columns)
 
 
 def downgrade() -> None:
