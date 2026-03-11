@@ -109,7 +109,7 @@ class YooKassaPaymentMixin:
 
             payment_metadata = metadata.copy() if metadata else {}
 
-            # Всегда добавляем telegram_id в метаданные для возможности возврата платежа
+            # Всегда добавляем telegram_id или email в метаданные для идентификации плательщика
             if user_id is not None and 'user_telegram_id' not in payment_metadata:
                 try:
                     from app.database.crud.user import get_user_by_id
@@ -117,6 +117,9 @@ class YooKassaPaymentMixin:
                     user = await get_user_by_id(db, user_id)
                     if user and user.telegram_id:
                         payment_metadata['user_telegram_id'] = str(user.telegram_id)
+                        payment_metadata['user_username'] = user.username or ''
+                    elif user and user.email:
+                        payment_metadata['user_email'] = user.email
                         payment_metadata['user_username'] = user.username or ''
                 except Exception as e:
                     logger.warning('Не удалось получить telegram_id для user_id', user_id=user_id, error=e)
@@ -213,7 +216,7 @@ class YooKassaPaymentMixin:
 
             payment_metadata = metadata.copy() if metadata else {}
 
-            # Всегда добавляем telegram_id в метаданные для возможности возврата платежа
+            # Всегда добавляем telegram_id или email в метаданные для идентификации плательщика
             if user_id is not None and 'user_telegram_id' not in payment_metadata:
                 try:
                     from app.database.crud.user import get_user_by_id
@@ -221,6 +224,9 @@ class YooKassaPaymentMixin:
                     user = await get_user_by_id(db, user_id)
                     if user and user.telegram_id:
                         payment_metadata['user_telegram_id'] = str(user.telegram_id)
+                        payment_metadata['user_username'] = user.username or ''
+                    elif user and user.email:
+                        payment_metadata['user_email'] = user.email
                         payment_metadata['user_username'] = user.username or ''
                 except Exception as e:
                     logger.warning('Не удалось получить telegram_id для user_id', user_id=user_id, error=e)

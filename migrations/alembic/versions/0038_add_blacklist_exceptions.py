@@ -1,7 +1,7 @@
 """Add blacklist_exceptions table
 
-Revision ID: 0035
-Revises: 0034
+Revision ID: 0038
+Revises: 0037
 """
 
 from typing import Sequence, Union
@@ -9,8 +9,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0035'
-down_revision: Union[str, None] = '0034'
+revision: str = '0038'
+down_revision: Union[str, None] = '0037'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
