@@ -36,7 +36,7 @@ async def show_blacklist_settings(callback: types.CallbackQuery, db_user: User, 
     blacklist_count = len(await blacklist_service.get_all_blacklisted_users())
 
     status_text = '✅ Включена' if is_enabled else '❌ Отключена'
-    url_text = github_url if github_url else 'Не задан'
+    url_text = github_url or 'Не задан'
 
     text = f"""
 🔐 <b>Настройки черного списка</b>

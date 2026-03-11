@@ -5670,6 +5670,7 @@ async def subscription_purchase_endpoint(
             pass
 
     if subscription and transaction and period_days:
+        _purchase_type = 'renewal' if context.subscription else 'first_purchase'
         await with_admin_notification_service(
             lambda service: service.send_subscription_purchase_notification(
                 db,
@@ -5678,6 +5679,7 @@ async def subscription_purchase_endpoint(
                 transaction,
                 period_days,
                 was_trial_conversion=was_trial_conversion,
+                purchase_type=_purchase_type,
             )
         )
 
@@ -7057,6 +7059,16 @@ async def switch_tariff_endpoint(
             user_id=user.id,
             type=TransactionType.SUBSCRIPTION_PAYMENT,
             amount_kopeks=upgrade_cost,
+            description=description,
+        )
+    else:
+        # Бесплатный переход (downgrade) — записываем в историю
+        description = f"Переход на тариф '{new_tariff.name}'"
+        await create_transaction(
+            db=db,
+            user_id=user.id,
+            type=TransactionType.SUBSCRIPTION_PAYMENT,
+            amount_kopeks=0,
             description=description,
         )
 

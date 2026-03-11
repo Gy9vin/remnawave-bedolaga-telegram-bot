@@ -493,6 +493,7 @@ async def subtract_user_balance(
     create_transaction: bool = False,
     payment_method: PaymentMethod | None = None,
     *,
+    transaction_type: TransactionType = TransactionType.WITHDRAWAL,
     consume_promo_offer: bool = False,
     mark_as_paid_subscription: bool = False,
 ) -> bool:
@@ -571,7 +572,7 @@ async def subtract_user_balance(
             await create_trans(
                 db=db,
                 user_id=user.id,
-                type=TransactionType.WITHDRAWAL,
+                type=transaction_type,
                 amount_kopeks=amount_kopeks,
                 description=description,
                 payment_method=payment_method,
