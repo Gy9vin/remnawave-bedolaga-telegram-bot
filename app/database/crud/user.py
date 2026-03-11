@@ -416,6 +416,12 @@ async def add_user_balance(
     payment_method: PaymentMethod | None = None,
 ) -> bool:
     try:
+        # Lock the user row to prevent concurrent balance race conditions
+        locked_result = await db.execute(
+            select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True)
+        )
+        user = locked_result.scalar_one()
+
         old_balance = user.balance_kopeks
         user.balance_kopeks += amount_kopeks
         user.updated_at = datetime.now(UTC)

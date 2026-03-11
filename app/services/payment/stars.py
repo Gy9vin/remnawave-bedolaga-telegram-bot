@@ -384,6 +384,16 @@ class TelegramStarsMixin:
     ) -> bool:
         """Начисляет баланс пользователю после оплаты Stars и запускает автопокупку."""
 
+        # Lock the user row to prevent concurrent balance race conditions
+        from sqlalchemy import select as sa_select
+
+        from app.database.models import User
+
+        locked_result = await db.execute(
+            sa_select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True)
+        )
+        user = locked_result.scalar_one()
+
         # Запоминаем старые значения, чтобы корректно построить уведомления.
         old_balance = user.balance_kopeks
         was_first_topup = not user.has_made_first_topup

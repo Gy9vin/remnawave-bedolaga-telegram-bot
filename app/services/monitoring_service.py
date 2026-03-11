@@ -242,8 +242,6 @@ class MonitoringService:
                 await self._check_trial_expiring_soon(db)
                 await self._check_trial_channel_subscriptions(db)
                 await self._check_expired_subscription_followups(db)
-                if settings.ENABLE_AUTOPAY:
-                    await self._process_autopayments(db)
                 await self._process_auto_renew_before_expiry(db)
                 await self._retry_stuck_guest_purchases(db)
                 await self._cleanup_inactive_users(db)
@@ -1310,17 +1308,10 @@ class MonitoringService:
                     await db.commit()
                     continue
 
-                # Рассчитываем стоимость продления
+                # Рассчитываем стоимость продления (уже включает promo-скидку)
                 renewal_cost = await self.subscription_service.calculate_renewal_price(subscription, 30, db, user=user)
                 promo_discount_percent = self._get_user_promo_offer_discount_percent(user)
                 charge_amount = renewal_cost
-                promo_discount_value = 0
-
-                if renewal_cost > 0 and promo_discount_percent > 0:
-                    charge_amount, promo_discount_value = apply_percentage_discount(
-                        renewal_cost,
-                        promo_discount_percent,
-                    )
 
                 # Ключ для защиты от повторных уведомлений
                 renew_key = f'auto_renew_expiry_{user.id}_{subscription.id}'
@@ -1348,7 +1339,7 @@ class MonitoringService:
                             reset_reason='автопродление подписки перед истечением',
                         )
 
-                        if promo_discount_value > 0:
+                        if promo_discount_percent > 0:
                             await self._consume_user_promo_offer_discount(db, user)
 
                         # Отправляем уведомление об успешном продлении
@@ -1497,7 +1488,7 @@ class MonitoringService:
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
-            if not self._handle_unreachable_user(user, exc, 'уведомление о недостатке баланса'):
+            if not await self._handle_unreachable_user(user, exc, 'уведомление о недостатке баланса'):
                 logger.error(
                     'Ошибка Telegram API при отправке уведомления о недостатке баланса пользователю %s: %s',
                     user.telegram_id,

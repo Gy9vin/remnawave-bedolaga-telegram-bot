@@ -313,13 +313,14 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
 
             signature = request.headers.get('Crypto-Pay-API-Signature')
             secret = settings.CRYPTOBOT_WEBHOOK_SECRET
-            if secret:
-                if not signature:
-                    return JSONResponse(
-                        {'status': 'error', 'reason': 'missing_signature'},
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                    )
-
+            if not secret:
+                logger.warning('CryptoBot webhook secret не настроен — проверка подписи пропущена')
+            elif not signature:
+                return JSONResponse(
+                    {'status': 'error', 'reason': 'missing_signature'},
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                )
+            else:
                 from app.external.cryptobot import CryptoBotService
 
                 if not CryptoBotService().verify_webhook_signature(payload_text, signature):
@@ -412,7 +413,7 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
 
             signature = request.headers.get('Signature') or request.headers.get('X-YooKassa-Signature')
             if signature:
-                logger.info('ℹ️ Получена подпись YooKassa', signature=signature)
+                logger.info('ℹ️ Получена подпись YooKassa', signature_prefix=signature[:8] if signature else None)
 
             try:
                 webhook_data = json.loads(body)

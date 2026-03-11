@@ -188,7 +188,7 @@ async def download_backup(
 
     resolved_path = backup_path.resolve()
     backup_dir_resolved = backup_service.backup_dir.resolve()
-    if not str(resolved_path).startswith(str(backup_dir_resolved)):
+    if not resolved_path.is_relative_to(backup_dir_resolved):
         raise HTTPException(status.HTTP_403_FORBIDDEN, 'Access denied')
 
     return FileResponse(
@@ -215,7 +215,7 @@ async def restore_backup(
 
     resolved_path = backup_path.resolve()
     backup_dir_resolved = backup_service.backup_dir.resolve()
-    if not str(resolved_path).startswith(str(backup_dir_resolved)):
+    if not resolved_path.is_relative_to(backup_dir_resolved):
         raise HTTPException(status.HTTP_403_FORBIDDEN, 'Access denied')
 
     success, message = await backup_service.restore_backup(str(backup_path), clear_existing=payload.clear_existing)
@@ -251,7 +251,7 @@ async def upload_and_restore_backup(
 
     resolved_path = temp_path.resolve()
     backup_dir_resolved = backup_service.backup_dir.resolve()
-    if not str(resolved_path).startswith(str(backup_dir_resolved)):
+    if not resolved_path.is_relative_to(backup_dir_resolved):
         raise HTTPException(status.HTTP_403_FORBIDDEN, 'Invalid file path')
 
     try:
@@ -287,7 +287,7 @@ async def delete_backup(
 
     resolved_path = backup_path.resolve()
     backup_dir_resolved = backup_service.backup_dir.resolve()
-    if not str(resolved_path).startswith(str(backup_dir_resolved)):
+    if not resolved_path.is_relative_to(backup_dir_resolved):
         raise HTTPException(status.HTTP_403_FORBIDDEN, 'Access denied')
 
     success, message = await backup_service.delete_backup(filename)

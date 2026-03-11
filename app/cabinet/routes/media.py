@@ -153,6 +153,7 @@ async def upload_media(
 @router.get('/{file_id}', name='cabinet_download_media')
 async def download_media(
     file_id: str,
+    user: User = Depends(get_current_cabinet_user),
 ) -> Response:
     """
     Download media file by file_id.

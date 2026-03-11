@@ -212,11 +212,13 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
         actual_status = 'disabled'
         status_display = texts.t('SUBSCRIPTION_STATUS_DISABLED', 'Приостановлена')
         status_emoji = '⏸️'
-    elif subscription.status == 'expired' or subscription.end_date <= current_time:
+    elif subscription.status == 'expired' or (
+        subscription.end_date is not None and subscription.end_date <= current_time
+    ):
         actual_status = 'expired'
         status_display = texts.t('SUBSCRIPTION_STATUS_EXPIRED', 'Истекла')
         status_emoji = '🔴'
-    elif subscription.status == 'active' and subscription.end_date > current_time:
+    elif subscription.status == 'active' and subscription.end_date is not None and subscription.end_date > current_time:
         if subscription.is_trial:
             actual_status = 'trial_active'
             status_display = texts.t('SUBSCRIPTION_STATUS_TRIAL', 'Тестовая')
@@ -230,7 +232,7 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
         status_display = texts.t('SUBSCRIPTION_STATUS_UNKNOWN', 'Неизвестно')
         status_emoji = '❓'
 
-    if subscription.end_date <= current_time:
+    if subscription.end_date is None or subscription.end_date <= current_time:
         days_left = 0
         time_left_text = texts.t('SUBSCRIPTION_TIME_LEFT_EXPIRED', 'истёк')
         warning_text = ''
@@ -1995,7 +1997,7 @@ async def confirm_extend_subscription(callback: types.CallbackQuery, db_user: Us
             SubscriptionStatus.DISABLED.value,
         ) or (subscription.end_date is not None and subscription.end_date <= current_time)
 
-        if subscription.end_date > current_time:
+        if subscription.end_date is not None and subscription.end_date > current_time:
             new_end_date = subscription.end_date + timedelta(days=days)
         else:
             new_end_date = current_time + timedelta(days=days)
@@ -4536,7 +4538,7 @@ async def _extend_existing_subscription(
             current_subscription.connected_squads = current_subscription.connected_squads + [squad_uuid]
 
     # Продлеваем подписку
-    if current_subscription.end_date > current_time:
+    if current_subscription.end_date is not None and current_subscription.end_date > current_time:
         # Если подписка ещё активна, добавляем дни к текущей дате окончания
         new_end_date = current_subscription.end_date + timedelta(days=period_days)
     else:
