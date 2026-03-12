@@ -261,7 +261,10 @@ async def show_referral_qr(
             reply_markup=keyboard,
         )
     except TelegramBadRequest:
-        await callback.message.delete()
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
         await callback.message.answer_photo(
             photo,
             caption=texts.t(
