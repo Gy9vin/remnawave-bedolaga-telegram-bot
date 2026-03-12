@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +87,7 @@ class MonitoringService:
         self.bot = bot
         self._notified_users: set[str] = set()
         self._last_cleanup = datetime.now(UTC)
+        self._last_inactive_cleanup_date: date | None = None
         self._sla_task = None
 
     async def _send_message_with_logo(
@@ -199,54 +200,78 @@ class MonitoringService:
         except Exception:
             pass
 
+    async def _run_monitoring_task(self, db, coro, task_name: str) -> bool:
+        """Выполнить подзадачу мониторинга с изоляцией ошибок.
+
+        Если задача падает (в т.ч. InterfaceError / connection is closed),
+        делает rollback сессии и продолжает. Это позволяет следующим задачам
+        получить свежее соединение из пула вместо PendingRollbackError.
+        """
+        try:
+            await coro
+            return True
+        except Exception as e:
+            logger.error('Ошибка в подзадаче мониторинга', task=task_name, error=e)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            return False
+
     async def _monitoring_cycle(self):
         async with AsyncSessionLocal() as db:
+            await self._cleanup_notification_cache()
+
+            expired_offers = await deactivate_expired_offers(db)
+            if expired_offers:
+                logger.info('🧹 Деактивировано просроченных скидочных предложений', expired_offers=expired_offers)
+
+            expired_active_discounts = await cleanup_expired_promo_offer_discounts(db)
+            if expired_active_discounts:
+                logger.info(
+                    '🧹 Сброшено активных скидок промо-предложений с истекшим сроком',
+                    expired_active_discounts=expired_active_discounts,
+                )
+
+            cleaned_test_access = await promo_offer_service.cleanup_expired_test_access(db)
+            if cleaned_test_access:
+                logger.info('🧹 Отозвано истекших тестовых доступов к сквадам', cleaned_test_access=cleaned_test_access)
+
+            # ВАЖНО: autopay ПЕРЕД check_expired — иначе подписки с автоплатой
+            # экспайрятся до того, как autopay успеет их продлить
+            if settings.ENABLE_AUTOPAY:
+                await self._run_monitoring_task(db, self._process_autopayments(db), '_process_autopayments')
+                # Рекуррентные автоплатежи: пополнение баланса с сохранённой карты
+                if settings.YOOKASSA_RECURRENT_ENABLED:
+                    try:
+                        from app.services.recurrent_payment_service import process_recurrent_payments
+
+                        await process_recurrent_payments(db=db, bot=self.bot)
+                    except Exception as recurrent_error:
+                        logger.error(
+                            'Ошибка рекуррентных автоплатежей',
+                            error=recurrent_error,
+                            exc_info=True,
+                        )
+
+            # Каждая задача изолирована: ошибка одной не роняет остальные
+            await self._run_monitoring_task(db, self._check_expired_subscriptions(db), '_check_expired_subscriptions')
+            await self._run_monitoring_task(db, self._check_expiring_subscriptions(db), '_check_expiring_subscriptions')
+            await self._run_monitoring_task(db, self._check_trial_expiring_soon(db), '_check_trial_expiring_soon')
+            await self._run_monitoring_task(
+                db, self._check_trial_channel_subscriptions(db), '_check_trial_channel_subscriptions'
+            )
+            await self._run_monitoring_task(
+                db, self._check_expired_subscription_followups(db), '_check_expired_subscription_followups'
+            )
+            await self._run_monitoring_task(
+                db, self._process_auto_renew_before_expiry(db), '_process_auto_renew_before_expiry'
+            )
+            await self._run_monitoring_task(db, self._retry_stuck_guest_purchases(db), '_retry_stuck_guest_purchases')
+            await self._run_monitoring_task(db, self._cleanup_inactive_users(db), '_cleanup_inactive_users')
+            await self._run_monitoring_task(db, self._sync_with_remnawave(db), '_sync_with_remnawave')
+
             try:
-                await self._cleanup_notification_cache()
-
-                expired_offers = await deactivate_expired_offers(db)
-                if expired_offers:
-                    logger.info('🧹 Деактивировано просроченных скидочных предложений', expired_offers=expired_offers)
-
-                expired_active_discounts = await cleanup_expired_promo_offer_discounts(db)
-                if expired_active_discounts:
-                    logger.info(
-                        '🧹 Сброшено активных скидок промо-предложений с истекшим сроком',
-                        expired_active_discounts=expired_active_discounts,
-                    )
-
-                cleaned_test_access = await promo_offer_service.cleanup_expired_test_access(db)
-                if cleaned_test_access:
-                    logger.info(
-                        '🧹 Отозвано истекших тестовых доступов к сквадам', cleaned_test_access=cleaned_test_access
-                    )
-
-                # ВАЖНО: autopay ПЕРЕД check_expired — иначе подписки с автоплатой
-                # экспайрятся до того, как autopay успеет их продлить
-                if settings.ENABLE_AUTOPAY:
-                    await self._process_autopayments(db)
-                    # Рекуррентные автоплатежи: пополнение баланса с сохранённой карты
-                    if settings.YOOKASSA_RECURRENT_ENABLED:
-                        try:
-                            from app.services.recurrent_payment_service import process_recurrent_payments
-
-                            await process_recurrent_payments(db=db, bot=self.bot)
-                        except Exception as recurrent_error:
-                            logger.error(
-                                'Ошибка рекуррентных автоплатежей',
-                                error=recurrent_error,
-                                exc_info=True,
-                            )
-                await self._check_expired_subscriptions(db)
-                await self._check_expiring_subscriptions(db)
-                await self._check_trial_expiring_soon(db)
-                await self._check_trial_channel_subscriptions(db)
-                await self._check_expired_subscription_followups(db)
-                await self._process_auto_renew_before_expiry(db)
-                await self._retry_stuck_guest_purchases(db)
-                await self._cleanup_inactive_users(db)
-                await self._sync_with_remnawave(db)
-
                 await self._log_monitoring_event(
                     db,
                     'monitoring_cycle_completed',
@@ -254,20 +279,12 @@ class MonitoringService:
                     {'timestamp': datetime.now(UTC).isoformat()},
                 )
                 await db.commit()
-
             except Exception as e:
-                logger.error('Ошибка в цикле мониторинга', error=e)
+                logger.error('Ошибка при финальном коммите цикла мониторинга', error=e)
                 try:
-                    await self._log_monitoring_event(
-                        db,
-                        'monitoring_cycle_error',
-                        f'Ошибка в цикле мониторинга: {e!s}',
-                        {'error': str(e)},
-                        is_success=False,
-                    )
+                    await db.rollback()
                 except Exception:
                     pass
-                await db.rollback()
 
     async def _cleanup_notification_cache(self):
         current_time = datetime.now(UTC)
@@ -821,6 +838,8 @@ class MonitoringService:
 
         try:
             now = datetime.now(UTC)
+            # Ограничиваем окно 30 днями назад, чтобы не загружать все исторические записи
+            window_start = now - timedelta(days=30)
 
             result = await db.execute(
                 select(Subscription)
@@ -832,8 +851,10 @@ class MonitoringService:
                     and_(
                         Subscription.is_trial == False,
                         Subscription.end_date <= now,
+                        Subscription.end_date >= window_start,
                     )
                 )
+                .limit(2000)
             )
 
             all_subscriptions = result.scalars().all()
@@ -1169,6 +1190,15 @@ class MonitoringService:
 
                         processed_count += 1
                         self._notified_users.add(autopay_key)
+                        # Коммитим сразу после успешного автопродления:
+                        # subtract_user_balance уже закоммитил списание баланса,
+                        # а extend_subscription ещё нет — фиксируем, чтобы ошибка
+                        # в другой задаче мониторинга не откатила продление при уже
+                        # списанном балансе.
+                        try:
+                            await db.commit()
+                        except Exception as commit_err:
+                            logger.error('Ошибка коммита после автопродления', user_id=user.id, error=commit_err)
                         logger.info(
                             '💳 Автопродление подписки пользователя успешно (списано , скидка %)',
                             user_identifier=user_identifier,
@@ -2023,8 +2053,11 @@ class MonitoringService:
     async def _cleanup_inactive_users(self, db: AsyncSession):
         try:
             now = datetime.now(UTC)
-            if now.hour != 3:
+            today = now.date()
+            # Запускаем только в 3:xx UTC и не более одного раза в сутки
+            if now.hour != 3 or self._last_inactive_cleanup_date == today:
                 return
+            self._last_inactive_cleanup_date = today
 
             inactive_users = await get_inactive_users(db, settings.INACTIVE_USER_DELETE_MONTHS)
             deleted_count = 0
@@ -2034,6 +2067,29 @@ class MonitoringService:
                     # Не удалять пользователей с ненулевым балансом — иначе потеряют деньги
                     if user.balance_kopeks and user.balance_kopeks > 0:
                         continue
+
+                    # Не удалять пользователей с незавершёнными (pending) покупками
+                    from sqlalchemy import exists as sa_exists
+
+                    from app.database.models import GuestPurchase, GuestPurchaseStatus
+
+                    has_pending_purchase = await db.scalar(
+                        select(
+                            sa_exists().where(
+                                GuestPurchase.user_id == user.id,
+                                GuestPurchase.status.notin_(
+                                    [
+                                        GuestPurchaseStatus.DELIVERED.value,
+                                        GuestPurchaseStatus.CANCELLED.value,
+                                        GuestPurchaseStatus.FAILED.value,
+                                    ]
+                                ),
+                            )
+                        )
+                    )
+                    if has_pending_purchase:
+                        continue
+
                     success = await delete_user(db, user)
                     if success:
                         deleted_count += 1

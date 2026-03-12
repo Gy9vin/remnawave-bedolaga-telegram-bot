@@ -211,7 +211,7 @@ async def get_optional_cabinet_user(
     # Cross-validate Telegram identity (same as get_current_cabinet_user)
     init_data_raw = request.headers.get('X-Telegram-Init-Data')
     if init_data_raw and user.telegram_id is not None:
-        tg_user = validate_telegram_init_data(init_data_raw, max_age_seconds=86400 * 30)
+        tg_user = validate_telegram_init_data(init_data_raw, max_age_seconds=86400)
         if tg_user and tg_user.get('id') != user.telegram_id:
             logger.warning(
                 'Telegram identity mismatch in optional auth',
