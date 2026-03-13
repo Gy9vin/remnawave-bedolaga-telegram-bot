@@ -425,6 +425,41 @@ async def get_ticket_detail(
     )
 
 
+@router.get('/{ticket_id}/ai_suggest')
+async def get_ai_suggest(
+    ticket_id: int,
+    admin: User = Depends(require_permission('tickets:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Generate AI suggested reply for ticket (does not save the message)."""
+    query = select(Ticket).where(Ticket.id == ticket_id).options(selectinload(Ticket.user))
+    result = await db.execute(query)
+    ticket = result.scalar_one_or_none()
+
+    if not ticket:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Ticket not found')
+
+    user_id = ticket.user_id
+    try:
+        from app.services.ai_support.ticket_ai_service import ai_ticket_service
+
+        text = await ai_ticket_service.generate_reply(db, ticket_id, user_id)
+    except Exception as e:
+        logger.error('Admin AI suggest failed', ticket_id=ticket_id, error=e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='AI service unavailable',
+        ) from e
+
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='AI service unavailable',
+        )
+
+    return {'text': text}
+
+
 @router.post('/{ticket_id}/reply', response_model=TicketMessageResponse)
 async def reply_to_ticket(
     ticket_id: int,
