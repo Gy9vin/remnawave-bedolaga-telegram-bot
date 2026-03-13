@@ -32,6 +32,10 @@ class GigaChatClient:
         return getattr(settings, 'GIGACHAT_AUTH_KEY', None)
 
     @property
+    def _client_id(self) -> str | None:
+        return getattr(settings, 'GIGACHAT_CLIENT_ID', None)
+
+    @property
     def _scope(self) -> str:
         return getattr(settings, 'GIGACHAT_SCOPE', 'GIGACHAT_API_PERS')
 
@@ -51,6 +55,8 @@ class GigaChatClient:
                 'Accept': 'application/json',
                 'RqUID': str(uuid.uuid4()),
             }
+            if self._client_id:
+                headers['X-Client-ID'] = self._client_id
             connector = aiohttp.TCPConnector(ssl=self._ssl_ctx)
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(

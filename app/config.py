@@ -42,6 +42,7 @@ class Settings(BaseSettings):
 
     # GigaChat AI support
     GIGACHAT_AUTH_KEY: str | None = None
+    GIGACHAT_CLIENT_ID: str | None = None
     GIGACHAT_SCOPE: str = 'GIGACHAT_API_PERS'
     GIGACHAT_MODEL: str = 'GigaChat-2-MAX'
     SUPPORT_AI_BOT_NAME: str = 'Алиса'
