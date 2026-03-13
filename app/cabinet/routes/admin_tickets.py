@@ -89,7 +89,10 @@ class AdminTicketListResponse(BaseModel):
 class AdminReplyRequest(BaseModel):
     """Admin reply to ticket."""
 
-    message: str = Field(..., min_length=1, max_length=4000, description='Reply message')
+    message: str = Field('', max_length=4000, description='Reply message')
+    media_type: str | None = None
+    media_file_id: str | None = None
+    media_caption: str | None = None
 
 
 class AdminStatusUpdateRequest(BaseModel):
@@ -477,12 +480,21 @@ async def reply_to_ticket(
             detail='Ticket not found',
         )
 
+    if not request.message and not request.media_file_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Message or media required',
+        )
+
     # Create admin message
     message = TicketMessage(
         ticket_id=ticket.id,
         user_id=ticket.user_id,
         message_text=request.message,
         is_from_admin=True,
+        media_type=request.media_type,
+        media_file_id=request.media_file_id,
+        media_caption=request.media_caption,
         created_at=datetime.now(UTC),
     )
     db.add(message)
