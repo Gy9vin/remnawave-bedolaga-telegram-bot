@@ -2417,7 +2417,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
 
             existing_subscription.is_trial = False
             existing_subscription.status = SubscriptionStatus.ACTIVE.value
-            existing_subscription.traffic_limit_gb = final_traffic_gb
+            existing_subscription.traffic_limit_gb = final_traffic_gb if final_traffic_gb is not None else 0
             if should_update_devices:
                 existing_subscription.device_limit = selected_devices
             # Проверяем, что при обновлении существующей подписки есть хотя бы одна страна
@@ -2499,7 +2499,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                 duration_days=period_days,
                 device_limit=resolved_device_limit,
                 connected_squads=new_subscription_countries,
-                traffic_gb=final_traffic_gb,
+                traffic_gb=final_traffic_gb if final_traffic_gb is not None else 0,
             )
 
         from app.database.crud.server_squad import add_user_to_servers, get_server_ids_by_uuids
