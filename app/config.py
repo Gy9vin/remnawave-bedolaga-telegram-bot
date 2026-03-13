@@ -39,6 +39,16 @@ class Settings(BaseSettings):
     SUPPORT_USERNAME: str = '@support'
     SUPPORT_MENU_ENABLED: bool = True
     SUPPORT_SYSTEM_MODE: str = 'both'  # one of: tickets, contact, both
+
+    # GigaChat AI support
+    GIGACHAT_AUTH_KEY: str | None = None
+    GIGACHAT_SCOPE: str = 'GIGACHAT_API_PERS'
+    GIGACHAT_MODEL: str = 'GigaChat-2-MAX'
+    SUPPORT_AI_BOT_NAME: str = 'Алиса'
+
+    # Telegram Forum support mirror
+    SUPPORT_FORUM_CHAT_ID: int | None = None
+    SUPPORT_FORUM_ENABLED: bool = False
     # SLA for support tickets
     SUPPORT_TICKET_SLA_ENABLED: bool = True
     SUPPORT_TICKET_SLA_MINUTES: int = 5
@@ -2753,6 +2763,25 @@ def refresh_period_prices() -> None:
 
 PERIOD_PRICES: dict[int, int] = {}
 refresh_period_prices()
+
+
+def _build_classic_period_prices() -> dict[int, int]:
+    """Build classic-mode period prices directly from PRICE_*_DAYS settings.
+
+    Unlike PERIOD_PRICES (which may use DB tariff prices in tariffs mode),
+    this always reflects the env/settings values — the canonical prices for
+    classic (non-tariff) subscriptions.
+    """
+    return {days: getattr(settings, field_name, 0) for days, field_name in _PERIOD_PRICE_FIELDS.items()}
+
+
+CLASSIC_PERIOD_PRICES: dict[int, int] = _build_classic_period_prices()
+
+
+def refresh_classic_period_prices() -> None:
+    """Rebuild CLASSIC_PERIOD_PRICES from current settings."""
+    CLASSIC_PERIOD_PRICES.clear()
+    CLASSIC_PERIOD_PRICES.update(_build_classic_period_prices())
 
 
 def get_traffic_prices() -> dict[int, int]:

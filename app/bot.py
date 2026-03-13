@@ -9,6 +9,7 @@ from app.handlers import (
     balance,
     common,
     contests as user_contests,
+    forum as forum_handler,
     menu,
     polls as user_polls,
     promocode,
@@ -209,6 +210,22 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     logger.info('⭐ Зарегистрированы обработчики Telegram Stars платежей')
     logger.info('⚡ Зарегистрированы обработчики простой покупки')
     logger.info('⚡ Зарегистрированы обработчики простой подписки')
+
+    # Форум поддержки
+    if getattr(settings, 'SUPPORT_FORUM_ENABLED', False):
+        forum_handler.register_handlers(dp)
+        logger.info('📋 Зарегистрированы обработчики форума поддержки')
+
+    # AI тикетная система — регистрация event listeners
+    try:
+        from app.services.ai_support.ticket_ai_service import ai_ticket_service
+        from app.services.event_emitter import event_emitter
+
+        event_emitter.on('ticket.created', ai_ticket_service.handle_ticket_created)
+        event_emitter.on('ticket.message_added', ai_ticket_service.handle_ticket_message)
+        logger.info('🤖 AI тикетная система инициализирована')
+    except Exception as e:
+        logger.warning('Не удалось инициализировать AI тикетную систему', error=e)
 
     if settings.is_maintenance_monitoring_enabled():
         try:

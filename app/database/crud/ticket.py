@@ -367,6 +367,26 @@ class TicketCRUD:
         result = await db.execute(query)
         return len(result.scalars().all())
 
+    @staticmethod
+    async def get_ticket_by_forum_thread(db: AsyncSession, forum_thread_id: int) -> Ticket | None:
+        """Найти тикет по forum_topic_id."""
+        query = select(Ticket).where(Ticket.forum_topic_id == forum_thread_id)
+        result = await db.execute(query)
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def set_ticket_ai_enabled(db: AsyncSession, ticket_id: int, enabled: bool) -> bool:
+        """Включить/выключить AI для тикета."""
+        ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=False)
+        if not ticket:
+            return False
+        ticket.ai_enabled = bool(enabled)
+        from datetime import UTC, datetime
+
+        ticket.updated_at = datetime.now(UTC)
+        await db.commit()
+        return True
+
 
 class TicketMessageCRUD:
     """CRUD операции для работы с сообщениями тикетов"""

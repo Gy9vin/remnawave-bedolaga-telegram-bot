@@ -1116,6 +1116,69 @@ async def notify_user_about_ticket_reply(bot: Bot, ticket: Ticket, reply_text: s
         logger.error('Error notifying user about ticket reply', error=e)
 
 
+async def show_ticket_ai_mode_menu(callback: types.CallbackQuery, db_user: User):
+    """Показать меню управления режимом тикетов (off/normal/ai)."""
+    if not settings.is_admin(callback.from_user.id):
+        texts = get_texts(db_user.language)
+        await callback.answer(texts.ACCESS_DENIED, show_alert=True)
+        return
+
+    current_mode = SupportSettingsService.get_ticket_ai_mode()
+    mode_labels = {'off': '❌ Выключено', 'normal': '💬 Обычный', 'ai': '🤖 С ИИ'}
+    current_label = mode_labels.get(current_mode, current_mode)
+
+    text = (
+        f'🎫 <b>Режим тикетов поддержки</b>\n\n'
+        f'Текущий режим: <b>{current_label}</b>\n\n'
+        f'• <b>❌ Выключено</b> — тикеты скрыты из меню\n'
+        f'• <b>💬 Обычный</b> — тикеты без AI, форум-зеркало\n'
+        f'• <b>🤖 С ИИ</b> — AI отвечает первым, оператор может вмешаться'
+    )
+
+    buttons = []
+    for mode_key, mode_label in mode_labels.items():
+        marker = '✅ ' if mode_key == current_mode else ''
+        buttons.append(
+            [
+                types.InlineKeyboardButton(
+                    text=f'{marker}{mode_label}',
+                    callback_data=f'admin_ticket_mode_set:{mode_key}',
+                )
+            ]
+        )
+    buttons.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_submenu_support')])
+
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=buttons)
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode='HTML')
+    except Exception:
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode='HTML')
+    await callback.answer()
+
+
+async def set_ticket_ai_mode(callback: types.CallbackQuery, db_user: User):
+    """Установить режим тикетов."""
+    if not settings.is_admin(callback.from_user.id):
+        texts = get_texts(db_user.language)
+        await callback.answer(texts.ACCESS_DENIED, show_alert=True)
+        return
+
+    try:
+        mode = callback.data.split(':')[1]
+    except (IndexError, ValueError):
+        await callback.answer('❌ Ошибка', show_alert=True)
+        return
+
+    ok = SupportSettingsService.set_ticket_ai_mode(mode)
+    if ok:
+        mode_labels = {'off': '❌ Выключено', 'normal': '💬 Обычный', 'ai': '🤖 С ИИ'}
+        label = mode_labels.get(mode, mode)
+        await callback.answer(f'✅ Режим изменён: {label}', show_alert=True)
+        await show_ticket_ai_mode_menu(callback, db_user)
+    else:
+        await callback.answer('❌ Неверный режим', show_alert=True)
+
+
 def register_handlers(dp: Dispatcher):
     """Регистрация админских обработчиков тикетов"""
 
@@ -1225,3 +1288,7 @@ def register_handlers(dp: Dispatcher):
         await callback.answer('✅')
 
     dp.callback_query.register(admin_delete_message, F.data.startswith('admin_delete_message_'))
+
+    # AI режим тикетов
+    dp.callback_query.register(show_ticket_ai_mode_menu, F.data == 'admin_ticket_ai_mode')
+    dp.callback_query.register(set_ticket_ai_mode, F.data.startswith('admin_ticket_mode_set:'))

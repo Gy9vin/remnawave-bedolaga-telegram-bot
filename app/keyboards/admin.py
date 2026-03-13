@@ -170,6 +170,12 @@ def get_admin_support_submenu_keyboard(language: str = 'ru') -> InlineKeyboardMa
                     callback_data='admin_support_settings',
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text=_t(texts, 'ADMIN_TICKET_AI_MODE', '🤖 Режим тикетов'),
+                    callback_data='admin_ticket_ai_mode',
+                )
+            ],
             [InlineKeyboardButton(text=texts.BACK, callback_data='admin_panel')],
         ]
     )

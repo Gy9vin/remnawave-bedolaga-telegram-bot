@@ -123,6 +123,7 @@ class SubscriptionStatus(Enum):
     ACTIVE = 'active'
     EXPIRED = 'expired'
     DISABLED = 'disabled'
+    LIMITED = 'limited'
     PENDING = 'pending'
 
 
@@ -1353,6 +1354,9 @@ class Subscription(Base):
         if self.status == SubscriptionStatus.DISABLED.value:
             return 'disabled'
 
+        if self.status == SubscriptionStatus.LIMITED.value:
+            return 'limited'
+
         if self.status == SubscriptionStatus.ACTIVE.value:
             if end is None or end <= current_time:
                 return 'expired'
@@ -1377,6 +1381,8 @@ class Subscription(Base):
             return '🟢 Активна'
         if actual_status == 'disabled':
             return '⚫ Отключена'
+        if actual_status == 'limited':
+            return '⚠️ Трафик исчерпан'
         if actual_status == 'trial':
             return '🎯 Тестовая'
 
@@ -1394,6 +1400,8 @@ class Subscription(Base):
             return '💎'
         if actual_status == 'disabled':
             return '⚫'
+        if actual_status == 'limited':
+            return '⚠️'
         if actual_status == 'trial':
             return '🎁'
 
@@ -1442,7 +1450,7 @@ class Subscription(Base):
         else:
             self.end_date = datetime.now(UTC) + timedelta(days=days)
 
-        if self.status == SubscriptionStatus.EXPIRED.value:
+        if self.status in (SubscriptionStatus.EXPIRED.value, SubscriptionStatus.LIMITED.value):
             self.status = SubscriptionStatus.ACTIVE.value
 
     def add_traffic(self, gb: int):
@@ -2472,6 +2480,12 @@ class Ticket(Base):
     # SLA reminders
     last_sla_reminder_at = Column(AwareDateTime(), nullable=True)
 
+    # AI Forum support
+    forum_topic_id = Column(Integer, nullable=True)
+    forum_control_msg_id = Column(Integer, nullable=True)  # ID сообщения с кнопками управления
+    ai_enabled = Column(Boolean, default=True, nullable=False)
+    operator_telegram_id = Column(BigInteger, nullable=True)
+
     # Связи
     user = relationship('User', backref='tickets')
     messages = relationship('TicketMessage', back_populates='ticket', cascade='all, delete-orphan')
@@ -2534,6 +2548,8 @@ class TicketMessage(Base):
     media_type = Column(String(20), nullable=True)  # photo, video, document, voice, etc.
     media_file_id = Column(String(255), nullable=True)
     media_caption = Column(Text, nullable=True)
+
+    is_ai_response = Column(Boolean, default=False, nullable=False)
 
     created_at = Column(AwareDateTime(), default=func.now())
 

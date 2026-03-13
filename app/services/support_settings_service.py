@@ -248,3 +248,21 @@ class SupportSettingsService:
         cls._load()
         cls._data['cabinet_admin_notifications_enabled'] = bool(enabled)
         return cls._save()
+
+    # Ticket AI mode
+    @classmethod
+    def get_ticket_ai_mode(cls) -> str:
+        """Получить режим тикетов: 'off' | 'normal' | 'ai'."""
+        cls._load()
+        mode = (cls._data.get('ticket_ai_mode') or 'normal').strip().lower()
+        return mode if mode in {'off', 'normal', 'ai'} else 'normal'
+
+    @classmethod
+    def set_ticket_ai_mode(cls, mode: str) -> bool:
+        """Установить режим тикетов: 'off' | 'normal' | 'ai'."""
+        mode_clean = (mode or '').strip().lower()
+        if mode_clean not in {'off', 'normal', 'ai'}:
+            return False
+        cls._load()
+        cls._data['ticket_ai_mode'] = mode_clean
+        return cls._save()

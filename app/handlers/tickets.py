@@ -559,10 +559,21 @@ async def view_ticket(callback: types.CallbackQuery, db_user: User, db: AsyncSes
     total_pages = len(pages)
     page = min(page, total_pages)
 
+    # Кнопка "Позвать оператора" — только если AI включён для тикета
+    show_call_operator = False
+    try:
+        from app.services.support_settings_service import SupportSettingsService
+
+        if SupportSettingsService.get_ticket_ai_mode() == 'ai' and getattr(ticket, 'ai_enabled', False):
+            show_call_operator = True
+    except Exception:
+        pass
+
     keyboard = get_ticket_view_keyboard(
         ticket_id,
         ticket.is_closed,
         db_user.language,
+        show_call_operator=show_call_operator,
     )
     # Если есть вложения фото — добавим кнопку для просмотра
     has_photos = any(
@@ -973,6 +984,62 @@ async def cancel_ticket_reply(callback: types.CallbackQuery, state: FSMContext, 
     await callback.answer()
 
 
+async def request_operator(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Пользователь запрашивает живого оператора — отключаем AI для этого тикета."""
+    texts = get_texts(db_user.language)
+    try:
+        ticket_id = int(callback.data.split(':')[1])
+    except (IndexError, ValueError):
+        await callback.answer(texts.t('TICKET_NOT_FOUND', 'Тикет не найден.'), show_alert=True)
+        return
+
+    ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=False)
+    if not ticket or ticket.user_id != db_user.id:
+        await callback.answer(texts.t('TICKET_NOT_FOUND', 'Тикет не найден.'), show_alert=True)
+        return
+
+    if ticket.is_closed:
+        await callback.answer(texts.t('TICKET_ALREADY_CLOSED', 'Тикет уже закрыт.'), show_alert=True)
+        return
+
+    # Отключить AI
+    ticket.ai_enabled = False
+    from datetime import UTC, datetime
+
+    ticket.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    # Системное сообщение в форум
+    forum_topic_id = getattr(ticket, 'forum_topic_id', None)
+    if forum_topic_id:
+        try:
+            from app.services.ai_support.forum_service import ticket_forum_service
+            from app.services.maintenance_service import maintenance_service
+
+            bot = maintenance_service.bot
+            if bot:
+                await ticket_forum_service.send_message(
+                    bot=bot,
+                    forum_topic_id=forum_topic_id,
+                    text=f'Пользователь {db_user.first_name or db_user.id} запросил живого оператора.',
+                    role='system',
+                )
+                # Обновить кнопки в форуме (AI выкл)
+                ctrl_msg_id = getattr(ticket, 'forum_control_msg_id', None)
+                if ctrl_msg_id:
+                    await ticket_forum_service.update_ai_button(
+                        bot=bot,
+                        forum_topic_id=forum_topic_id,
+                        control_msg_id=ctrl_msg_id,
+                        ticket_id=ticket_id,
+                        ai_enabled=False,
+                    )
+        except Exception as e:
+            logger.warning('Ошибка обновления форума при запросе оператора', error=e)
+
+    await callback.answer(texts.t('OPERATOR_REQUESTED', '✅ Оператор вызван. Ожидайте ответа.'), show_alert=True)
+
+
 async def close_ticket_notification(callback: types.CallbackQuery, db_user: User):
     """Закрыть уведомление о тикете"""
     texts = get_texts(db_user.language)
@@ -1148,3 +1215,6 @@ def register_handlers(dp: Dispatcher):
 
     # Закрытие уведомлений
     dp.callback_query.register(close_ticket_notification, F.data.startswith('close_ticket_notification_'))
+
+    # Вызов оператора (AI режим)
+    dp.callback_query.register(request_operator, F.data.startswith('request_operator:'))
