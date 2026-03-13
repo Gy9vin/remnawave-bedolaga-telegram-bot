@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.database.models import User
 
-from ..dependencies import get_current_cabinet_user
+from ..dependencies import get_current_cabinet_user  # used for upload only
 
 
 logger = structlog.get_logger(__name__)
@@ -153,11 +153,10 @@ async def upload_media(
 @router.get('/{file_id}', name='cabinet_download_media')
 async def download_media(
     file_id: str,
-    user: User = Depends(get_current_cabinet_user),
 ) -> Response:
     """
-    Download media file by file_id.
-    Used to display images/documents in ticket messages.
+    Download media file by file_id (public, no auth required).
+    file_id is an opaque Telegram identifier — safe to expose publicly.
     """
     bot = Bot(
         token=settings.BOT_TOKEN,
