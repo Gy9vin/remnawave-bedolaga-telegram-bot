@@ -83,7 +83,8 @@ async def _get_connected_devices_count(user: User) -> int:
             # Ограничиваем stale-данные текущим device_limit
             return min(connected_count, current_limit) if current_limit > 0 else connected_count
     except Exception:
-        return 0
+        # При ошибке API — fallback к текущему device_limit (нельзя снизить без данных)
+        return current_limit
 
 
 def _serialize_markup(markup: InlineKeyboardMarkup | None) -> Any | None:
