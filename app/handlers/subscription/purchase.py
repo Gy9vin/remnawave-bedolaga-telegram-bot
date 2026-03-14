@@ -60,10 +60,16 @@ logger = structlog.get_logger(__name__)
 
 
 async def _get_connected_devices_count(user: User) -> int:
-    """Получить реальное количество подключённых устройств из Remnawave."""
+    """Получить реальное количество подключённых устройств из Remnawave.
+
+    При ошибке возвращает текущий device_limit подписки как безопасный fallback,
+    чтобы нельзя было уменьшить лимит при недоступности Remnawave API.
+    """
     remnawave_uuid = getattr(user, 'remnawave_uuid', None)
     if not remnawave_uuid:
-        return 0
+        # Fallback to subscription.device_limit if no UUID
+        sub = getattr(user, 'subscription', None)
+        return int(getattr(sub, 'device_limit', 0) or 0)
     try:
         from app.external.remnawave_api import RemnaWaveAPI
 
@@ -71,7 +77,9 @@ async def _get_connected_devices_count(user: User) -> int:
             data = await api.get_user_devices(remnawave_uuid)
             return int(data.get('total', 0))
     except Exception:
-        return 0
+        # При ошибке API — fallback к текущему device_limit подписки
+        sub = getattr(user, 'subscription', None)
+        return int(getattr(sub, 'device_limit', 0) or 0)
 
 
 def _serialize_markup(markup: InlineKeyboardMarkup | None) -> Any | None:

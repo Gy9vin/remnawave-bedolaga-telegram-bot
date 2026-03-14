@@ -455,7 +455,11 @@ class MiniAppSubscriptionPurchaseService:
             default_devices = max(default_devices, effective_device_limit)
 
         # Минимум = реально подключённые устройства из Remnawave
-        min_devices_connected = settings.DEFAULT_DEVICE_LIMIT
+        # Fallback: текущий device_limit подписки (чтобы нельзя было уменьшить при недоступности API)
+        fallback_min = settings.DEFAULT_DEVICE_LIMIT
+        if subscription and not is_trial_subscription and getattr(subscription, 'device_limit', None):
+            fallback_min = max(settings.DEFAULT_DEVICE_LIMIT, int(subscription.device_limit))
+        min_devices_connected = fallback_min
         remnawave_uuid = getattr(user, 'remnawave_uuid', None)
         if remnawave_uuid:
             try:
@@ -466,7 +470,11 @@ class MiniAppSubscriptionPurchaseService:
                     connected_count = int(devices_data.get('total', 0))
                     min_devices_connected = max(settings.DEFAULT_DEVICE_LIMIT, connected_count)
             except Exception:
-                pass
+                logger.warning(
+                    'Failed to fetch connected devices from Remnawave, using subscription.device_limit as fallback',
+                    user_id=user.id,
+                    fallback_min=fallback_min,
+                )
 
         fixed_traffic_value = None
         if settings.is_traffic_fixed():
