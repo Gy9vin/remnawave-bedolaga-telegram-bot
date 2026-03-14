@@ -275,7 +275,12 @@ class ChannelSubscriptionService:
                 return False  # Fail-closed -- bot cannot verify membership
             except TelegramBadRequest as e:
                 err_lower = str(e).lower()
-                if 'user not found' in err_lower or 'participant_id_invalid' in err_lower:
+                if (
+                    'user not found' in err_lower
+                    or 'member not found' in err_lower
+                    or 'participant_id_invalid' in err_lower
+                    or 'chat not found' in err_lower
+                ):
                     return False  # User never interacted with bot / unknown participant
                 logger.error('Bad request checking channel', channel_id=channel_id, error=str(e))
                 return False  # Fail-closed

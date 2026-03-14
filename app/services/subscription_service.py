@@ -383,7 +383,7 @@ class SubscriptionService:
 
                 update_kwargs = dict(
                     uuid=user.remnawave_uuid,
-                    status=UserStatus.ACTIVE if is_actually_active else UserStatus.EXPIRED,
+                    status=UserStatus.ACTIVE if is_actually_active else UserStatus.DISABLED,
                     expire_at=subscription.end_date,
                     traffic_limit_bytes=self._gb_to_bytes(subscription.traffic_limit_gb),
                     traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
@@ -977,7 +977,7 @@ class SubscriptionService:
 
                         update_kwargs = dict(
                             uuid=user.remnawave_uuid,
-                            status=UserStatus.ACTIVE if is_actually_active else UserStatus.EXPIRED,
+                            status=UserStatus.ACTIVE if is_actually_active else UserStatus.DISABLED,
                             expire_at=sub.end_date,
                             traffic_limit_bytes=self._gb_to_bytes(sub.traffic_limit_gb),
                             traffic_limit_strategy=traffic_strategy,

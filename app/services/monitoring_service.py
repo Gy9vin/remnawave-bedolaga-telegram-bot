@@ -1342,7 +1342,14 @@ class MonitoringService:
                     continue
 
                 # Рассчитываем стоимость продления (уже включает promo-скидку)
-                renewal_cost = await self.subscription_service.calculate_renewal_price(subscription, 30, db, user=user)
+                try:
+                    from app.services.pricing_engine import pricing_engine
+
+                    _pricing = await pricing_engine.calculate_renewal_price(db, subscription, 30, user=user)
+                    renewal_cost = _pricing.final_total
+                except Exception as _e:
+                    logger.error('Ошибка расчёта стоимости продления перед истечением, пропускаем', error=_e)
+                    continue
                 promo_discount_percent = self._get_user_promo_offer_discount_percent(user)
                 charge_amount = renewal_cost
 
@@ -2083,8 +2090,8 @@ class MonitoringService:
                                 GuestPurchase.status.notin_(
                                     [
                                         GuestPurchaseStatus.DELIVERED.value,
-                                        GuestPurchaseStatus.CANCELLED.value,
                                         GuestPurchaseStatus.FAILED.value,
+                                        GuestPurchaseStatus.EXPIRED.value,
                                     ]
                                 ),
                             )
