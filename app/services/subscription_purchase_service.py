@@ -689,7 +689,7 @@ class MiniAppSubscriptionPurchaseService:
             maximum = max(default_devices, settings.DEFAULT_DEVICE_LIMIT) + 10
 
         return PurchaseDevicesConfig(
-            minimum=default_devices,  # нельзя занижать ниже текущего device_limit
+            minimum=settings.DEFAULT_DEVICE_LIMIT,
             maximum=maximum,
             default=default_devices,
             current=default_devices,

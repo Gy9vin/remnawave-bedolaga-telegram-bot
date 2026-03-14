@@ -1447,7 +1447,7 @@ def get_devices_keyboard(
     texts = get_texts(language)
     keyboard = []
 
-    start_devices = max(settings.DEFAULT_DEVICE_LIMIT, min_devices or settings.DEFAULT_DEVICE_LIMIT)
+    start_devices = settings.DEFAULT_DEVICE_LIMIT
     max_devices = settings.MAX_DEVICES_LIMIT if settings.MAX_DEVICES_LIMIT > 0 else 50
     end_devices = min(max_devices + 1, start_devices + 10)
 
