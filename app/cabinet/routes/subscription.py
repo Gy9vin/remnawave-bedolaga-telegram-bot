@@ -498,6 +498,19 @@ async def renew_subscription(
     renewal_description = f'Продление подписки на {request.period_days} дней' + (f' ({tariff.name})' if tariff else '')
     renewal_service = SubscriptionRenewalService()
 
+    # Стоимость модема (если подключён)
+    modem_price_kopeks = 0
+    modem_enabled = getattr(subscription, 'modem_enabled', False)
+    if modem_enabled and settings.is_modem_enabled():
+        from app.utils.pricing_utils import calculate_months_from_days
+
+        modem_months = calculate_months_from_days(request.period_days)
+        modem_base_price = settings.get_modem_price_per_month() * modem_months
+        modem_discount = settings.get_modem_period_discount(modem_months)
+        modem_price_kopeks = (
+            modem_base_price - (modem_base_price * modem_discount // 100) if modem_discount > 0 else modem_base_price
+        )
+
     try:
         result = await renewal_service.finalize(
             db,

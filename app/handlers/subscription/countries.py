@@ -552,8 +552,12 @@ async def countries_continue(callback: types.CallbackQuery, state: FSMContext, d
         data['devices'] = selected_devices
         await state.set_data(data)
 
+    devices_text = texts.SELECT_DEVICES
+    if min_devices > settings.DEFAULT_DEVICE_LIMIT:
+        devices_text += f'\n\n⚠️ У вас подключено {min_devices} устройств. Чтобы уменьшить лимит — сначала отключите лишние устройства в разделе "Устройства".'
+
     await callback.message.edit_text(
-        texts.SELECT_DEVICES,
+        devices_text,
         reply_markup=get_devices_keyboard(selected_devices, db_user.language, min_devices=min_devices),
     )
 
