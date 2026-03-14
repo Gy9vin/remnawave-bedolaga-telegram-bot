@@ -474,10 +474,12 @@ class MiniAppSubscriptionPurchaseService:
                     # Ограничиваем stale-данные текущим device_limit
                     effective_connected = min(connected_count, current_device_limit)
                     min_devices_connected = max(settings.DEFAULT_DEVICE_LIMIT, effective_connected)
-            except Exception:
+            except Exception as e:
                 logger.warning(
                     'Failed to fetch connected devices from Remnawave, using DEFAULT_DEVICE_LIMIT',
                     user_id=user.id,
+                    error=str(e),
+                    remnawave_uuid=remnawave_uuid,
                 )
 
         fixed_traffic_value = None
