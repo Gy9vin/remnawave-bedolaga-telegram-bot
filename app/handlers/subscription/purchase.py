@@ -59,6 +59,21 @@ from app.utils.decorators import error_handler
 logger = structlog.get_logger(__name__)
 
 
+async def _get_connected_devices_count(user: User) -> int:
+    """Получить реальное количество подключённых устройств из Remnawave."""
+    remnawave_uuid = getattr(user, 'remnawave_uuid', None)
+    if not remnawave_uuid:
+        return 0
+    try:
+        from app.external.remnawave_api import RemnaWaveAPI
+
+        async with RemnaWaveAPI() as api:
+            data = await api.get_user_devices(remnawave_uuid)
+            return int(data.get('total', 0))
+    except Exception:
+        return 0
+
+
 def _serialize_markup(markup: InlineKeyboardMarkup | None) -> Any | None:
     if markup is None:
         return None
@@ -1948,10 +1963,16 @@ async def select_period(callback: types.CallbackQuery, state: FSMContext, db_use
 
     if settings.is_devices_selection_enabled():
         selected_devices = data.get('devices', settings.DEFAULT_DEVICE_LIMIT)
+        min_devices = await _get_connected_devices_count(db_user)
+        min_devices = max(settings.DEFAULT_DEVICE_LIMIT, min_devices)
+        if selected_devices < min_devices:
+            selected_devices = min_devices
+            data['devices'] = selected_devices
+            await state.set_data(data)
 
         await callback.message.edit_text(
             texts.SELECT_DEVICES,
-            reply_markup=get_devices_keyboard(selected_devices, db_user.language),
+            reply_markup=get_devices_keyboard(selected_devices, db_user.language, min_devices=min_devices),
         )
         await state.set_state(SubscriptionStates.selecting_devices)
         await callback.answer()
@@ -2002,13 +2023,25 @@ async def select_devices(callback: types.CallbackQuery, state: FSMContext, db_us
 
     previous_devices = data.get('devices', settings.DEFAULT_DEVICE_LIMIT)
 
+    # Проверяем реально подключённые устройства — нельзя выбрать меньше
+    connected = await _get_connected_devices_count(db_user)
+    min_devices = max(settings.DEFAULT_DEVICE_LIMIT, connected)
+    if devices < min_devices:
+        await callback.answer(
+            f'⚠️ У вас подключено {connected} устройств. Сначала отключите лишние.',
+            show_alert=True,
+        )
+        return
+
     data['devices'] = devices
     data['total_price'] = base_price + countries_price + devices_price
     await state.set_data(data)
 
     if devices != previous_devices:
         try:
-            await callback.message.edit_reply_markup(reply_markup=get_devices_keyboard(devices, db_user.language))
+            await callback.message.edit_reply_markup(
+                reply_markup=get_devices_keyboard(devices, db_user.language, min_devices=min_devices)
+            )
         except TelegramBadRequest as error:
             if 'message is not modified' in str(error).lower():
                 logger.debug('ℹ️ Пропускаем обновление клавиатуры устройств: содержимое не изменилось')

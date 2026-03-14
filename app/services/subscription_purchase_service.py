@@ -454,6 +454,20 @@ class MiniAppSubscriptionPurchaseService:
                 effective_device_limit = max(1, effective_device_limit - 1)
             default_devices = max(default_devices, effective_device_limit)
 
+        # Минимум = реально подключённые устройства из Remnawave
+        min_devices_connected = settings.DEFAULT_DEVICE_LIMIT
+        remnawave_uuid = getattr(user, 'remnawave_uuid', None)
+        if remnawave_uuid:
+            try:
+                from app.external.remnawave_api import RemnaWaveAPI
+
+                async with RemnaWaveAPI() as api:
+                    devices_data = await api.get_user_devices(remnawave_uuid)
+                    connected_count = int(devices_data.get('total', 0))
+                    min_devices_connected = max(settings.DEFAULT_DEVICE_LIMIT, connected_count)
+            except Exception:
+                pass
+
         fixed_traffic_value = None
         if settings.is_traffic_fixed():
             fixed_traffic_value = settings.get_fixed_traffic_limit()
@@ -499,6 +513,7 @@ class MiniAppSubscriptionPurchaseService:
                 texts,
                 period_days,
                 default_devices,
+                min_devices_connected,
             )
 
             period_config = PurchasePeriodConfig(
@@ -673,6 +688,7 @@ class MiniAppSubscriptionPurchaseService:
         texts,
         period_days: int,
         default_devices: int,
+        min_devices: int | None = None,
     ) -> PurchaseDevicesConfig:
         discount_percent = user.get_promo_discount('devices', period_days)
         unit_price = settings.PRICE_PER_DEVICE
@@ -688,8 +704,10 @@ class MiniAppSubscriptionPurchaseService:
         else:
             maximum = max(default_devices, settings.DEFAULT_DEVICE_LIMIT) + 10
 
+        effective_minimum = max(settings.DEFAULT_DEVICE_LIMIT, min_devices or settings.DEFAULT_DEVICE_LIMIT)
+
         return PurchaseDevicesConfig(
-            minimum=settings.DEFAULT_DEVICE_LIMIT,
+            minimum=effective_minimum,
             maximum=maximum,
             default=default_devices,
             current=default_devices,
