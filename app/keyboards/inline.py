@@ -1441,11 +1441,13 @@ def get_countries_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def get_devices_keyboard(current: int, language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
+def get_devices_keyboard(
+    current: int, language: str = DEFAULT_LANGUAGE, min_devices: int | None = None
+) -> InlineKeyboardMarkup:
     texts = get_texts(language)
     keyboard = []
 
-    start_devices = settings.DEFAULT_DEVICE_LIMIT
+    start_devices = max(settings.DEFAULT_DEVICE_LIMIT, min_devices or settings.DEFAULT_DEVICE_LIMIT)
     max_devices = settings.MAX_DEVICES_LIMIT if settings.MAX_DEVICES_LIMIT > 0 else 50
     end_devices = min(max_devices + 1, start_devices + 10)
 
