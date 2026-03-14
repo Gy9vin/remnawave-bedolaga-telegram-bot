@@ -60,26 +60,30 @@ logger = structlog.get_logger(__name__)
 
 
 async def _get_connected_devices_count(user: User) -> int:
-    """Получить реальное количество подключённых устройств из Remnawave.
+    """Получить эффективное минимальное кол-во устройств для принудительного лимита.
 
-    При ошибке возвращает текущий device_limit подписки как безопасный fallback,
-    чтобы нельзя было уменьшить лимит при недоступности Remnawave API.
+    Возвращает min(connected_in_remnawave, current_device_limit) — это не даёт
+    stale-данным из Remnawave завысить минимум выше текущего device_limit.
+
+    Пример: device_limit=1, Remnawave stale=3 → возвращает min(3,1)=1.
+    Пример: device_limit=5, connected=3 → возвращает min(3,5)=3.
     """
+    sub = getattr(user, 'subscription', None)
+    current_limit = int(getattr(sub, 'device_limit', 0) or 0)
+
     remnawave_uuid = getattr(user, 'remnawave_uuid', None)
     if not remnawave_uuid:
-        # Fallback to subscription.device_limit if no UUID
-        sub = getattr(user, 'subscription', None)
-        return int(getattr(sub, 'device_limit', 0) or 0)
+        return 0
     try:
         from app.external.remnawave_api import RemnaWaveAPI
 
         async with RemnaWaveAPI() as api:
             data = await api.get_user_devices(remnawave_uuid)
-            return int(data.get('total', 0))
+            connected_count = int(data.get('total', 0))
+            # Ограничиваем stale-данные текущим device_limit
+            return min(connected_count, current_limit) if current_limit > 0 else connected_count
     except Exception:
-        # При ошибке API — fallback к текущему device_limit подписки
-        sub = getattr(user, 'subscription', None)
-        return int(getattr(sub, 'device_limit', 0) or 0)
+        return 0
 
 
 def _serialize_markup(markup: InlineKeyboardMarkup | None) -> Any | None:
