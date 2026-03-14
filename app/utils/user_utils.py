@@ -20,7 +20,6 @@ def format_referrer_info(user: User) -> str:
     Пытается получить данные реферера, но при ошибке lazy loading
     (MissingGreenlet) безопасно возвращает только ID.
     """
-    from sqlalchemy.exc import MissingGreenlet
 
     referred_by_id = getattr(user, 'referred_by_id', None)
 
@@ -28,7 +27,9 @@ def format_referrer_info(user: User) -> str:
         return 'Нет'
 
     try:
-        # Пытаемся получить referrer relationship
+        # Проверяем, является ли referrer обычным объектом или InstrumentedList
+        # getattr default does NOT catch MissingGreenlet (not an AttributeError),
+        # so we wrap in try/except to handle lazy-load failures in async context.
         referrer = getattr(user, 'referrer', None)
 
         if referrer is None:
@@ -46,10 +47,9 @@ def format_referrer_info(user: User) -> str:
 
         return f'ID {referred_by_id}'
 
-    except MissingGreenlet:
-        # Lazy loading вне async контекста — возвращаем только ID
-        return f'ID {referred_by_id}'
-    except (AttributeError, TypeError):
+    except Exception:
+        # MissingGreenlet is not a subclass of AttributeError/TypeError,
+        # so we must catch broadly to handle lazy-load failures in async context.
         return f'ID {referred_by_id}'
 
 
