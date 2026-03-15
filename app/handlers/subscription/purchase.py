@@ -2494,18 +2494,42 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
             if should_update_devices and selected_devices < old_device_limit_bot:
                 if db_user.remnawave_uuid:
                     try:
-                        from app.external.remnawave_api import RemnaWaveAPI
-
-                        async with RemnaWaveAPI() as api:
-                            await api.reset_user_devices(db_user.remnawave_uuid)
+                        service = RemnaWaveService()
+                        async with service.get_api_client() as api:
+                            response = await api._make_request('GET', f'/api/hwid/devices/{db_user.remnawave_uuid}')
+                            devices_list = []
+                            if response and 'response' in response:
+                                devices_list = response['response'].get('devices', [])
+                            reset_count = 0
+                            for device in devices_list:
+                                device_hwid = device.get('hwid')
+                                if device_hwid:
+                                    try:
+                                        await api._make_request(
+                                            'POST',
+                                            '/api/hwid/devices/delete',
+                                            data={'userUuid': db_user.remnawave_uuid, 'hwid': device_hwid},
+                                        )
+                                        reset_count += 1
+                                    except Exception as del_err:
+                                        logger.error(
+                                            'Ошибка удаления HWID при покупке (бот)',
+                                            hwid=device_hwid,
+                                            error=del_err,
+                                        )
                         logger.info(
-                            'Сброшены устройства при уменьшении device_limit (бот)',
+                            'Сброшены HWID при уменьшении device_limit (бот)',
                             telegram_id=db_user.telegram_id,
                             old_limit=old_device_limit_bot,
                             new_limit=selected_devices,
+                            reset_count=reset_count,
                         )
                     except Exception as reset_error:
-                        logger.warning('Не удалось сбросить устройства', error=reset_error)
+                        logger.error(
+                            'Не удалось сбросить HWID (бот)',
+                            telegram_id=db_user.telegram_id,
+                            error=str(reset_error),
+                        )
 
         else:
             logger.info('Создаем новую подписку для пользователя', telegram_id=db_user.telegram_id)

@@ -1227,20 +1227,43 @@ class MiniAppSubscriptionPurchaseService:
                 remnawave_uuid = getattr(user, 'remnawave_uuid', None)
                 if remnawave_uuid:
                     try:
-                        from app.external.remnawave_api import RemnaWaveAPI
+                        from app.services.remnawave_service import RemnaWaveService
 
-                        async with RemnaWaveAPI() as api:
-                            await api.reset_user_devices(remnawave_uuid)
+                        service = RemnaWaveService()
+                        async with service.get_api_client() as api:
+                            response = await api._make_request('GET', f'/api/hwid/devices/{remnawave_uuid}')
+                            devices_list = []
+                            if response and 'response' in response:
+                                devices_list = response['response'].get('devices', [])
+                            reset_count = 0
+                            for device in devices_list:
+                                device_hwid = device.get('hwid')
+                                if device_hwid:
+                                    try:
+                                        await api._make_request(
+                                            'POST',
+                                            '/api/hwid/devices/delete',
+                                            data={'userUuid': remnawave_uuid, 'hwid': device_hwid},
+                                        )
+                                        reset_count += 1
+                                    except Exception as del_err:
+                                        logger.error(
+                                            'Ошибка удаления HWID при покупке',
+                                            hwid=device_hwid,
+                                            error=del_err,
+                                        )
                         logger.info(
-                            'Сброшены устройства при уменьшении device_limit',
+                            'Сброшены HWID при уменьшении device_limit (кабинет/сервис)',
                             user_id=user.id,
                             old_limit=old_device_limit,
                             new_limit=device_limit,
+                            reset_count=reset_count,
                         )
                     except Exception as reset_error:
-                        logger.warning(
-                            'Не удалось сбросить устройства после уменьшения лимита',
-                            error=reset_error,
+                        logger.error(
+                            'Не удалось сбросить HWID после уменьшения лимита',
+                            user_id=user.id,
+                            error=str(reset_error),
                         )
         else:
             # При новой подписке модем не может быть подключён, но на всякий случай
