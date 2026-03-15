@@ -454,35 +454,9 @@ class MiniAppSubscriptionPurchaseService:
                 effective_device_limit = max(1, effective_device_limit - 1)
             default_devices = max(default_devices, effective_device_limit)
 
-        # Минимум = min(реально подключённые, текущий device_limit)
-        # Логика: нельзя снизить лимит ниже кол-ва фактически подключённых устройств,
-        # но при этом stale-данные из Remnawave ограничены текущим device_limit.
-        # Пример: device_limit=1, Remnawave stale=3 → min(3,1)=1 → пользователь может продлить с 1.
-        # Пример: device_limit=5, connected=3 → min(3,5)=3 → нельзя снизить ниже 3.
-        current_device_limit = settings.DEFAULT_DEVICE_LIMIT
-        if subscription and not is_trial_subscription and getattr(subscription, 'device_limit', None):
-            current_device_limit = int(subscription.device_limit)
-        # При ошибке API — fallback к текущему device_limit (нельзя снизить без данных)
-        min_devices_connected = max(settings.DEFAULT_DEVICE_LIMIT, current_device_limit)
-        remnawave_uuid = getattr(user, 'remnawave_uuid', None)
-        if remnawave_uuid:
-            try:
-                from app.external.remnawave_api import RemnaWaveAPI
-
-                async with RemnaWaveAPI() as api:
-                    devices_data = await api.get_user_devices(remnawave_uuid)
-                    connected_count = int(devices_data.get('total', 0))
-                    # Ограничиваем stale-данные текущим device_limit
-                    effective_connected = min(connected_count, current_device_limit)
-                    min_devices_connected = max(settings.DEFAULT_DEVICE_LIMIT, effective_connected)
-            except Exception as e:
-                logger.warning(
-                    'Failed to fetch connected devices from Remnawave, using device_limit as fallback',
-                    user_id=user.id,
-                    error=str(e),
-                    remnawave_uuid=remnawave_uuid,
-                    fallback_min=min_devices_connected,
-                )
+        # Минимум устройств = DEFAULT_DEVICE_LIMIT.
+        # При уменьшении лимита HWID сбрасываются автоматически в submit_purchase/confirm_purchase.
+        min_devices_connected = settings.DEFAULT_DEVICE_LIMIT
 
         fixed_traffic_value = None
         if settings.is_traffic_fixed():
