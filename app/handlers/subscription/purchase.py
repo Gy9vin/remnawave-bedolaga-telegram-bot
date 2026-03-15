@@ -2447,7 +2447,6 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
             existing_subscription.is_trial = False
             existing_subscription.status = SubscriptionStatus.ACTIVE.value
             existing_subscription.traffic_limit_gb = final_traffic_gb if final_traffic_gb is not None else 0
-            old_device_limit_bot = existing_subscription.device_limit or settings.DEFAULT_DEVICE_LIMIT
             if should_update_devices:
                 existing_subscription.device_limit = selected_devices
             # Проверяем, что при обновлении существующей подписки есть хотя бы одна страна
@@ -2490,46 +2489,43 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
             await db.refresh(existing_subscription)
             subscription = existing_subscription
 
-            # Если лимит устройств уменьшился — сбрасываем все HWID в Remnawave
-            if should_update_devices and selected_devices < old_device_limit_bot:
-                if db_user.remnawave_uuid:
-                    try:
-                        service = RemnaWaveService()
-                        async with service.get_api_client() as api:
-                            response = await api._make_request('GET', f'/api/hwid/devices/{db_user.remnawave_uuid}')
-                            devices_list = []
-                            if response and 'response' in response:
-                                devices_list = response['response'].get('devices', [])
-                            reset_count = 0
-                            for device in devices_list:
-                                device_hwid = device.get('hwid')
-                                if device_hwid:
-                                    try:
-                                        await api._make_request(
-                                            'POST',
-                                            '/api/hwid/devices/delete',
-                                            data={'userUuid': db_user.remnawave_uuid, 'hwid': device_hwid},
-                                        )
-                                        reset_count += 1
-                                    except Exception as del_err:
-                                        logger.error(
-                                            'Ошибка удаления HWID при покупке (бот)',
-                                            hwid=device_hwid,
-                                            error=del_err,
-                                        )
-                        logger.info(
-                            'Сброшены HWID при уменьшении device_limit (бот)',
-                            telegram_id=db_user.telegram_id,
-                            old_limit=old_device_limit_bot,
-                            new_limit=selected_devices,
-                            reset_count=reset_count,
-                        )
-                    except Exception as reset_error:
-                        logger.error(
-                            'Не удалось сбросить HWID (бот)',
-                            telegram_id=db_user.telegram_id,
-                            error=str(reset_error),
-                        )
+            # При любом продлении сбрасываем все HWID — пользователь переподключится заново
+            if db_user.remnawave_uuid:
+                try:
+                    service = RemnaWaveService()
+                    async with service.get_api_client() as api:
+                        response = await api._make_request('GET', f'/api/hwid/devices/{db_user.remnawave_uuid}')
+                        devices_list = []
+                        if response and 'response' in response:
+                            devices_list = response['response'].get('devices', [])
+                        reset_count = 0
+                        for device in devices_list:
+                            device_hwid = device.get('hwid')
+                            if device_hwid:
+                                try:
+                                    await api._make_request(
+                                        'POST',
+                                        '/api/hwid/devices/delete',
+                                        data={'userUuid': db_user.remnawave_uuid, 'hwid': device_hwid},
+                                    )
+                                    reset_count += 1
+                                except Exception as del_err:
+                                    logger.error(
+                                        'Ошибка удаления HWID при покупке (бот)',
+                                        hwid=device_hwid,
+                                        error=del_err,
+                                    )
+                    logger.info(
+                        'Сброшены HWID при продлении (бот)',
+                        telegram_id=db_user.telegram_id,
+                        reset_count=reset_count,
+                    )
+                except Exception as reset_error:
+                    logger.error(
+                        'Не удалось сбросить HWID (бот)',
+                        telegram_id=db_user.telegram_id,
+                        error=str(reset_error),
+                    )
 
         else:
             logger.info('Создаем новую подписку для пользователя', telegram_id=db_user.telegram_id)
