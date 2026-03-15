@@ -416,8 +416,45 @@ class SubscriptionRenewalService:
             subscription_before.end_date is not None and subscription_before.end_date <= now
         )
 
+        # Если подписка является триальной — нужно передать параметры тарифа,
+        # чтобы extend_subscription корректно сбросил is_trial и обновил трафик/сквады.
+        # Без этого триальные значения traffic_limit_gb и connected_squads остаются
+        # в БД и улетают в RemnaWave при вызове update_remnawave_user.
+        _trial_tariff_id: int | None = None
+        _trial_traffic_gb: int | None = None
+        _trial_squads: list[str] | None = None
+        if subscription_before.is_trial and subscription_before.tariff_id is not None:
+            try:
+                from sqlalchemy import select as _sa_select
+
+                from app.database.models import Tariff as _Tariff
+
+                _tariff_row = await db.execute(_sa_select(_Tariff).where(_Tariff.id == subscription_before.tariff_id))
+                _tariff = _tariff_row.scalar_one_or_none()
+                if _tariff is not None:
+                    _trial_tariff_id = _tariff.id
+                    _trial_traffic_gb = _tariff.traffic_limit_gb
+                    # Передаём список сквадов всегда (даже пустой), чтобы
+                    # extend_subscription гарантированно очистил триальные сквады.
+                    _trial_squads = list(_tariff.allowed_squads or [])
+                    logger.info(
+                        '🎓 Триальная подписка → передаём параметры тарифа в extend_subscription',
+                        tariff_id=_trial_tariff_id,
+                        traffic_limit_gb=_trial_traffic_gb,
+                        squads=_trial_squads,
+                    )
+            except Exception as _e:
+                logger.warning('Не удалось загрузить тариф для триальной подписки', error=_e)
+
         try:
-            subscription_after = await extend_subscription(db, subscription_before, period_days)
+            subscription_after = await extend_subscription(
+                db,
+                subscription_before,
+                period_days,
+                tariff_id=_trial_tariff_id,
+                traffic_limit_gb=_trial_traffic_gb,
+                connected_squads=_trial_squads,
+            )
         except Exception:
             # Session may be in a failed state after a broken commit — rollback first
             await db.rollback()
