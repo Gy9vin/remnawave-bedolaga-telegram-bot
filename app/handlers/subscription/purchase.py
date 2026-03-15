@@ -2491,6 +2491,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
             subscription = existing_subscription
 
             # Сбрасываем HWID только при уменьшении лимита устройств
+            hwid_was_reset = False
             if db_user.remnawave_uuid and should_update_devices and selected_devices < old_device_limit_bot:
                 try:
                     service = RemnaWaveService()
@@ -2516,6 +2517,8 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                                         hwid=device_hwid,
                                         error=del_err,
                                     )
+                    if reset_count > 0:
+                        hwid_was_reset = True
                     logger.info(
                         'Сброшены HWID при уменьшении device_limit (бот)',
                         telegram_id=db_user.telegram_id,
@@ -2531,6 +2534,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                     )
 
         else:
+            hwid_was_reset = False
             logger.info('Создаем новую подписку для пользователя', telegram_id=db_user.telegram_id)
             default_device_limit = getattr(settings, 'DEFAULT_DEVICE_LIMIT', 1)
             resolved_device_limit = selected_devices
@@ -2690,6 +2694,12 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
 
             if discount_note:
                 success_text = f'{success_text}\n\n{discount_note}'
+
+            if hwid_was_reset:
+                success_text += '\n\n' + texts.t(
+                    'HWID_RESET_ON_PURCHASE_NOTICE',
+                    '🔄 <b>Привязки устройств сброшены.</b>\nОткройте приложение (Happ / v2rayTun) и нажмите <b>Обновить</b>.',
+                )
 
             connect_mode = settings.CONNECT_BUTTON_MODE
 

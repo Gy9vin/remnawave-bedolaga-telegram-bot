@@ -1826,6 +1826,30 @@ async def submit_purchase(
 
         subscription = result['subscription']
 
+        # Уведомить пользователя в Telegram о сбросе HWID
+        if result.get('hwid_was_reset') and user.telegram_id:
+            try:
+                from aiogram import Bot
+                from aiogram.client.default import DefaultBotProperties
+                from aiogram.enums import ParseMode
+
+                from app.localization.texts import get_texts as _get_texts
+
+                _texts = _get_texts(getattr(user, 'language', 'ru'))
+                _notify_text = _texts.t(
+                    'HWID_RESET_ON_PURCHASE_NOTIFY',
+                    '🔄 <b>Привязки устройств сброшены.</b>\n'
+                    'Откройте приложение (Happ / v2rayTun) и нажмите <b>Обновить</b>.',
+                )
+                _bot = Bot(
+                    token=settings.BOT_TOKEN,
+                    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+                )
+                async with _bot:
+                    await _bot.send_message(chat_id=user.telegram_id, text=_notify_text)
+            except Exception as _notify_err:
+                logger.warning(f'Failed to send HWID reset notification: {_notify_err}')
+
         # Send email notification for email-only users
         if not user.telegram_id and user.email and user.email_verified:
             try:

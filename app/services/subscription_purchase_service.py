@@ -1222,6 +1222,7 @@ class MiniAppSubscriptionPurchaseService:
             await db.refresh(subscription)
 
             # Сбрасываем HWID только при уменьшении лимита устройств
+            hwid_was_reset = False
             remnawave_uuid = getattr(user, 'remnawave_uuid', None)
             if remnawave_uuid and device_limit < old_device_limit:
                 try:
@@ -1250,6 +1251,8 @@ class MiniAppSubscriptionPurchaseService:
                                         hwid=device_hwid,
                                         error=del_err,
                                     )
+                    if reset_count > 0:
+                        hwid_was_reset = True
                     logger.info(
                         'Сброшены HWID при уменьшении device_limit (кабинет/сервис)',
                         user_id=user.id,
@@ -1341,6 +1344,7 @@ class MiniAppSubscriptionPurchaseService:
             'transaction': transaction,
             'was_trial_conversion': was_trial_conversion,
             'message': message,
+            'hwid_was_reset': hwid_was_reset,
         }
 
 
