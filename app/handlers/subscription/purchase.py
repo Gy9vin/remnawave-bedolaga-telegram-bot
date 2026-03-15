@@ -1976,16 +1976,10 @@ async def select_period(callback: types.CallbackQuery, state: FSMContext, db_use
 
     if settings.is_devices_selection_enabled():
         selected_devices = data.get('devices', settings.DEFAULT_DEVICE_LIMIT)
-        min_devices = await _get_connected_devices_count(db_user)
-        min_devices = max(settings.DEFAULT_DEVICE_LIMIT, min_devices)
-        if selected_devices < min_devices:
-            selected_devices = min_devices
-            data['devices'] = selected_devices
-            await state.set_data(data)
 
         await callback.message.edit_text(
             texts.SELECT_DEVICES,
-            reply_markup=get_devices_keyboard(selected_devices, db_user.language, min_devices=min_devices),
+            reply_markup=get_devices_keyboard(selected_devices, db_user.language),
         )
         await state.set_state(SubscriptionStates.selecting_devices)
         await callback.answer()
@@ -2036,25 +2030,13 @@ async def select_devices(callback: types.CallbackQuery, state: FSMContext, db_us
 
     previous_devices = data.get('devices', settings.DEFAULT_DEVICE_LIMIT)
 
-    # Проверяем реально подключённые устройства — нельзя выбрать меньше
-    connected = await _get_connected_devices_count(db_user)
-    min_devices = max(settings.DEFAULT_DEVICE_LIMIT, connected)
-    if devices < min_devices:
-        await callback.answer(
-            f'⚠️ У вас подключено {connected} устройств. Сначала отключите лишние.',
-            show_alert=True,
-        )
-        return
-
     data['devices'] = devices
     data['total_price'] = base_price + countries_price + devices_price
     await state.set_data(data)
 
     if devices != previous_devices:
         try:
-            await callback.message.edit_reply_markup(
-                reply_markup=get_devices_keyboard(devices, db_user.language, min_devices=min_devices)
-            )
+            await callback.message.edit_reply_markup(reply_markup=get_devices_keyboard(devices, db_user.language))
         except TelegramBadRequest as error:
             if 'message is not modified' in str(error).lower():
                 logger.debug('ℹ️ Пропускаем обновление клавиатуры устройств: содержимое не изменилось')
