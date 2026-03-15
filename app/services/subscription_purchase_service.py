@@ -1230,6 +1230,7 @@ class MiniAppSubscriptionPurchaseService:
             device_limit = pricing.selection.devices
             if getattr(subscription, 'modem_enabled', False):
                 device_limit += 1
+            old_device_limit = subscription.device_limit or settings.DEFAULT_DEVICE_LIMIT
             subscription.device_limit = device_limit
             subscription.connected_squads = pricing.selection.servers
 
@@ -1245,6 +1246,28 @@ class MiniAppSubscriptionPurchaseService:
 
             await db.commit()
             await db.refresh(subscription)
+
+            # Если лимит устройств уменьшился — сбрасываем все HWID в Remnawave,
+            # чтобы пользователь переподключился с новым количеством устройств
+            if device_limit < old_device_limit:
+                remnawave_uuid = getattr(user, 'remnawave_uuid', None)
+                if remnawave_uuid:
+                    try:
+                        from app.external.remnawave_api import RemnaWaveAPI
+
+                        async with RemnaWaveAPI() as api:
+                            await api.reset_user_devices(remnawave_uuid)
+                        logger.info(
+                            'Сброшены устройства при уменьшении device_limit',
+                            user_id=user.id,
+                            old_limit=old_device_limit,
+                            new_limit=device_limit,
+                        )
+                    except Exception as reset_error:
+                        logger.warning(
+                            'Не удалось сбросить устройства после уменьшения лимита',
+                            error=reset_error,
+                        )
         else:
             # При новой подписке модем не может быть подключён, но на всякий случай
             new_device_limit = pricing.selection.devices
