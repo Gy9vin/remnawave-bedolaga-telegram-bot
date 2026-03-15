@@ -1204,6 +1204,7 @@ class MiniAppSubscriptionPurchaseService:
             device_limit = pricing.selection.devices
             if getattr(subscription, 'modem_enabled', False):
                 device_limit += 1
+            old_device_limit = subscription.device_limit or settings.DEFAULT_DEVICE_LIMIT
             subscription.device_limit = device_limit
             subscription.connected_squads = pricing.selection.servers
 
@@ -1220,9 +1221,9 @@ class MiniAppSubscriptionPurchaseService:
             await db.commit()
             await db.refresh(subscription)
 
-            # При любом продлении/покупке сбрасываем все HWID — пользователь переподключится заново
+            # Сбрасываем HWID только при уменьшении лимита устройств
             remnawave_uuid = getattr(user, 'remnawave_uuid', None)
-            if remnawave_uuid:
+            if remnawave_uuid and device_limit < old_device_limit:
                 try:
                     from app.services.remnawave_service import RemnaWaveService
 
@@ -1250,13 +1251,15 @@ class MiniAppSubscriptionPurchaseService:
                                         error=del_err,
                                     )
                     logger.info(
-                        'Сброшены HWID при продлении/покупке (кабинет/сервис)',
+                        'Сброшены HWID при уменьшении device_limit (кабинет/сервис)',
                         user_id=user.id,
+                        old_limit=old_device_limit,
+                        new_limit=device_limit,
                         reset_count=reset_count,
                     )
                 except Exception as reset_error:
                     logger.error(
-                        'Не удалось сбросить HWID при покупке',
+                        'Не удалось сбросить HWID при уменьшении лимита',
                         user_id=user.id,
                         error=str(reset_error),
                     )

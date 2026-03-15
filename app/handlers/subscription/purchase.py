@@ -2447,6 +2447,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
             existing_subscription.is_trial = False
             existing_subscription.status = SubscriptionStatus.ACTIVE.value
             existing_subscription.traffic_limit_gb = final_traffic_gb if final_traffic_gb is not None else 0
+            old_device_limit_bot = existing_subscription.device_limit or settings.DEFAULT_DEVICE_LIMIT
             if should_update_devices:
                 existing_subscription.device_limit = selected_devices
             # Проверяем, что при обновлении существующей подписки есть хотя бы одна страна
@@ -2489,8 +2490,8 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
             await db.refresh(existing_subscription)
             subscription = existing_subscription
 
-            # При любом продлении сбрасываем все HWID — пользователь переподключится заново
-            if db_user.remnawave_uuid:
+            # Сбрасываем HWID только при уменьшении лимита устройств
+            if db_user.remnawave_uuid and should_update_devices and selected_devices < old_device_limit_bot:
                 try:
                     service = RemnaWaveService()
                     async with service.get_api_client() as api:
@@ -2516,8 +2517,10 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                                         error=del_err,
                                     )
                     logger.info(
-                        'Сброшены HWID при продлении (бот)',
+                        'Сброшены HWID при уменьшении device_limit (бот)',
                         telegram_id=db_user.telegram_id,
+                        old_limit=old_device_limit_bot,
+                        new_limit=selected_devices,
                         reset_count=reset_count,
                     )
                 except Exception as reset_error:
