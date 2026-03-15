@@ -416,35 +416,48 @@ class SubscriptionRenewalService:
             subscription_before.end_date is not None and subscription_before.end_date <= now
         )
 
-        # Если подписка является триальной — нужно передать параметры тарифа,
+        # Если подписка является триальной — нужно передать правильные paid-параметры,
         # чтобы extend_subscription корректно сбросил is_trial и обновил трафик/сквады.
         # Без этого триальные значения traffic_limit_gb и connected_squads остаются
         # в БД и улетают в RemnaWave при вызове update_remnawave_user.
         _trial_tariff_id: int | None = None
         _trial_traffic_gb: int | None = None
         _trial_squads: list[str] | None = None
-        if subscription_before.is_trial and subscription_before.tariff_id is not None:
-            try:
-                from sqlalchemy import select as _sa_select
+        if subscription_before.is_trial:
+            if subscription_before.tariff_id is not None:
+                # Тарифный режим: загружаем параметры из тарифа
+                try:
+                    from sqlalchemy import select as _sa_select
 
-                from app.database.models import Tariff as _Tariff
+                    from app.database.models import Tariff as _Tariff
 
-                _tariff_row = await db.execute(_sa_select(_Tariff).where(_Tariff.id == subscription_before.tariff_id))
-                _tariff = _tariff_row.scalar_one_or_none()
-                if _tariff is not None:
-                    _trial_tariff_id = _tariff.id
-                    _trial_traffic_gb = _tariff.traffic_limit_gb
-                    # Передаём список сквадов всегда (даже пустой), чтобы
-                    # extend_subscription гарантированно очистил триальные сквады.
-                    _trial_squads = list(_tariff.allowed_squads or [])
-                    logger.info(
-                        '🎓 Триальная подписка → передаём параметры тарифа в extend_subscription',
-                        tariff_id=_trial_tariff_id,
-                        traffic_limit_gb=_trial_traffic_gb,
-                        squads=_trial_squads,
+                    _tariff_row = await db.execute(
+                        _sa_select(_Tariff).where(_Tariff.id == subscription_before.tariff_id)
                     )
-            except Exception as _e:
-                logger.warning('Не удалось загрузить тариф для триальной подписки', error=_e)
+                    _tariff = _tariff_row.scalar_one_or_none()
+                    if _tariff is not None:
+                        _trial_tariff_id = _tariff.id
+                        _trial_traffic_gb = _tariff.traffic_limit_gb
+                        _trial_squads = list(_tariff.allowed_squads or [])
+                        logger.info(
+                            '🎓 Триал (тарифный) → передаём параметры тарифа в extend_subscription',
+                            tariff_id=_trial_tariff_id,
+                            traffic_limit_gb=_trial_traffic_gb,
+                            squads=_trial_squads,
+                        )
+                except Exception as _e:
+                    logger.warning('Не удалось загрузить тариф для триальной подписки', error=_e)
+            else:
+                # Классический режим: берём paid-значения из настроек
+                _trial_traffic_gb = settings.DEFAULT_TRAFFIC_LIMIT_GB
+                _trial_squads = (
+                    [settings.SIMPLE_SUBSCRIPTION_SQUAD_UUID] if settings.SIMPLE_SUBSCRIPTION_SQUAD_UUID else []
+                )
+                logger.info(
+                    '🎓 Триал (классический) → сбрасываем на paid-значения из настроек',
+                    traffic_limit_gb=_trial_traffic_gb,
+                    squads=_trial_squads,
+                )
 
         try:
             subscription_after = await extend_subscription(

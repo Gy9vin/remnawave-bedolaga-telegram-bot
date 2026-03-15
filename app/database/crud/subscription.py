@@ -480,6 +480,13 @@ async def extend_subscription(
         )
     elif days > 0 and subscription.status == SubscriptionStatus.TRIAL.value:
         subscription.status = SubscriptionStatus.ACTIVE.value
+        # Сбрасываем is_trial независимо от наличия tariff_id —
+        # иначе классические триалы (tariff_id=None) никогда не конвертировались
+        if subscription.is_trial:
+            subscription.is_trial = False
+            logger.info(
+                '🎓 Подписка конвертирована из триала в платную (классический режим)', subscription_id=subscription.id
+            )
         logger.info('🔄 Статус подписки изменён с trial на ACTIVE', subscription_id=subscription.id)
     elif days > 0 and subscription.status == SubscriptionStatus.PENDING.value:
         logger.warning('⚠️ Попытка продлить PENDING подписку , дни', subscription_id=subscription.id, days=days)
