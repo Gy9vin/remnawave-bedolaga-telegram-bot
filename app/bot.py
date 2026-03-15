@@ -31,6 +31,7 @@ from app.handlers.admin import (
     contests as admin_contests,
     daily_contests as admin_daily_contests,
     faq as admin_faq,
+    happ_management as admin_happ_management,
     main as admin_main,
     maintenance as admin_maintenance,
     messages as admin_messages,
@@ -199,6 +200,7 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     admin_bulk_ban.register_bulk_ban_handlers(dp)
     admin_blacklist.register_blacklist_handlers(dp)
     admin_blocked_users.register_handlers(dp)
+    admin_happ_management.register_handlers(dp)
     admin_required_channels.register_handlers(dp)
     register_channel_member_handlers(dp)
     register_gift_activation_handlers(dp)

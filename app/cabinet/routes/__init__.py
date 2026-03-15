@@ -11,6 +11,7 @@ from .admin_button_styles import router as admin_button_styles_router
 from .admin_campaigns import router as admin_campaigns_router
 from .admin_channels import router as admin_channels_router
 from .admin_email_templates import router as admin_email_templates_router
+from .admin_happ_management import router as admin_happ_management_router
 from .admin_landings import router as admin_landings_router
 from .admin_menu_layout import router as admin_menu_layout_router
 from .admin_partners import router as admin_partners_router
@@ -97,6 +98,7 @@ router.include_router(gift_router)
 router.include_router(admin_ticket_notifications_router)
 router.include_router(admin_tickets_router)
 router.include_router(admin_settings_router)
+router.include_router(admin_happ_management_router)
 router.include_router(admin_wheel_router)
 router.include_router(admin_tariffs_router)
 router.include_router(admin_servers_router)

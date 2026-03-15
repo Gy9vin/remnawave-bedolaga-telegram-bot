@@ -257,6 +257,11 @@ ignore = [
     'INP001',
     'S101',
 ]
+'app/services/happ_management/**/*.py' = [
+    'PTH',
+    'PLW0602',
+    'B905',
+]
 '*.py' = [
     'INP001',
 ]

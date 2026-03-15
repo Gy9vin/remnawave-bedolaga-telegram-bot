@@ -238,6 +238,12 @@ def get_admin_settings_submenu_keyboard(language: str = 'ru') -> InlineKeyboardM
                     callback_data='admin_remna_config',
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text=_t(texts, 'ADMIN_HAPP_MANAGEMENT', '📡 Happ Management'),
+                    callback_data='happ_main',
+                )
+            ],
             [InlineKeyboardButton(text=texts.BACK, callback_data='admin_panel')],
         ]
     )
