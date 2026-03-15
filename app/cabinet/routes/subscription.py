@@ -3840,9 +3840,9 @@ async def reduce_devices(
             detail=f'Cannot reduce below minimum device limit ({min_device_limit}) for your tariff',
         )
 
-    # Get connected devices and remove excess (last connected ones)
-    connected_devices_count = 0
+    # При уменьшении лимита - сбросить ВСЕ привязанные устройства
     devices_removed_count = 0
+    hwid_reset_done = False
     if user.remnawave_uuid:
         try:
             service = RemnaWaveService()
@@ -3850,35 +3850,22 @@ async def reduce_devices(
                 response = await api._make_request('GET', f'/api/hwid/devices/{user.remnawave_uuid}')
                 if response and 'response' in response:
                     devices_list = response['response'].get('devices', [])
-                    connected_devices_count = len(devices_list)
-
-                    # If connected devices exceed new limit, remove excess (last connected)
-                    if connected_devices_count > new_device_limit:
-                        devices_to_remove = connected_devices_count - new_device_limit
+                    for device in devices_list:
+                        device_hwid = device.get('hwid')
+                        if device_hwid:
+                            try:
+                                delete_data = {'userUuid': user.remnawave_uuid, 'hwid': device_hwid}
+                                await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+                                devices_removed_count += 1
+                            except Exception as del_error:
+                                logger.error(f'Error removing device {device_hwid}: {del_error}')
+                    if devices_removed_count > 0:
+                        hwid_reset_done = True
                         logger.info(
-                            f'Removing {devices_to_remove} excess devices for user {user.id}: '
-                            f'had {connected_devices_count}, new limit {new_device_limit}'
+                            f'Reset all HWID ({devices_removed_count}) for user {user.id} on device limit reduction'
                         )
-
-                        # Sort by date (oldest first) and remove the last ones
-                        sorted_devices = sorted(
-                            devices_list,
-                            key=lambda d: d.get('updatedAt') or d.get('createdAt') or '',
-                        )
-                        devices_to_delete = sorted_devices[-devices_to_remove:]
-
-                        for device in devices_to_delete:
-                            device_hwid = device.get('hwid')
-                            if device_hwid:
-                                try:
-                                    delete_data = {'userUuid': user.remnawave_uuid, 'hwid': device_hwid}
-                                    await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
-                                    devices_removed_count += 1
-                                    logger.info(f'Removed device {device_hwid} for user {user.id}')
-                                except Exception as del_error:
-                                    logger.error(f'Error removing device {device_hwid}: {del_error}')
         except Exception as e:
-            logger.error(f'Error checking/removing devices: {e}')
+            logger.error(f'Error resetting devices: {e}')
 
     old_device_limit = current_device_limit
 
@@ -3896,16 +3883,42 @@ async def reduce_devices(
 
     logger.info(
         f'User {user.id} reduced device limit from {old_device_limit} to {new_device_limit}'
-        + (f' (removed {devices_removed_count} devices)' if devices_removed_count > 0 else '')
+        + (f' (reset {devices_removed_count} devices)' if devices_removed_count > 0 else '')
     )
+
+    # Уведомить пользователя в Telegram если сбросили HWID
+    if hwid_reset_done and user.telegram_id:
+        try:
+            from aiogram import Bot
+            from aiogram.client.default import DefaultBotProperties
+            from aiogram.enums import ParseMode
+
+            from app.localization.texts import get_texts
+
+            texts = get_texts(getattr(user, 'language', 'ru'))
+            notify_text = texts.t(
+                'DEVICE_REDUCE_HWID_RESET_NOTIFY',
+                '📱 <b>Лимит устройств уменьшен до {new}</b>\n\n'
+                '🔄 Все привязки устройств сброшены.\n'
+                'Откройте приложение (Happ / v2rayTun) и нажмите <b>Обновить</b>.',
+            ).format(new=new_device_limit)
+            _bot = Bot(
+                token=settings.BOT_TOKEN,
+                default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            )
+            async with _bot:
+                await _bot.send_message(chat_id=user.telegram_id, text=notify_text)
+        except Exception as notify_err:
+            logger.warning(f'Failed to send HWID reset notification to user {user.id}: {notify_err}')
 
     return {
         'success': True,
         'message': 'Device limit reduced successfully'
-        + (f' ({devices_removed_count} devices removed)' if devices_removed_count > 0 else ''),
+        + (f' ({devices_removed_count} devices reset)' if devices_removed_count > 0 else ''),
         'old_device_limit': old_device_limit,
         'new_device_limit': new_device_limit,
         'devices_removed': devices_removed_count,
+        'hwid_reset': hwid_reset_done,
     }
 
 

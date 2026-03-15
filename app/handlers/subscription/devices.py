@@ -618,8 +618,9 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
         if db_user.remnawave_uuid and subscription.status == 'active':
             await subscription_service.enable_remnawave_user(db_user.remnawave_uuid)
 
-        # При уменьшении лимита - удалить лишние устройства (последние подключённые)
+        # При уменьшении лимита - сбросить ВСЕ привязанные устройства
         devices_reset_count = 0
+        hwid_reset_done = False
         if new_devices_count < current_devices and db_user.remnawave_uuid:
             try:
                 service = RemnaWaveService()
@@ -627,39 +628,26 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
                     response = await api._make_request('GET', f'/api/hwid/devices/{db_user.remnawave_uuid}')
                     if response and 'response' in response:
                         devices_list = response['response'].get('devices', [])
-                        connected_count = len(devices_list)
-
-                        # Если подключённых устройств больше чем новый лимит - удалить лишние
-                        if connected_count > new_devices_count:
-                            devices_to_remove = connected_count - new_devices_count
+                        for device in devices_list:
+                            device_hwid = device.get('hwid')
+                            if device_hwid:
+                                try:
+                                    delete_data = {'userUuid': db_user.remnawave_uuid, 'hwid': device_hwid}
+                                    await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+                                    devices_reset_count += 1
+                                except Exception as del_error:
+                                    logger.error(
+                                        'Ошибка удаления устройства', device_hwid=device_hwid, del_error=del_error
+                                    )
+                        if devices_reset_count > 0:
+                            hwid_reset_done = True
                             logger.info(
-                                '🔧 Удаление лишних устройств при уменьшении лимита: подключено новый лимит удаляем',
-                                connected_count=connected_count,
-                                new_devices_count=new_devices_count,
-                                devices_to_remove=devices_to_remove,
+                                '✅ Сброшены все HWID при уменьшении лимита',
+                                telegram_id=db_user.telegram_id,
+                                devices_reset_count=devices_reset_count,
                             )
-
-                            # Сортируем по дате (последние в конце) и удаляем последние
-                            sorted_devices = sorted(
-                                devices_list,
-                                key=lambda d: d.get('updatedAt') or d.get('createdAt') or '',
-                            )
-                            devices_to_delete = sorted_devices[-devices_to_remove:]
-
-                            for device in devices_to_delete:
-                                device_hwid = device.get('hwid')
-                                if device_hwid:
-                                    try:
-                                        delete_data = {'userUuid': db_user.remnawave_uuid, 'hwid': device_hwid}
-                                        await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
-                                        devices_reset_count += 1
-                                        logger.info('✅ Удалено устройство', device_hwid=device_hwid)
-                                    except Exception as del_error:
-                                        logger.error(
-                                            'Ошибка удаления устройства', device_hwid=device_hwid, del_error=del_error
-                                        )
             except Exception as reset_error:
-                logger.error('Ошибка удаления устройств при уменьшении лимита', reset_error=reset_error)
+                logger.error('Ошибка сброса устройств при уменьшении лимита', reset_error=reset_error)
 
         await db.refresh(db_user)
         await db.refresh(subscription)
@@ -697,11 +685,11 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
                 'DEVICE_CHANGE_RESULT_LINE',
                 '📱 Было: {old} → Стало: {new}\n',
             ).format(old=current_devices, new=new_devices_count)
-            if devices_reset_count > 0:
+            if hwid_reset_done:
                 success_text += texts.t(
-                    'DEVICE_CHANGE_DEVICES_REMOVED',
-                    '\n🗑 Удалено устройств: {count}\n',
-                ).format(count=devices_reset_count)
+                    'DEVICE_CHANGE_HWID_RESET',
+                    '\n🔄 Все привязки устройств сброшены.\nОткройте приложение (Happ / v2rayTun) и нажмите <b>Обновить</b>.\n',
+                )
             success_text += texts.t(
                 'DEVICE_CHANGE_NO_REFUND_INFO',
                 'ℹ️ Возврат средств не производится',
