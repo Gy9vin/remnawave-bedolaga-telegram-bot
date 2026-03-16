@@ -215,7 +215,14 @@ async def _delete_remnawave_user_with_fallback(remnawave_uuid: str) -> None:
                     'RemnaWave пользователь деактивирован как fallback при мерже',
                     remnawave_uuid=remnawave_uuid,
                 )
-    except Exception:
+    except Exception as exc:
+        exc_str = str(exc).lower()
+        if '404' in exc_str or 'not found' in exc_str:
+            logger.info(
+                'RemnaWave пользователь не найден (404) при мерже — считаем уже удалённым',
+                remnawave_uuid=remnawave_uuid,
+            )
+            return
         logger.warning(
             'Не удалось удалить RemnaWave пользователя, пробуем disable',
             remnawave_uuid=remnawave_uuid,
@@ -228,7 +235,14 @@ async def _delete_remnawave_user_with_fallback(remnawave_uuid: str) -> None:
                     'RemnaWave пользователь деактивирован как fallback при мерже',
                     remnawave_uuid=remnawave_uuid,
                 )
-        except Exception:
+        except Exception as disable_exc:
+            disable_str = str(disable_exc).lower()
+            if '404' in disable_str or 'not found' in disable_str:
+                logger.info(
+                    'RemnaWave пользователь не найден (404) при disable — считаем уже удалённым',
+                    remnawave_uuid=remnawave_uuid,
+                )
+                return
             logger.error(
                 'Не удалось ни удалить, ни деактивировать RemnaWave пользователя',
                 remnawave_uuid=remnawave_uuid,
@@ -280,10 +294,12 @@ async def _handle_subscription_merge(
     if not has_primary_sub and has_secondary_sub:
         assert secondary_sub is not None
         secondary_sub.user_id = primary.id
-        # Переносим remnawave_uuid с secondary на primary
+        # Переносим remnawave_uuid с secondary на primary — двухфазно, чтобы не нарушить UNIQUE
         if secondary.remnawave_uuid:
-            primary.remnawave_uuid = secondary.remnawave_uuid
+            new_uuid = secondary.remnawave_uuid
             secondary.remnawave_uuid = None
+            await db.flush()  # Сначала освобождаем UUID у secondary
+            primary.remnawave_uuid = new_uuid
         await db.flush()
         logger.info(
             'Мерж подписок: перенесена подписка secondary на primary',
@@ -306,11 +322,13 @@ async def _handle_subscription_merge(
         await db.flush()
         # Переносим подписку secondary на primary
         secondary_sub.user_id = primary.id
-        # Переносим remnawave_uuid
+        # Переносим remnawave_uuid — двухфазно, чтобы не нарушить UNIQUE
         if secondary.remnawave_uuid:
-            primary.remnawave_uuid = secondary.remnawave_uuid
+            new_uuid = secondary.remnawave_uuid
             secondary.remnawave_uuid = None
-        # Flush сразу — гарантируем, что DELETE предшествует UPDATE (unique constraint на subscription.user_id)
+            await db.flush()  # Сначала освобождаем UUID у secondary
+            primary.remnawave_uuid = new_uuid
+        # Flush — гарантируем, что DELETE предшествует UPDATE (unique constraint на subscription.user_id)
         await db.flush()
         logger.info(
             'Мерж подписок: оставлена подписка secondary, подписка primary удалена',

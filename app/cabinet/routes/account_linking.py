@@ -842,7 +842,7 @@ async def execute_merge_endpoint(
         await db.commit()
     except ValueError as exc:
         await db.rollback()
-        await restore_merge_token(merge_token, consumed)
+        # ValueError = неисправимая ошибка (пользователь не найден/удалён) — токен не восстанавливаем
         logger.error('Merge execution failed (ValueError)', error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -850,7 +850,11 @@ async def execute_merge_endpoint(
         ) from exc
     except Exception as exc:
         await db.rollback()
-        await restore_merge_token(merge_token, consumed)
+        from sqlalchemy.exc import IntegrityError
+
+        # IntegrityError (UniqueViolation и пр.) — не временная ошибка, повтор не поможет
+        if not isinstance(exc, IntegrityError):
+            await restore_merge_token(merge_token, consumed)
         logger.exception('Merge execution failed')
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
