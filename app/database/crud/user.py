@@ -534,6 +534,7 @@ async def lock_user_for_pricing(db: AsyncSession, user_id: int) -> User:
         select(User)
         .where(User.id == user_id)
         .options(
+            selectinload(User.subscription).selectinload(Subscription.tariff),
             selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
             selectinload(User.promo_group),
         )

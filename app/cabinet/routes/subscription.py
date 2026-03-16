@@ -3950,7 +3950,21 @@ async def preview_tariff_switch(
             detail='Tariffs mode is not enabled',
         )
 
-    await db.refresh(user, ['subscription'])
+    # Перезагружаем пользователя со всеми нужными связями.
+    # db.refresh(user, ['subscription']) экспайрит ВСЕ атрибуты, что ломает
+    # user_promo_groups → MissingGreenlet при вызове get_primary_promo_group().
+    from sqlalchemy.orm import selectinload
+
+    refreshed = await db.execute(
+        select(User)
+        .options(
+            selectinload(User.subscription).selectinload(Subscription.tariff),
+            selectinload(User.user_promo_groups),
+            selectinload(User.promo_group),
+        )
+        .where(User.id == user.id)
+    )
+    user = refreshed.scalar_one()
 
     if not user.subscription or not user.subscription.tariff_id:
         raise HTTPException(
@@ -4069,7 +4083,21 @@ async def switch_tariff(
             detail='Tariffs mode is not enabled',
         )
 
-    await db.refresh(user, ['subscription'])
+    # Перезагружаем пользователя со всеми нужными связями.
+    # db.refresh(user, ['subscription']) экспайрит ВСЕ атрибуты, что ломает
+    # user_promo_groups → MissingGreenlet при вызове get_primary_promo_group().
+    from sqlalchemy.orm import selectinload
+
+    refreshed = await db.execute(
+        select(User)
+        .options(
+            selectinload(User.subscription).selectinload(Subscription.tariff),
+            selectinload(User.user_promo_groups),
+            selectinload(User.promo_group),
+        )
+        .where(User.id == user.id)
+    )
+    user = refreshed.scalar_one()
 
     if not user.subscription or not user.subscription.tariff_id:
         raise HTTPException(

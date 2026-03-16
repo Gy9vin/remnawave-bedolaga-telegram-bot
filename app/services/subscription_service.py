@@ -482,9 +482,9 @@ class SubscriptionService:
 
         except Exception as e:
             error_msg = str(e).lower()
-            # "User already disabled" - считаем успехом
-            if 'already disabled' in error_msg:
-                logger.info('✅ RemnaWave пользователь уже отключен', user_uuid=user_uuid)
+            # "User already disabled" или 404 — считаем успехом (идемпотентность)
+            if 'already disabled' in error_msg or '404' in error_msg or 'not found' in error_msg:
+                logger.info('✅ RemnaWave пользователь уже отключен/не найден', user_uuid=user_uuid)
                 return True
             logger.error('Ошибка отключения RemnaWave пользователя', error=e)
             return False
