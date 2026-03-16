@@ -368,9 +368,21 @@ async def renew_subscription(
             detail=validation_result.error_message or 'Продление подписки невозможно',
         )
 
-    await db.refresh(user, ['subscription'])
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
 
-    if not user.subscription:
+    from app.database.models import Subscription
+
+    refreshed = await db.execute(
+        select(User)
+        .options(
+            selectinload(User.subscription).selectinload(Subscription.tariff),
+        )
+        .where(User.id == user.id)
+    )
+    user = refreshed.scalar_one_or_none()
+
+    if not user or not user.subscription:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='No subscription found',
