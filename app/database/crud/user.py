@@ -814,11 +814,9 @@ async def get_users_list(
         if search.isdigit():
             try:
                 search_int = int(search)
-                # Добавляем условие поиска по telegram_id, который является BigInteger
-                # и может содержать большие значения, в отличие от User.id (INTEGER)
                 conditions.append(User.telegram_id == search_int)
+                conditions.append(User.id == search_int)
             except ValueError:
-                # Если не удалось преобразовать в int, просто ищем по текстовым полям
                 pass
 
         query = query.where(or_(*conditions))
@@ -900,11 +898,9 @@ async def get_users_count(
         if search.isdigit():
             try:
                 search_int = int(search)
-                # Добавляем условие поиска по telegram_id, который является BigInteger
-                # и может содержать большие значения, в отличие от User.id (INTEGER)
                 conditions.append(User.telegram_id == search_int)
+                conditions.append(User.id == search_int)
             except ValueError:
-                # Если не удалось преобразовать в int, просто ищем по текстовым полям
                 pass
 
         query = query.where(or_(*conditions))
