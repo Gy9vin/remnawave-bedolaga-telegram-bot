@@ -312,15 +312,14 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
                 )
 
             signature = request.headers.get('Crypto-Pay-API-Signature')
-            secret = settings.CRYPTOBOT_WEBHOOK_SECRET
-            if not secret:
-                logger.warning('CryptoBot webhook secret не настроен — проверка подписи пропущена')
-            elif not signature:
-                return JSONResponse(
-                    {'status': 'error', 'reason': 'missing_signature'},
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                )
-            else:
+            secret = settings.CRYPTOBOT_WEBHOOK_SECRET or settings.CRYPTOBOT_API_TOKEN
+            if secret:
+                if not signature:
+                    return JSONResponse(
+                        {'status': 'error', 'reason': 'missing_signature'},
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                    )
+
                 from app.external.cryptobot import CryptoBotService
 
                 if not CryptoBotService().verify_webhook_signature(payload_text, signature):
