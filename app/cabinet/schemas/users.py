@@ -198,6 +198,9 @@ class UserDetailResponse(BaseModel):
     restriction_subscription: bool = False
     restriction_reason: str | None = None
 
+    # Personal price multiplier
+    personal_price_multiplier: float = 1.0
+
     # Promo offer
     promo_offer_discount_percent: int = 0
     promo_offer_discount_source: str | None = None
@@ -384,6 +387,21 @@ class UpdateReferralCommissionResponse(BaseModel):
     success: bool
     old_commission_percent: int | None = None
     new_commission_percent: int | None = None
+    message: str
+
+
+class UpdatePriceMultiplierRequest(BaseModel):
+    """Request to update user personal price multiplier."""
+
+    multiplier: float = Field(..., ge=0.01, le=1000, description='Price multiplier (1.0 = standard)')
+
+
+class UpdatePriceMultiplierResponse(BaseModel):
+    """Response after price multiplier update."""
+
+    success: bool
+    old_multiplier: float
+    new_multiplier: float
     message: str
 
 

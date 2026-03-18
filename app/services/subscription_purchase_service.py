@@ -1141,6 +1141,7 @@ class MiniAppSubscriptionPurchaseService:
                 context.subscription = subscription
 
         was_trial_conversion = False
+        hwid_was_reset = False
         now = datetime.now(UTC)
 
         if subscription:

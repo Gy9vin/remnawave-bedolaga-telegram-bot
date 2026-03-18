@@ -71,6 +71,8 @@ from ..schemas.users import (
     TrafficPurchaseItem,
     UpdateBalanceRequest,
     UpdateBalanceResponse,
+    UpdatePriceMultiplierRequest,
+    UpdatePriceMultiplierResponse,
     UpdatePromoGroupRequest,
     UpdatePromoGroupResponse,
     UpdateReferralCommissionRequest,
@@ -674,6 +676,7 @@ async def get_user_detail(
         restriction_topup=user.restriction_topup,
         restriction_subscription=user.restriction_subscription,
         restriction_reason=user.restriction_reason,
+        personal_price_multiplier=getattr(user, 'personal_price_multiplier', 1.0) or 1.0,
         promo_offer_discount_percent=user.promo_offer_discount_percent,
         promo_offer_discount_source=user.promo_offer_discount_source,
         promo_offer_discount_expires_at=user.promo_offer_discount_expires_at,
@@ -1718,6 +1721,39 @@ async def update_user_referral_commission(
         old_commission_percent=old_commission,
         new_commission_percent=request.commission_percent,
         message='Referral commission updated',
+    )
+
+
+@router.post('/{user_id}/price-multiplier', response_model=UpdatePriceMultiplierResponse)
+async def update_user_price_multiplier(
+    user_id: int,
+    request: UpdatePriceMultiplierRequest,
+    admin: User = Depends(require_permission('users:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Update user's personal price multiplier (1.0 = standard, 0.5 = 50% discount, 20 = 20x markup)."""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
+
+    old_multiplier = getattr(user, 'personal_price_multiplier', 1.0) or 1.0
+    user.personal_price_multiplier = request.multiplier
+    user.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    logger.info(
+        'Admin changed price multiplier for user',
+        admin_id=admin.id,
+        user_id=user_id,
+        old_multiplier=old_multiplier,
+        new_multiplier=request.multiplier,
+    )
+
+    return UpdatePriceMultiplierResponse(
+        success=True,
+        old_multiplier=old_multiplier,
+        new_multiplier=request.multiplier,
+        message='Price multiplier updated',
     )
 
 

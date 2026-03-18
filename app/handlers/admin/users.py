@@ -1279,6 +1279,15 @@ async def show_user_management(callback: types.CallbackQuery, db_user: User, db:
             restriction_lines.append(f'  📝 Причина: {restriction_reason}')
         sections.append('\n'.join(restriction_lines))
 
+    # Показать персональный множитель если не стандартный
+    price_multiplier = getattr(user, 'personal_price_multiplier', 1.0) or 1.0
+    if price_multiplier != 1.0:
+        if price_multiplier < 1.0:
+            multiplier_text = f'💸 Скидка {round((1.0 - price_multiplier) * 100)}% (×{price_multiplier})'
+        else:
+            multiplier_text = f'💸 Наценка {round((price_multiplier - 1) * 100)}% (×{price_multiplier})'
+        sections.append(multiplier_text)
+
     text = '\n\n'.join(sections)
 
     # Проверяем состояние, чтобы определить, откуда пришел пользователь
@@ -2822,6 +2831,108 @@ async def clear_user_restrictions(callback: types.CallbackQuery, db_user: User, 
 
     # Обновляем меню
     await show_user_restrictions(callback, db_user, db)
+
+
+@admin_required
+@error_handler
+async def show_user_price_multiplier(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
+    """Показать текущий персональный множитель цены и попросить ввести новый."""
+    user_id = int(callback.data.split('_')[-1])
+    user = await get_user_by_id(db, user_id)
+
+    if not user:
+        await callback.answer('Пользователь не найден', show_alert=True)
+        return
+
+    current = getattr(user, 'personal_price_multiplier', 1.0) or 1.0
+
+    if current == 1.0:
+        current_text = '1.0 (стандартная цена)'
+    elif current < 1.0:
+        discount_pct = round((1.0 - current) * 100)
+        current_text = f'{current} (скидка {discount_pct}%)'
+    else:
+        markup_x = round(current, 2)
+        current_text = f'{markup_x}x (наценка {round((current - 1) * 100)}%)'
+
+    await state.set_state(AdminStates.editing_user_price_multiplier)
+    await state.update_data(editing_user_id=user_id)
+
+    text = (
+        f'💸 <b>Персональный множитель цены</b>\n'
+        f'👤 {user.full_name}\n\n'
+        f'Текущий множитель: <b>{current_text}</b>\n\n'
+        f'Введите новый множитель числом:\n'
+        f'• <code>1</code> — стандартная цена\n'
+        f'• <code>0.5</code> — скидка 50%\n'
+        f'• <code>20</code> — наценка в 20 раз\n'
+        f'• <code>0</code> — сбросить на стандарт (1.0)'
+    )
+    keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[[types.InlineKeyboardButton(text='❌ Отмена', callback_data=f'admin_user_manage_{user_id}')]]
+    )
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode='HTML')
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def process_user_price_multiplier(message: types.Message, db_user: User, db: AsyncSession, state: FSMContext):
+    """Сохранить введённый персональный множитель цены."""
+    data = await state.get_data()
+    user_id = data.get('editing_user_id')
+
+    if not user_id:
+        await message.answer('Ошибка: пользователь не найден')
+        await state.clear()
+        return
+
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        await message.answer('Ошибка: пользователь не найден')
+        await state.clear()
+        return
+
+    try:
+        raw = message.text.strip().replace(',', '.')
+        value = float(raw)
+    except (ValueError, TypeError):
+        await message.answer('Введите корректное число, например: 1, 0.5, 20')
+        return
+
+    # 0 = сброс на стандарт
+    if value == 0:
+        value = 1.0
+
+    # Ограничение разумным диапазоном
+    if value < 0.01:
+        await message.answer('Минимальное значение: 0.01')
+        return
+    if value > 1000:
+        await message.answer('Максимальное значение: 1000')
+        return
+
+    user.personal_price_multiplier = value
+    await db.commit()
+    await state.clear()
+
+    if value == 1.0:
+        result_text = 'стандартная цена (1.0)'
+    elif value < 1.0:
+        result_text = f'скидка {round((1.0 - value) * 100)}% (множитель {value})'
+    else:
+        result_text = f'наценка {round((value - 1) * 100)}% (множитель {value}x)'
+
+    keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text='👤 К пользователю', callback_data=f'admin_user_manage_{user_id}')]
+        ]
+    )
+    await message.answer(
+        f'✅ <b>Множитель цены обновлён</b>\n👤 {user.full_name}\n💸 {result_text}',
+        reply_markup=keyboard,
+        parse_mode='HTML',
+    )
 
 
 @admin_required
@@ -5834,6 +5945,10 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(start_send_user_message, F.data.startswith('admin_user_send_message_'))
 
     dp.message.register(process_send_user_message, AdminStates.sending_user_message)
+
+    # Персональный множитель цены
+    dp.callback_query.register(show_user_price_multiplier, F.data.startswith('admin_user_price_multiplier_'))
+    dp.message.register(process_user_price_multiplier, AdminStates.editing_user_price_multiplier)
 
     dp.callback_query.register(show_inactive_users, F.data == 'admin_users_inactive')
 

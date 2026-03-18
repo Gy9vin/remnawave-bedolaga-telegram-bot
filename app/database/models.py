@@ -1227,6 +1227,7 @@ class User(Base):
     promo_offer_discount_percent = Column(Integer, nullable=False, default=0)
     promo_offer_discount_source = Column(String(100), nullable=True)
     promo_offer_discount_expires_at = Column(AwareDateTime(), nullable=True)
+    personal_price_multiplier = Column(Float, nullable=False, server_default='1.0', default=1.0)
     last_remnawave_sync = Column(AwareDateTime(), nullable=True)
     trojan_password = Column(String(255), nullable=True)
     vless_uuid = Column(String(255), nullable=True)

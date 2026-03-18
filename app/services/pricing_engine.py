@@ -110,6 +110,25 @@ class PricingEngine:
         return amount_kopeks - discount
 
     @staticmethod
+    def get_personal_multiplier(user: User | None) -> float:
+        """Возвращает персональный множитель цены пользователя (default=1.0).
+        1.0 = обычная цена, 0.5 = скидка 50%, 20.0 = наценка 20x."""
+        if not user:
+            return 1.0
+        m = getattr(user, 'personal_price_multiplier', None)
+        if m is None:
+            return 1.0
+        return max(0.01, float(m))
+
+    @staticmethod
+    def apply_personal_multiplier(amount_kopeks: int, user: User | None) -> int:
+        """Применяет персональный множитель цены к итоговой сумме."""
+        m = PricingEngine.get_personal_multiplier(user)
+        if m == 1.0:
+            return amount_kopeks
+        return max(1, int(amount_kopeks * m))
+
+    @staticmethod
     def apply_stacked_discounts(
         amount: int,
         group_percent: int,
@@ -616,7 +635,7 @@ class PricingEngine:
         subtotal = discounted_base + discounted_devices + discounted_traffic
         after_offer = self.apply_discount(subtotal, offer_pct)
         offer_discount = subtotal - after_offer
-        final_total = after_offer
+        final_total = self.apply_personal_multiplier(after_offer, user)
 
         breakdown = dataclasses.asdict(
             TariffBreakdown(
@@ -761,7 +780,7 @@ class PricingEngine:
         # --- Promo offer discount on entire subtotal ---
         after_offer = self.apply_discount(subtotal, offer_pct)
         promo_offer_discount = subtotal - after_offer
-        final_total = after_offer
+        final_total = self.apply_personal_multiplier(after_offer, user)
 
         # Total group discount = sum of per-category discounts
         base_group_discount = base_price_original - base_price

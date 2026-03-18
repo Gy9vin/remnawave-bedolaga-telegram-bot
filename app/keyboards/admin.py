@@ -1162,6 +1162,16 @@ def get_user_management_keyboard(
         ]
     )
 
+    # Кнопка персонального множителя цены
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text=_t(texts, 'ADMIN_USER_PRICE_MULTIPLIER', '💸 Множитель цены'),
+                callback_data=f'admin_user_price_multiplier_{user_id}',
+            )
+        ]
+    )
+
     if user_status == 'active':
         keyboard.append(
             [
