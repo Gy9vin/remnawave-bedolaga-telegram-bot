@@ -237,7 +237,8 @@ async def process_platega_payment_amount(
             texts.t(
                 'PLATEGA_AMOUNT_TOO_LOW',
                 'Минимальная сумма для оплаты через Platega: {amount}',
-            ).format(amount=settings.format_price(settings.PLATEGA_MIN_AMOUNT_KOPEKS))
+            ).format(amount=settings.format_price(settings.PLATEGA_MIN_AMOUNT_KOPEKS)),
+            reply_markup=get_back_keyboard(db_user.language),
         )
         return
 
@@ -246,7 +247,8 @@ async def process_platega_payment_amount(
             texts.t(
                 'PLATEGA_AMOUNT_TOO_HIGH',
                 'Максимальная сумма для оплаты через Platega: {amount}',
-            ).format(amount=settings.format_price(settings.PLATEGA_MAX_AMOUNT_KOPEKS))
+            ).format(amount=settings.format_price(settings.PLATEGA_MAX_AMOUNT_KOPEKS)),
+            reply_markup=get_back_keyboard(db_user.language),
         )
         return
 

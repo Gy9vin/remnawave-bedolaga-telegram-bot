@@ -560,6 +560,11 @@ class Settings(BaseSettings):
     KASSA_AI_WEBHOOK_PORT: int = 8089
     # Способ оплаты: 44 = СБП (QR код), 36 = Карты РФ, 43 = SberPay
     KASSA_AI_PAYMENT_SYSTEM_ID: int = 44
+    # Раздельные методы оплаты KassaAI (отображаются как отдельные кнопки)
+    KASSA_AI_SBP_ENABLED: bool = False  # СБП — payment_system_id=44
+    KASSA_AI_SBP_DISPLAY_NAME: str = 'СБП (KassaAI)'
+    KASSA_AI_CARD_ENABLED: bool = False  # Карты РФ — payment_system_id=36
+    KASSA_AI_CARD_DISPLAY_NAME: str = 'Карта (KassaAI)'
 
     # RioPay (api.riopay.online) v2.0.1
     RIOPAY_ENABLED: bool = False
@@ -572,6 +577,18 @@ class Settings(BaseSettings):
     RIOPAY_WEBHOOK_PATH: str = '/riopay-webhook'
     RIOPAY_SUCCESS_URL: str | None = None
     RIOPAY_FAIL_URL: str | None = None
+
+    # SeverPay (severpay.io)
+    SEVERPAY_ENABLED: bool = False
+    SEVERPAY_MID: int | None = None  # Merchant ID
+    SEVERPAY_TOKEN: str | None = None  # Secret token for HMAC-SHA256
+    SEVERPAY_DISPLAY_NAME: str = 'SeverPay'
+    SEVERPAY_CURRENCY: str = 'RUB'
+    SEVERPAY_MIN_AMOUNT_KOPEKS: int = 10000  # 100₽
+    SEVERPAY_MAX_AMOUNT_KOPEKS: int = 10000000  # 100 000₽
+    SEVERPAY_WEBHOOK_PATH: str = '/severpay-webhook'
+    SEVERPAY_RETURN_URL: str | None = None
+    SEVERPAY_LIFETIME: int = 1440  # minutes, 30-4320
 
     MAIN_MENU_MODE: str = 'default'  # 'default' | 'cabinet'
     # Стиль кнопок Cabinet: primary (синий), success (зелёный), danger (красный), '' (по умолчанию для каждой секции)
@@ -1874,6 +1891,36 @@ class Settings(BaseSettings):
 
     def get_riopay_display_name_html(self) -> str:
         return html.escape(self.get_riopay_display_name())
+
+    def is_severpay_enabled(self) -> bool:
+        return self.SEVERPAY_ENABLED and self.SEVERPAY_MID is not None and self.SEVERPAY_TOKEN is not None
+
+    def get_severpay_display_name(self) -> str:
+        name = (self.SEVERPAY_DISPLAY_NAME or '').strip()
+        return name if name else 'SeverPay'
+
+    def get_severpay_display_name_html(self) -> str:
+        return html.escape(self.get_severpay_display_name())
+
+    def is_kassa_ai_sbp_enabled(self) -> bool:
+        return self.KASSA_AI_SBP_ENABLED and self.is_kassa_ai_enabled()
+
+    def get_kassa_ai_sbp_display_name(self) -> str:
+        name = (self.KASSA_AI_SBP_DISPLAY_NAME or '').strip()
+        return name if name else 'СБП (KassaAI)'
+
+    def get_kassa_ai_sbp_display_name_html(self) -> str:
+        return html.escape(self.get_kassa_ai_sbp_display_name())
+
+    def is_kassa_ai_card_enabled(self) -> bool:
+        return self.KASSA_AI_CARD_ENABLED and self.is_kassa_ai_enabled()
+
+    def get_kassa_ai_card_display_name(self) -> str:
+        name = (self.KASSA_AI_CARD_DISPLAY_NAME or '').strip()
+        return name if name else 'Карта (KassaAI)'
+
+    def get_kassa_ai_card_display_name_html(self) -> str:
+        return html.escape(self.get_kassa_ai_card_display_name())
 
     def is_payment_verification_auto_check_enabled(self) -> bool:
         return self.PAYMENT_VERIFICATION_AUTO_CHECK_ENABLED

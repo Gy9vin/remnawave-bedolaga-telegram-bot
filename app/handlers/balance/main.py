@@ -131,11 +131,20 @@ async def route_payment_by_method(
             )
         return True
 
-    if payment_method == 'kassa_ai':
+    if payment_method in ('kassa_ai', 'kassa_ai_sbp', 'kassa_ai_card'):
         from .kassa_ai import process_kassa_ai_payment_amount
 
         async with AsyncSessionLocal() as db:
-            await process_kassa_ai_payment_amount(message, db_user, db, amount_kopeks, state)
+            await process_kassa_ai_payment_amount(
+                message, db_user, db, amount_kopeks, state, payment_method=payment_method
+            )
+        return True
+
+    if payment_method == 'severpay':
+        from .severpay import process_severpay_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_severpay_payment_amount(message, db_user, db, amount_kopeks, state)
         return True
 
     if payment_method == 'riopay':
@@ -542,11 +551,13 @@ async def process_topup_amount(message: types.Message, db_user: User, state: FSM
         amount_rubles = float(amount_text.replace(',', '.'))
 
         if amount_rubles < 1:
-            await message.answer('Минимальная сумма пополнения: 1 ₽')
+            await message.answer('Минимальная сумма пополнения: 1 ₽', reply_markup=get_back_keyboard(db_user.language))
             return
 
         if amount_rubles > 50000:
-            await message.answer('Максимальная сумма пополнения: 50,000 ₽')
+            await message.answer(
+                'Максимальная сумма пополнения: 50,000 ₽', reply_markup=get_back_keyboard(db_user.language)
+            )
             return
 
         amount_kopeks = int(amount_rubles * 100)
@@ -556,13 +567,17 @@ async def process_topup_amount(message: types.Message, db_user: User, state: FSM
         if payment_method in ['yookassa', 'yookassa_sbp']:
             if amount_kopeks < settings.YOOKASSA_MIN_AMOUNT_KOPEKS:
                 min_rubles = settings.YOOKASSA_MIN_AMOUNT_KOPEKS / 100
-                await message.answer(f'❌ Минимальная сумма для оплаты через YooKassa: {min_rubles:.0f} ₽')
+                await message.answer(
+                    f'❌ Минимальная сумма для оплаты через YooKassa: {min_rubles:.0f} ₽',
+                    reply_markup=get_back_keyboard(db_user.language),
+                )
                 return
 
             if amount_kopeks > settings.YOOKASSA_MAX_AMOUNT_KOPEKS:
                 max_rubles = settings.YOOKASSA_MAX_AMOUNT_KOPEKS / 100
                 await message.answer(
-                    f'❌ Максимальная сумма для оплаты через YooKassa: {max_rubles:,.0f} ₽'.replace(',', ' ')
+                    f'❌ Максимальная сумма для оплаты через YooKassa: {max_rubles:,.0f} ₽'.replace(',', ' '),
+                    reply_markup=get_back_keyboard(db_user.language),
                 )
                 return
 
@@ -790,15 +805,31 @@ def register_balance_handlers(dp: Dispatcher):
     dp.callback_query.register(start_freekassa_card_topup, F.data == 'topup_freekassa_card')
     dp.callback_query.register(process_freekassa_card_quick_amount, F.data.startswith('topup_amount|freekassa_card|'))
 
-    from .kassa_ai import process_kassa_ai_quick_amount, start_kassa_ai_topup
+    from .kassa_ai import (
+        process_kassa_ai_card_quick_amount,
+        process_kassa_ai_quick_amount,
+        process_kassa_ai_sbp_quick_amount,
+        start_kassa_ai_card_topup,
+        start_kassa_ai_sbp_topup,
+        start_kassa_ai_topup,
+    )
 
     dp.callback_query.register(start_kassa_ai_topup, F.data == 'topup_kassa_ai')
     dp.callback_query.register(process_kassa_ai_quick_amount, F.data.startswith('topup_amount|kassa_ai|'))
+    dp.callback_query.register(start_kassa_ai_sbp_topup, F.data == 'topup_kassa_ai_sbp')
+    dp.callback_query.register(process_kassa_ai_sbp_quick_amount, F.data.startswith('topup_amount|kassa_ai_sbp|'))
+    dp.callback_query.register(start_kassa_ai_card_topup, F.data == 'topup_kassa_ai_card')
+    dp.callback_query.register(process_kassa_ai_card_quick_amount, F.data.startswith('topup_amount|kassa_ai_card|'))
 
     from .riopay import process_riopay_quick_amount, start_riopay_topup
 
     dp.callback_query.register(start_riopay_topup, F.data == 'topup_riopay')
     dp.callback_query.register(process_riopay_quick_amount, F.data.startswith('topup_amount|riopay|'))
+
+    from .severpay import process_severpay_quick_amount, start_severpay_topup
+
+    dp.callback_query.register(start_severpay_topup, F.data == 'topup_severpay')
+    dp.callback_query.register(process_severpay_quick_amount, F.data.startswith('topup_amount|severpay|'))
 
     from .mulenpay import check_mulenpay_payment_status
 

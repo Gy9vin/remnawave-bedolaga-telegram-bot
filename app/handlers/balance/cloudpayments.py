@@ -157,6 +157,7 @@ async def process_cloudpayments_payment_amount(
                 'AMOUNT_TOO_LOW',
                 'Минимальная сумма пополнения: {min_amount:.0f}₽',
             ).format(min_amount=min_rub),
+            reply_markup=get_back_keyboard(db_user.language),
         )
         return
 
@@ -167,6 +168,7 @@ async def process_cloudpayments_payment_amount(
                 'AMOUNT_TOO_HIGH',
                 'Максимальная сумма пополнения: {max_amount:,.0f}₽',
             ).format(max_amount=max_rub),
+            reply_markup=get_back_keyboard(db_user.language),
         )
         return
 
@@ -270,6 +272,7 @@ async def process_cloudpayments_amount(
                 'AMOUNT_TOO_LOW',
                 'Минимальная сумма пополнения: {min_amount:.0f}₽',
             ).format(min_amount=min_rub),
+            reply_markup=get_back_keyboard(db_user.language),
             parse_mode='HTML',
         )
         return
@@ -281,6 +284,7 @@ async def process_cloudpayments_amount(
                 'AMOUNT_TOO_HIGH',
                 'Максимальная сумма пополнения: {max_amount:,.0f}₽',
             ).format(max_amount=max_rub),
+            reply_markup=get_back_keyboard(db_user.language),
             parse_mode='HTML',
         )
         return

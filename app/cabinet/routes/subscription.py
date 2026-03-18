@@ -1937,6 +1937,9 @@ async def submit_purchase(
             except Exception as refresh_error:
                 logger.warning(f'Failed to preload tariff for subscription {subscription.id}: {refresh_error}')
 
+        # Refresh expired objects after db.commit() in _record_subscription_event
+        await db.refresh(subscription)
+
         return {
             'success': True,
             'message': result['message'],
@@ -2201,6 +2204,7 @@ async def purchase_tariff(
                     subscription,
                     reset_traffic=True,
                     reset_reason='покупка тарифа (cabinet)',
+                    sync_squads=True,
                 )
             else:
                 await service.create_remnawave_user(
@@ -2229,6 +2233,7 @@ async def purchase_tariff(
                 logger.error(f'Error saving tariff cart (cabinet): {e}')
 
         await db.refresh(user)
+        await db.refresh(subscription)
 
         response = {
             'success': True,
@@ -3167,7 +3172,7 @@ async def update_countries(
 
     # Validate selected countries
     for country_uuid in selected_countries:
-        if country_uuid not in allowed_country_ids and country_uuid not in current_countries:
+        if country_uuid not in allowed_country_ids:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f'Country {country_uuid} is not available',
@@ -3264,7 +3269,7 @@ async def update_countries(
     try:
         subscription_service = SubscriptionService()
         if getattr(user, 'remnawave_uuid', None):
-            await subscription_service.update_remnawave_user(db, user.subscription)
+            await subscription_service.update_remnawave_user(db, user.subscription, sync_squads=True)
         else:
             await subscription_service.create_remnawave_user(db, user.subscription)
     except Exception as e:
@@ -4332,6 +4337,7 @@ async def switch_tariff(
                 subscription,
                 reset_traffic=should_reset_traffic,
                 reset_reason='смена тарифа',
+                sync_squads=True,
             )
         else:
             await subscription_service.create_remnawave_user(
@@ -4382,6 +4388,10 @@ async def switch_tariff(
                 await bot.session.close()
     except Exception as e:
         logger.error(f'Failed to send admin notification for tariff switch: {e}')
+
+    # Refresh expired objects after db.commit() in _record_subscription_event
+    await db.refresh(subscription)
+    await db.refresh(user)
 
     response = {
         'success': True,
