@@ -1,7 +1,7 @@
 """make riopay_payments.user_id nullable for guest purchases
 
-Revision ID: 0039
-Revises: 0038
+Revision ID: 0044
+Revises: 0043
 Create Date: 2026-03-18
 
 """
@@ -11,8 +11,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0039'
-down_revision: Union[str, None] = '0038'
+revision: str = '0044'
+down_revision: Union[str, None] = '0043'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
