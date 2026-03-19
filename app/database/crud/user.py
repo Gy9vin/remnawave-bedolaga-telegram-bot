@@ -815,7 +815,7 @@ async def get_users_list(
             try:
                 search_int = int(search)
                 conditions.append(User.telegram_id == search_int)
-                conditions.append(User.id == search_int)
+
             except ValueError:
                 pass
 
@@ -899,7 +899,7 @@ async def get_users_count(
             try:
                 search_int = int(search)
                 conditions.append(User.telegram_id == search_int)
-                conditions.append(User.id == search_int)
+
             except ValueError:
                 pass
 
