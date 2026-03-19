@@ -1526,10 +1526,20 @@ async def update_user_status(
             message='Status unchanged',
         )
 
-    user.status = new_status
-    user.updated_at = datetime.now(UTC)
-    await db.commit()
-    await db.refresh(user)
+    # Используем UserService чтобы корректно деактивировать в Remnawave
+    from app.services.user_service import UserService
+
+    user_service = UserService()
+
+    if new_status == 'blocked':
+        await user_service.block_user(db, user_id, admin.id, reason=request.reason or 'Заблокирован администратором')
+    elif new_status == 'active' and old_status == 'blocked':
+        await user_service.unblock_user(db, user_id, admin.id)
+    else:
+        user.status = new_status
+        user.updated_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(user)
 
     action = f'{old_status} -> {new_status}'
     if request.reason:
