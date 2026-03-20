@@ -19,6 +19,41 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/modem', tags=['Cabinet Modem'])
 
+_MODEM_INSTRUCTIONS = """🌐 <b>Режим модема подключён!</b>
+
+Теперь другие устройства в вашей сети могут выходить в интернет через ваш сервис.
+
+<b>1️⃣ Как включить функцию в Happ</b>
+
+Откройте <b>Настройки</b> приложения Happ.
+Перейдите в <b>Расширенные настройки</b> (Advanced Settings).
+Активируйте <b>«Разрешить LAN-подключения»</b> (Allow LAN Connections).
+
+После активации появятся параметры:
+• <b>Текущий IP</b> — локальный IP-адрес устройства (например, 192.168.1.100)
+• <b>Порт SOCKS5</b> — для SOCKS-прокси (например, 10808)
+• <b>Порт HTTP</b> — для HTTP-прокси (например, 10809)
+
+Подключитесь к серверу в приложении Happ.
+
+<b>2️⃣ Настройка на других устройствах</b>
+
+<b>Android:</b>
+Настройки → Wi-Fi → выберите сеть → Дополнительно.
+В разделе «Прокси» выберите <b>«Ручная настройка»</b>.
+Укажите:
+• Имя хоста: IP вашего устройства (например, 192.168.1.100)
+• Порт: HTTP-порт (например, 10809)
+Сохраните и подключитесь.
+
+<b>iOS:</b>
+Настройки → Wi-Fi → нажмите ℹ️ рядом с сетью.
+Прокрутите до <b>«HTTP-прокси»</b> → выберите <b>«Вручную»</b>.
+Укажите:
+• Сервер: IP вашего устройства (например, 192.168.1.100)
+• Порт: HTTP-порт (например, 10809)
+Вернитесь назад — настройки сохраняются автоматически."""
+
 _ERROR_MESSAGES: dict[ModemError, str] = {
     ModemError.NO_SUBSCRIPTION: 'У вас нет активной подписки',
     ModemError.TRIAL_SUBSCRIPTION: 'Модем недоступен для пробных подписок',
@@ -173,6 +208,21 @@ async def enable_modem(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=_error_detail(result.error),
             )
+
+        # Send modem setup instructions to user via Telegram
+        if user.telegram_id and settings.BOT_TOKEN:
+            try:
+                bot = Bot(token=settings.BOT_TOKEN)
+                try:
+                    await bot.send_message(
+                        chat_id=user.telegram_id,
+                        text=_MODEM_INSTRUCTIONS,
+                        parse_mode='HTML',
+                    )
+                finally:
+                    await bot.session.close()
+            except Exception as e:
+                logger.error(f'Failed to send modem instructions to user {user.telegram_id}: {e}')
 
         # Send admin notification
         try:
