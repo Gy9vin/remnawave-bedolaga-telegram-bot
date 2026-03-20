@@ -1,7 +1,6 @@
 """Cabinet API routes for modem management."""
 
-import logging
-
+import structlog
 from aiogram import Bot
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +14,7 @@ from app.services.user_cart_service import user_cart_service
 from ..dependencies import get_cabinet_db, get_current_cabinet_user
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix='/modem', tags=['Cabinet Modem'])
 
@@ -210,19 +209,21 @@ async def enable_modem(
             )
 
         # Send modem setup instructions to user via Telegram
-        if user.telegram_id and settings.BOT_TOKEN:
+        tg_id = getattr(user, 'telegram_id', None)
+        logger.info('Sending modem instructions to user', telegram_id=tg_id, has_token=bool(settings.BOT_TOKEN))
+        if tg_id and settings.BOT_TOKEN:
+            _bot = Bot(token=settings.BOT_TOKEN)
             try:
-                bot = Bot(token=settings.BOT_TOKEN)
-                try:
-                    await bot.send_message(
-                        chat_id=user.telegram_id,
-                        text=_MODEM_INSTRUCTIONS,
-                        parse_mode='HTML',
-                    )
-                finally:
-                    await bot.session.close()
+                await _bot.send_message(
+                    chat_id=tg_id,
+                    text=_MODEM_INSTRUCTIONS,
+                    parse_mode='HTML',
+                )
+                logger.info('Modem instructions sent successfully', telegram_id=tg_id)
             except Exception as e:
-                logger.error(f'Failed to send modem instructions to user {user.telegram_id}: {e}')
+                logger.error('Failed to send modem instructions', telegram_id=tg_id, error=str(e), exc_info=True)
+            finally:
+                await _bot.session.close()
 
         # Send admin notification
         try:
