@@ -812,7 +812,8 @@ class MiniAppSubscriptionPurchaseService:
         details = PricingEngine.classic_pricing_to_purchase_details(pricing)
 
         base_original_total = pricing.original_total
-        discounted_total = pricing.final_total + pricing.promo_offer_discount  # subtotal before offer
+        # subtotal before promo-offer discount and before personal multiplier
+        discounted_total = pricing.base_price + pricing.servers_price + pricing.traffic_price + pricing.devices_price
         promo_discount_value = pricing.promo_offer_discount
         promo_percent = pricing.breakdown.get('offer_discount_pct', 0)
 
