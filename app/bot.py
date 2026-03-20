@@ -101,7 +101,9 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     from aiogram.client.default import DefaultBotProperties
     from aiogram.enums import ParseMode
 
-    bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    from app.utils.bot_factory import create_bot
+
+    bot = create_bot(settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
     maintenance_service.set_bot(bot)
     logger.info('Бот установлен в maintenance_service')

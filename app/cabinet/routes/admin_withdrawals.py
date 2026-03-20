@@ -199,10 +199,9 @@ async def approve_withdrawal(
 
     # Notify user about approval
     try:
-        from aiogram import Bot
-
         from app.config import settings
         from app.services.notification_delivery_service import notification_delivery_service
+        from app.utils.bot_factory import create_bot
 
         if settings.BOT_TOKEN:
             withdrawal = await db.get(WithdrawalRequest, withdrawal_id)
@@ -211,7 +210,7 @@ async def approve_withdrawal(
                 formatted_amount = settings.format_price(withdrawal.amount_kopeks)
                 comment_text = f'\n{request.comment}' if request.comment else ''
                 tg_message = f'✅ Ваш запрос на вывод {formatted_amount} одобрен.{comment_text}'
-                bot = Bot(token=settings.BOT_TOKEN)
+                bot = create_bot(settings.BOT_TOKEN)
                 try:
                     await notification_delivery_service.notify_withdrawal_approved(
                         user=user,
@@ -251,10 +250,9 @@ async def reject_withdrawal(
 
     # Notify user about rejection
     try:
-        from aiogram import Bot
-
         from app.config import settings
         from app.services.notification_delivery_service import notification_delivery_service
+        from app.utils.bot_factory import create_bot
 
         if settings.BOT_TOKEN:
             withdrawal = await db.get(WithdrawalRequest, withdrawal_id)
@@ -263,7 +261,7 @@ async def reject_withdrawal(
                 formatted_amount = settings.format_price(withdrawal.amount_kopeks)
                 comment_text = f'\nПричина: {request.comment}' if request.comment else ''
                 tg_message = f'❌ Ваш запрос на вывод {formatted_amount} отклонён.{comment_text}'
-                bot = Bot(token=settings.BOT_TOKEN)
+                bot = create_bot(settings.BOT_TOKEN)
                 try:
                     await notification_delivery_service.notify_withdrawal_rejected(
                         user=user,

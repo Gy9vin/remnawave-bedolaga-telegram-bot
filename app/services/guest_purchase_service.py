@@ -46,11 +46,10 @@ async def _send_admin_notification(
     if not getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) or not settings.BOT_TOKEN:
         return
     try:
-        from aiogram import Bot
-
         from app.services.admin_notification_service import AdminNotificationService
+        from app.utils.bot_factory import create_bot
 
-        async with Bot(token=settings.BOT_TOKEN) as bot:
+        async with create_bot(settings.BOT_TOKEN) as bot:
             service = AdminNotificationService(bot)
             await service.send_guest_purchase_notification(
                 purchase,
@@ -529,9 +528,9 @@ async def _find_or_create_user(
     resolved_telegram_id: int | None = pre_resolved_telegram_id
     if resolved_telegram_id is None:
         try:
-            from aiogram import Bot
+            from app.utils.bot_factory import create_bot
 
-            async with Bot(token=settings.BOT_TOKEN) as bot:
+            async with create_bot(settings.BOT_TOKEN) as bot:
                 chat = await asyncio.wait_for(
                     bot.get_chat(chat_id=f'@{username}'),
                     timeout=5.0,
@@ -639,10 +638,11 @@ async def _send_telegram_gift_notification(
     try:
         import html as html_mod
 
-        from aiogram import Bot
         from aiogram.client.default import DefaultBotProperties
         from aiogram.enums import ParseMode
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        from app.utils.bot_factory import create_bot
 
         gift_from = ''
         if purchase.contact_value:
@@ -674,8 +674,8 @@ async def _send_telegram_gift_notification(
                 ]
             )
 
-        async with Bot(
-            token=settings.BOT_TOKEN,
+        async with create_bot(
+            settings.BOT_TOKEN,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         ) as bot:
             await bot.send_message(

@@ -4,7 +4,6 @@ import math
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -30,6 +29,7 @@ from app.services.payment_verification_service import (
     method_display_name,
     run_manual_check,
 )
+from app.utils.bot_factory import create_bot
 
 from ..dependencies import get_cabinet_db, require_permission
 
@@ -550,7 +550,7 @@ async def check_payment_status(
     old_is_paid = record.is_paid
 
     # Run manual check
-    bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = create_bot(settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
         payment_service = PaymentService(bot=bot)
         updated = await run_manual_check(db, payment_method, payment_id, payment_service)

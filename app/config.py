@@ -29,6 +29,11 @@ logger = structlog.get_logger(__name__)
 class Settings(BaseSettings):
     BOT_TOKEN: str
     BOT_USERNAME: str | None = None
+
+    # Custom Telegram Bot API server (https://github.com/tdlib/telegram-bot-api)
+    # Example: http://localhost:8081 or http://your-server:8081
+    # Leave empty to use official api.telegram.org
+    TELEGRAM_BOT_API_URL: str | None = None
     ADMIN_IDS: str = ''
     ADMIN_EMAILS: str = ''  # Comma-separated admin emails for email-only users
 

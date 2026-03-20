@@ -832,12 +832,11 @@ async def purchase_traffic(
 
     # Отправляем уведомление админам
     try:
-        from aiogram import Bot
-
         from app.services.admin_notification_service import AdminNotificationService
+        from app.utils.bot_factory import create_bot
 
         if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = Bot(token=settings.BOT_TOKEN)
+            bot = create_bot(settings.BOT_TOKEN)
             try:
                 notification_service = AdminNotificationService(bot)
                 old_traffic = subscription.traffic_limit_gb - request.gb
@@ -1056,12 +1055,11 @@ async def purchase_devices_legacy(
 
     # Отправляем уведомление админам
     try:
-        from aiogram import Bot
-
         from app.services.admin_notification_service import AdminNotificationService
+        from app.utils.bot_factory import create_bot
 
         if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = Bot(token=settings.BOT_TOKEN)
+            bot = create_bot(settings.BOT_TOKEN)
             try:
                 notification_service = AdminNotificationService(bot)
                 await notification_service.send_subscription_update_notification(
@@ -1366,12 +1364,11 @@ async def activate_trial(
 
     # Send admin notification about trial activation
     try:
-        from aiogram import Bot
-
         from app.services.admin_notification_service import AdminNotificationService
+        from app.utils.bot_factory import create_bot
 
         if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = Bot(token=settings.BOT_TOKEN)
+            bot = create_bot(settings.BOT_TOKEN)
             try:
                 notification_service = AdminNotificationService(bot)
                 charged_amount = settings.TRIAL_ACTIVATION_PRICE if requires_payment else None
@@ -1857,11 +1854,11 @@ async def submit_purchase(
         # Уведомить пользователя в Telegram о сбросе HWID
         if result.get('hwid_was_reset') and user.telegram_id:
             try:
-                from aiogram import Bot
                 from aiogram.client.default import DefaultBotProperties
                 from aiogram.enums import ParseMode
 
                 from app.localization.texts import get_texts as _get_texts
+                from app.utils.bot_factory import create_bot
 
                 _texts = _get_texts(getattr(user, 'language', 'ru'))
                 _notify_text = _texts.t(
@@ -1869,8 +1866,8 @@ async def submit_purchase(
                     '🔄 <b>Привязки устройств сброшены.</b>\n'
                     'Откройте приложение (Happ / v2rayTun) и нажмите <b>Обновить</b>.',
                 )
-                _bot = Bot(
-                    token=settings.BOT_TOKEN,
+                _bot = create_bot(
+                    settings.BOT_TOKEN,
                     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
                 )
                 async with _bot:
@@ -1905,12 +1902,11 @@ async def submit_purchase(
 
         # Отправляем уведомление админам о покупке подписки
         try:
-            from aiogram import Bot
-
             from app.services.admin_notification_service import AdminNotificationService
+            from app.utils.bot_factory import create_bot
 
             if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-                bot = Bot(token=settings.BOT_TOKEN)
+                bot = create_bot(settings.BOT_TOKEN)
                 try:
                     notification_service = AdminNotificationService(bot)
                     is_new_subscription = result.get('was_trial_conversion') or not context.subscription
@@ -2294,12 +2290,11 @@ async def purchase_tariff(
 
         # Отправляем уведомление админам о покупке/продлении тарифа
         try:
-            from aiogram import Bot
-
             from app.services.admin_notification_service import AdminNotificationService
+            from app.utils.bot_factory import create_bot
 
             if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-                bot = Bot(token=settings.BOT_TOKEN)
+                bot = create_bot(settings.BOT_TOKEN)
                 try:
                     notification_service = AdminNotificationService(bot)
                     # Определяем тип покупки: новая подписка или продление
@@ -2545,12 +2540,11 @@ async def purchase_devices(
 
         # Отправляем уведомление админам
         try:
-            from aiogram import Bot
-
             from app.services.admin_notification_service import AdminNotificationService
+            from app.utils.bot_factory import create_bot
 
             if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-                bot = Bot(token=settings.BOT_TOKEN)
+                bot = create_bot(settings.BOT_TOKEN)
                 try:
                     notification_service = AdminNotificationService(bot)
                     await notification_service.send_subscription_update_notification(
@@ -3906,11 +3900,11 @@ async def reduce_devices(
     # Уведомить пользователя в Telegram если сбросили HWID
     if hwid_reset_done and user.telegram_id:
         try:
-            from aiogram import Bot
             from aiogram.client.default import DefaultBotProperties
             from aiogram.enums import ParseMode
 
             from app.localization.texts import get_texts
+            from app.utils.bot_factory import create_bot
 
             texts = get_texts(getattr(user, 'language', 'ru'))
             notify_text = texts.t(
@@ -3919,8 +3913,8 @@ async def reduce_devices(
                 '🔄 Все привязки устройств сброшены.\n'
                 'Откройте приложение (Happ / v2rayTun) и нажмите <b>Обновить</b>.',
             ).format(new=new_device_limit)
-            _bot = Bot(
-                token=settings.BOT_TOKEN,
+            _bot = create_bot(
+                settings.BOT_TOKEN,
                 default=DefaultBotProperties(parse_mode=ParseMode.HTML),
             )
             async with _bot:
@@ -4366,12 +4360,11 @@ async def switch_tariff(
 
     # Отправляем уведомление админам о смене тарифа
     try:
-        from aiogram import Bot
-
         from app.services.admin_notification_service import AdminNotificationService
+        from app.utils.bot_factory import create_bot
 
         if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = Bot(token=settings.BOT_TOKEN)
+            bot = create_bot(settings.BOT_TOKEN)
             try:
                 notification_service = AdminNotificationService(bot)
                 await notification_service.send_subscription_purchase_notification(
