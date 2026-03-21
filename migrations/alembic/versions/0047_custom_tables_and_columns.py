@@ -1,17 +1,22 @@
-"""Add missing payment tables and partner_applications
+"""Custom tables and columns (consolidated from old 0041-0045)
 
-Revision ID: 0041
-Revises: 0040
+Adds payment tables, partner_applications, show_in_gift, blacklist_exceptions,
+AI forum columns, riopay nullable user_id, severpay_payments.
+All operations are idempotent (IF NOT EXISTS checks).
+
+Revision ID: 0047
+Revises: 0046
+Create Date: 2026-03-21
 """
 
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
-revision: str = '0041'
-down_revision: Union[str, None] = '0040'
+revision: str = '0047'
+down_revision: Union[str, None] = '0046'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -22,7 +27,25 @@ def _table_exists(table_name: str) -> bool:
     return insp.has_table(table_name)
 
 
+def _column_exists(table_name: str, column_name: str) -> bool:
+    conn = op.get_bind()
+    insp = inspect(conn)
+    if not insp.has_table(table_name):
+        return False
+    cols = [c['name'] for c in insp.get_columns(table_name)]
+    return column_name in cols
+
+
+def _fk_exists(table_name: str, fk_name: str) -> bool:
+    conn = op.get_bind()
+    insp = inspect(conn)
+    fks = insp.get_foreign_keys(table_name)
+    return any(fk.get('name') == fk_name for fk in fks)
+
+
 def upgrade() -> None:
+    # ── Payment tables ──────────────────────────────────────────────────────
+
     if not _table_exists('cryptobot_payments'):
         op.create_table(
             'cryptobot_payments',
@@ -40,8 +63,7 @@ def upgrade() -> None:
             sa.Column('paid_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('transaction_id', sa.Integer(), sa.ForeignKey('transactions.id'), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(),
-                      onupdate=sa.func.now()),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
         )
 
     if not _table_exists('heleket_payments'):
@@ -64,8 +86,7 @@ def upgrade() -> None:
             sa.Column('expires_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('transaction_id', sa.Integer(), sa.ForeignKey('transactions.id'), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(),
-                      onupdate=sa.func.now()),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
         )
 
     if not _table_exists('mulenpay_payments'):
@@ -86,8 +107,7 @@ def upgrade() -> None:
             sa.Column('callback_payload', sa.JSON(), nullable=True),
             sa.Column('transaction_id', sa.Integer(), sa.ForeignKey('transactions.id'), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(),
-                      onupdate=sa.func.now()),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
         )
 
     if not _table_exists('pal24_payments'):
@@ -121,8 +141,7 @@ def upgrade() -> None:
             sa.Column('expires_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('transaction_id', sa.Integer(), sa.ForeignKey('transactions.id'), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(),
-                      onupdate=sa.func.now()),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
         )
 
     if not _table_exists('wata_payments'):
@@ -149,8 +168,7 @@ def upgrade() -> None:
             sa.Column('expires_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('transaction_id', sa.Integer(), sa.ForeignKey('transactions.id'), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(),
-                      onupdate=sa.func.now()),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
         )
 
     if not _table_exists('freekassa_payments'):
@@ -173,8 +191,7 @@ def upgrade() -> None:
             sa.Column('expires_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('transaction_id', sa.Integer(), sa.ForeignKey('transactions.id'), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(),
-                      onupdate=sa.func.now()),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
         )
 
     if not _table_exists('kassa_ai_payments'):
@@ -197,8 +214,7 @@ def upgrade() -> None:
             sa.Column('expires_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('transaction_id', sa.Integer(), sa.ForeignKey('transactions.id'), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(),
-                      onupdate=sa.func.now()),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
         )
 
     if not _table_exists('partner_applications'):
@@ -215,12 +231,92 @@ def upgrade() -> None:
             sa.Column('status', sa.String(20), nullable=False, server_default='pending'),
             sa.Column('admin_comment', sa.Text(), nullable=True),
             sa.Column('approved_commission_percent', sa.Integer(), nullable=True),
-            sa.Column('processed_by', sa.Integer(),
-                      sa.ForeignKey('users.id', ondelete='SET NULL'), nullable=True),
+            sa.Column('processed_by', sa.Integer(), sa.ForeignKey('users.id', ondelete='SET NULL'), nullable=True),
             sa.Column('processed_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(),
-                      onupdate=sa.func.now()),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
+        )
+
+    # ── tariffs.show_in_gift ─────────────────────────────────────────────────
+
+    if not _column_exists('tariffs', 'show_in_gift'):
+        op.add_column(
+            'tariffs',
+            sa.Column('show_in_gift', sa.Boolean(), nullable=False, server_default=sa.text('true')),
+        )
+
+    # ── blacklist_exceptions ─────────────────────────────────────────────────
+
+    if not _table_exists('blacklist_exceptions'):
+        op.create_table(
+            'blacklist_exceptions',
+            sa.Column('id', sa.Integer(), primary_key=True, index=True),
+            sa.Column('telegram_id', sa.BigInteger(), nullable=False, unique=True, index=True),
+            sa.Column('comment', sa.Text(), nullable=True),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+        )
+
+    # ── AI forum columns ─────────────────────────────────────────────────────
+
+    if not _column_exists('tickets', 'forum_topic_id'):
+        op.add_column('tickets', sa.Column('forum_topic_id', sa.Integer(), nullable=True))
+
+    if not _column_exists('tickets', 'forum_control_msg_id'):
+        op.add_column('tickets', sa.Column('forum_control_msg_id', sa.Integer(), nullable=True))
+
+    if not _column_exists('tickets', 'ai_enabled'):
+        op.add_column(
+            'tickets',
+            sa.Column('ai_enabled', sa.Boolean(), nullable=False, server_default=sa.text('true')),
+        )
+
+    if not _column_exists('tickets', 'operator_telegram_id'):
+        op.add_column('tickets', sa.Column('operator_telegram_id', sa.BigInteger(), nullable=True))
+
+    if not _column_exists('ticket_messages', 'is_ai_response'):
+        op.add_column(
+            'ticket_messages',
+            sa.Column('is_ai_response', sa.Boolean(), nullable=False, server_default=sa.text('false')),
+        )
+
+    # ── riopay_payments: make user_id nullable ───────────────────────────────
+
+    if _table_exists('riopay_payments') and not _column_exists('riopay_payments', 'user_id') is False:
+        conn = op.get_bind()
+        insp = inspect(conn)
+        cols = {c['name']: c for c in insp.get_columns('riopay_payments')}
+        if 'user_id' in cols and not cols['user_id']['nullable']:
+            op.alter_column('riopay_payments', 'user_id', existing_type=sa.Integer(), nullable=True)
+            if _fk_exists('riopay_payments', 'riopay_payments_user_id_fkey'):
+                op.drop_constraint('riopay_payments_user_id_fkey', 'riopay_payments', type_='foreignkey')
+                op.create_foreign_key(
+                    None, 'riopay_payments', 'users', ['user_id'], ['id'], ondelete='SET NULL'
+                )
+
+    # ── severpay_payments ────────────────────────────────────────────────────
+
+    if not _table_exists('severpay_payments'):
+        op.create_table(
+            'severpay_payments',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column('user_id', sa.Integer(), sa.ForeignKey('users.id', ondelete='SET NULL'), nullable=True, index=True),
+            sa.Column('order_id', sa.String(64), unique=True, nullable=False, index=True),
+            sa.Column('severpay_id', sa.String(64), unique=True, nullable=True, index=True),
+            sa.Column('severpay_uid', sa.String(64), unique=True, nullable=True, index=True),
+            sa.Column('amount_kopeks', sa.Integer(), nullable=False),
+            sa.Column('currency', sa.String(10), nullable=False, server_default='RUB'),
+            sa.Column('description', sa.Text(), nullable=True),
+            sa.Column('status', sa.String(32), nullable=False, server_default='pending'),
+            sa.Column('is_paid', sa.Boolean(), server_default=sa.text('false')),
+            sa.Column('payment_url', sa.Text(), nullable=True),
+            sa.Column('payment_method', sa.String(32), nullable=True),
+            sa.Column('metadata_json', sa.JSON(), nullable=True),
+            sa.Column('callback_payload', sa.JSON(), nullable=True),
+            sa.Column('paid_at', sa.DateTime(timezone=True), nullable=True),
+            sa.Column('expires_at', sa.DateTime(timezone=True), nullable=True),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
+            sa.Column('transaction_id', sa.Integer(), sa.ForeignKey('transactions.id'), nullable=True),
         )
 
 
