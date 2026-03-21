@@ -126,6 +126,44 @@ async def _bootstrap_fresh_db() -> None:
     logger.info('Свежая БД: все таблицы созданы из моделей')
 
 
+async def _ensure_critical_columns() -> None:
+    """Добавить критичные колонки напрямую через SQL (ADD COLUMN IF NOT EXISTS).
+
+    Страховочный механизм: запускается после alembic upgrade, гарантирует наличие
+    колонок из upstream 0042/0045 которые могли не применяться при проблемах с миграцией.
+    Использует PostgreSQL-синтаксис IF NOT EXISTS — идемпотентно, безопасно.
+    """
+    from app.database.database import engine
+
+    critical = [
+        # (таблица, колонка, тип PostgreSQL)
+        ('guest_purchases', 'retry_count', 'INTEGER NOT NULL DEFAULT 0'),
+        ('guest_purchases', 'receipt_uuid', 'VARCHAR(255)'),
+        ('guest_purchases', 'receipt_created_at', 'TIMESTAMPTZ'),
+    ]
+
+    try:
+        async with engine.begin() as conn:
+            dialect = engine.dialect.name
+            if dialect != 'postgresql':
+                return  # SQLite: миграция справится сама
+
+            for table, column, col_type in critical:
+                try:
+                    await conn.execute(text(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}'))
+                except Exception as e:
+                    logger.warning(
+                        'Не удалось добавить страховочную колонку',
+                        table=table,
+                        column=column,
+                        error=str(e),
+                    )
+
+        logger.info('Страховочные колонки проверены/добавлены')
+    except Exception as e:
+        logger.error('Ошибка при добавлении страховочных колонок', error=str(e))
+
+
 async def run_alembic_upgrade() -> None:
     """Run ``alembic upgrade head``, handling fresh and legacy databases."""
     import asyncio
@@ -139,6 +177,7 @@ async def run_alembic_upgrade() -> None:
         logger.warning('Обнаружена пустая БД — создание схемы из моделей + stamp head')
         await _bootstrap_fresh_db()
         await _stamp_alembic_revision('head')
+        await _ensure_critical_columns()
         return
 
     if db_state == 'legacy':
@@ -156,6 +195,9 @@ async def run_alembic_upgrade() -> None:
     # call asyncio.run() to create its own event loop.
     await loop.run_in_executor(None, command.upgrade, cfg, 'head')
     logger.info('Alembic миграции применены')
+
+    # Страховочная проверка: гарантируем наличие критичных колонок
+    await _ensure_critical_columns()
 
 
 async def stamp_alembic_head() -> None:
