@@ -70,11 +70,11 @@ async def create_withdrawal(
 
     # Уведомляем админов о запросе на вывод
     try:
+        from app.bot_factory import create_bot
         from app.services.admin_notification_service import AdminNotificationService
-        from app.utils.bot_factory import create_bot
 
         if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = create_bot(settings.BOT_TOKEN)
+            bot = create_bot()
             try:
                 notification_service = AdminNotificationService(bot)
                 await notification_service.send_withdrawal_request_notification(

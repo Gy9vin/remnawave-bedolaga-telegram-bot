@@ -832,11 +832,11 @@ async def purchase_traffic(
 
     # Отправляем уведомление админам
     try:
+        from app.bot_factory import create_bot
         from app.services.admin_notification_service import AdminNotificationService
-        from app.utils.bot_factory import create_bot
 
         if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = create_bot(settings.BOT_TOKEN)
+            bot = create_bot()
             try:
                 notification_service = AdminNotificationService(bot)
                 old_traffic = subscription.traffic_limit_gb - request.gb
@@ -1055,11 +1055,11 @@ async def purchase_devices_legacy(
 
     # Отправляем уведомление админам
     try:
+        from app.bot_factory import create_bot
         from app.services.admin_notification_service import AdminNotificationService
-        from app.utils.bot_factory import create_bot
 
         if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = create_bot(settings.BOT_TOKEN)
+            bot = create_bot()
             try:
                 notification_service = AdminNotificationService(bot)
                 await notification_service.send_subscription_update_notification(
@@ -1364,11 +1364,11 @@ async def activate_trial(
 
     # Send admin notification about trial activation
     try:
+        from app.bot_factory import create_bot
         from app.services.admin_notification_service import AdminNotificationService
-        from app.utils.bot_factory import create_bot
 
         if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = create_bot(settings.BOT_TOKEN)
+            bot = create_bot()
             try:
                 notification_service = AdminNotificationService(bot)
                 charged_amount = settings.TRIAL_ACTIVATION_PRICE if requires_payment else None
@@ -1858,7 +1858,6 @@ async def submit_purchase(
                 from aiogram.enums import ParseMode
 
                 from app.localization.texts import get_texts as _get_texts
-                from app.utils.bot_factory import create_bot
 
                 _texts = _get_texts(getattr(user, 'language', 'ru'))
                 _notify_text = _texts.t(
@@ -1902,11 +1901,11 @@ async def submit_purchase(
 
         # Отправляем уведомление админам о покупке подписки
         try:
+            from app.bot_factory import create_bot
             from app.services.admin_notification_service import AdminNotificationService
-            from app.utils.bot_factory import create_bot
 
             if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-                bot = create_bot(settings.BOT_TOKEN)
+                bot = create_bot()
                 try:
                     notification_service = AdminNotificationService(bot)
                     is_new_subscription = result.get('was_trial_conversion') or not context.subscription
@@ -2290,11 +2289,11 @@ async def purchase_tariff(
 
         # Отправляем уведомление админам о покупке/продлении тарифа
         try:
+            from app.bot_factory import create_bot
             from app.services.admin_notification_service import AdminNotificationService
-            from app.utils.bot_factory import create_bot
 
             if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-                bot = create_bot(settings.BOT_TOKEN)
+                bot = create_bot()
                 try:
                     notification_service = AdminNotificationService(bot)
                     # Определяем тип покупки: новая подписка или продление
@@ -2540,11 +2539,11 @@ async def purchase_devices(
 
         # Отправляем уведомление админам
         try:
+            from app.bot_factory import create_bot
             from app.services.admin_notification_service import AdminNotificationService
-            from app.utils.bot_factory import create_bot
 
             if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-                bot = create_bot(settings.BOT_TOKEN)
+                bot = create_bot()
                 try:
                     notification_service = AdminNotificationService(bot)
                     await notification_service.send_subscription_update_notification(
@@ -3904,7 +3903,6 @@ async def reduce_devices(
             from aiogram.enums import ParseMode
 
             from app.localization.texts import get_texts
-            from app.utils.bot_factory import create_bot
 
             texts = get_texts(getattr(user, 'language', 'ru'))
             notify_text = texts.t(
@@ -4360,11 +4358,11 @@ async def switch_tariff(
 
     # Отправляем уведомление админам о смене тарифа
     try:
+        from app.bot_factory import create_bot
         from app.services.admin_notification_service import AdminNotificationService
-        from app.utils.bot_factory import create_bot
 
         if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = create_bot(settings.BOT_TOKEN)
+            bot = create_bot()
             try:
                 notification_service = AdminNotificationService(bot)
                 await notification_service.send_subscription_purchase_notification(

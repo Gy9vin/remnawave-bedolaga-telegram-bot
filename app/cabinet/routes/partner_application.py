@@ -178,11 +178,11 @@ async def apply_for_partner(
 
     # Уведомляем админов о новой заявке
     try:
+        from app.bot_factory import create_bot
         from app.services.admin_notification_service import AdminNotificationService
-        from app.utils.bot_factory import create_bot
 
         if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = create_bot(settings.BOT_TOKEN)
+            bot = create_bot()
             try:
                 notification_service = AdminNotificationService(bot)
                 await notification_service.send_partner_application_notification(

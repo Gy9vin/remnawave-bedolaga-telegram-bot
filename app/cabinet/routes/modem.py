@@ -4,12 +4,12 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot_factory import create_bot
 from app.config import settings
 from app.services.admin_notification_service import AdminNotificationService
 from app.services.modem_service import ModemError, get_modem_service
 from app.services.subscription_purchase_service import validate_user_can_purchase
 from app.services.user_cart_service import user_cart_service
-from app.utils.bot_factory import create_bot
 
 from ..dependencies import get_cabinet_db, get_current_cabinet_user
 
@@ -212,7 +212,7 @@ async def enable_modem(
         tg_id = getattr(user, 'telegram_id', None)
         logger.info('Sending modem instructions to user', telegram_id=tg_id, has_token=bool(settings.BOT_TOKEN))
         if tg_id and settings.BOT_TOKEN:
-            _bot = create_bot(settings.BOT_TOKEN)
+            _bot = create_bot()
             try:
                 await _bot.send_message(
                     chat_id=tg_id,
@@ -228,7 +228,7 @@ async def enable_modem(
         # Send admin notification
         try:
             if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-                bot = create_bot(settings.BOT_TOKEN)
+                bot = create_bot()
                 try:
                     notification_service = AdminNotificationService(bot)
                     await notification_service.send_subscription_update_notification(
@@ -299,7 +299,7 @@ async def disable_modem(
         # Send admin notification
         try:
             if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-                bot = create_bot(settings.BOT_TOKEN)
+                bot = create_bot()
                 try:
                     notification_service = AdminNotificationService(bot)
                     await notification_service.send_subscription_update_notification(

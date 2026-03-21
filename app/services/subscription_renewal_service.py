@@ -12,6 +12,7 @@ import structlog
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot_factory import create_bot
 from app.config import settings
 from app.database.crud.subscription import (
     add_subscription_servers,
@@ -24,7 +25,6 @@ from app.services.admin_notification_service import AdminNotificationService
 from app.services.pricing_engine import RenewalPricing
 from app.services.remnawave_service import RemnaWaveConfigurationError
 from app.services.subscription_service import SubscriptionService
-from app.utils.bot_factory import create_bot
 
 
 logger = structlog.get_logger(__name__)
@@ -338,7 +338,7 @@ async def with_admin_notification_service(
 
     bot: Bot | None = None
     try:
-        bot = create_bot(settings.BOT_TOKEN)
+        bot = create_bot()
         service = AdminNotificationService(bot)
         await handler(service)
     except Exception as error:  # pragma: no cover - defensive logging

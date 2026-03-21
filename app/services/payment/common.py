@@ -476,20 +476,21 @@ async def try_fulfill_guest_purchase(
             introduces imprecision.
 
     Returns:
-        ``True``  -- guest purchase was detected and successfully fulfilled.
-        ``False`` -- guest purchase was detected but fulfillment failed.
+        ``True``  -- guest purchase was detected and consumed (fulfilled or queued for retry).
         ``None``  -- this is NOT a guest purchase (caller should proceed normally).
     """
     purchase_token = _extract_guest_purchase_token(metadata)
     if purchase_token is None:
         return None
 
-    from app.database.crud.landing import get_purchase_by_token, update_purchase_status
-    from app.database.models import GuestPurchaseStatus
+    from app.database.crud.landing import update_purchase_status
+    from app.database.models import GuestPurchase, GuestPurchaseStatus
     from app.services.guest_purchase_service import fulfill_purchase
 
     try:
-        existing = await get_purchase_by_token(db, purchase_token)
+        # FOR UPDATE prevents concurrent webhooks from double-processing the same purchase
+        result = await db.execute(select(GuestPurchase).where(GuestPurchase.token == purchase_token).with_for_update())
+        existing = result.scalars().first()
 
         # Verify amount (skip for providers with currency conversion imprecision)
         if existing and not skip_amount_check and payment_amount_kopeks != existing.amount_kopeks:
@@ -503,11 +504,20 @@ async def try_fulfill_guest_purchase(
             await update_purchase_status(db, purchase_token, GuestPurchaseStatus.FAILED)
             return True  # consumed, even though failed
 
-        # Idempotency: skip terminal states
-        if existing and existing.status in (
-            GuestPurchaseStatus.DELIVERED.value,
-            GuestPurchaseStatus.PENDING_ACTIVATION.value,
-            GuestPurchaseStatus.FAILED.value,
+        # Idempotency: skip terminal states (and code-only gifts already in PAID)
+        if (
+            existing
+            and existing.status
+            in (
+                GuestPurchaseStatus.DELIVERED.value,
+                GuestPurchaseStatus.PENDING_ACTIVATION.value,
+                GuestPurchaseStatus.FAILED.value,
+            )
+        ) or (
+            existing
+            and existing.status == GuestPurchaseStatus.PAID.value
+            and existing.is_gift
+            and not existing.gift_recipient_type
         ):
             logger.info(
                 'Guest purchase already in terminal state, skipping',
@@ -537,6 +547,24 @@ async def try_fulfill_guest_purchase(
                 purchase_token_prefix=purchase_token[:5],
                 provider=provider_name,
             )
+            # NaloGO receipt: payment received, fulfillment deferred until code activation
+            try:
+                await db.refresh(existing)
+                if existing.buyer:
+                    from app.services.guest_purchase_service import _create_nalogo_receipt_for_purchase
+
+                    await _create_nalogo_receipt_for_purchase(db, existing, existing.buyer)
+                else:
+                    logger.warning(
+                        'Code-only gift has no buyer, skipping NaloGO receipt',
+                        purchase_token_prefix=purchase_token[:5],
+                        buyer_user_id=existing.buyer_user_id,
+                    )
+            except Exception:
+                logger.exception(
+                    'Failed to create NaloGO receipt for code-only gift',
+                    purchase_token_prefix=purchase_token[:5],
+                )
             return True
 
         # Fulfill: create user, subscription, deliver (commits on success)
@@ -558,13 +586,26 @@ async def try_fulfill_guest_purchase(
             provider=provider_name,
             error=guest_error,
         )
-        # Mark as FAILED so it doesn't get retried forever
+        # Mark as PAID (not FAILED) so retry_stuck_paid_purchases can pick it up.
+        # Use a fresh session to avoid tainted-session issues after rollback.
+        # The monitoring service retries PAID purchases every 5 minutes for up to 24 hours.
         try:
-            await update_purchase_status(
-                db,
-                purchase_token,
-                GuestPurchaseStatus.FAILED,
-            )
+            from app.database.database import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as recovery_db:
+                # Use FOR UPDATE to prevent TOCTOU race with concurrent webhook.
+                row = await recovery_db.execute(
+                    select(GuestPurchase).where(GuestPurchase.token == purchase_token).with_for_update()
+                )
+                current = row.scalars().first()
+                if current and current.status in (
+                    GuestPurchaseStatus.PENDING.value,
+                    GuestPurchaseStatus.PAID.value,
+                ):
+                    current.status = GuestPurchaseStatus.PAID.value
+                    current.payment_id = provider_payment_id
+                    current.paid_at = datetime.now(UTC)
+                    await recovery_db.commit()
         except Exception:
-            logger.exception('Failed to mark guest purchase as FAILED')
-        return False
+            logger.exception('Failed to mark guest purchase as PAID for retry')
+        return True

@@ -227,9 +227,9 @@ async def approve_application(
 
     # Notify user about approval
     try:
+        from app.bot_factory import create_bot
         from app.config import settings
         from app.services.notification_delivery_service import notification_delivery_service
-        from app.utils.bot_factory import create_bot
 
         if settings.BOT_TOKEN:
             application = await db.get(PartnerApplication, application_id)
@@ -239,7 +239,7 @@ async def approve_application(
                 tg_message = (
                     f'✅ Ваша заявка на партнёрство одобрена!\nКомиссия: {request.commission_percent}%{comment_text}'
                 )
-                bot = create_bot(settings.BOT_TOKEN)
+                bot = create_bot()
                 try:
                     await notification_delivery_service.notify_partner_approved(
                         user=user,
@@ -279,9 +279,9 @@ async def reject_application(
 
     # Notify user about rejection
     try:
+        from app.bot_factory import create_bot
         from app.config import settings
         from app.services.notification_delivery_service import notification_delivery_service
-        from app.utils.bot_factory import create_bot
 
         if settings.BOT_TOKEN:
             application = await db.get(PartnerApplication, application_id)
@@ -289,7 +289,7 @@ async def reject_application(
             if user:
                 comment_text = f'\nПричина: {request.comment}' if request.comment else ''
                 tg_message = f'❌ Ваша заявка на партнёрство отклонена.{comment_text}'
-                bot = create_bot(settings.BOT_TOKEN)
+                bot = create_bot()
                 try:
                     await notification_delivery_service.notify_partner_rejected(
                         user=user,
