@@ -1,7 +1,9 @@
-"""Custom tables and columns (consolidated from old 0041-0045)
+"""Custom tables and columns (consolidated from old 0041-0045 + upstream 0041-0045)
 
 Adds payment tables, partner_applications, show_in_gift, blacklist_exceptions,
 AI forum columns, riopay nullable user_id, severpay_payments.
+Also applies upstream 0041-0045 content (indexes, retry_count, receipt_uuid,
+payment_method data migration) that was skipped on the production server.
 All operations are idempotent (IF NOT EXISTS checks).
 
 Revision ID: 0047
@@ -293,8 +295,6 @@ def upgrade() -> None:
                     None, 'riopay_payments', 'users', ['user_id'], ['id'], ondelete='SET NULL'
                 )
 
-    # ── severpay_payments ────────────────────────────────────────────────────
-
     if not _table_exists('severpay_payments'):
         op.create_table(
             'severpay_payments',
@@ -318,6 +318,152 @@ def upgrade() -> None:
             sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
             sa.Column('transaction_id', sa.Integer(), sa.ForeignKey('transactions.id'), nullable=True),
         )
+
+    # ── From upstream 0041: performance indexes ──────────────────────────────
+
+    conn = op.get_bind()
+    dialect = conn.dialect.name
+
+    def _index_exists(index_name: str, table_name: str) -> bool:
+        if dialect == 'postgresql':
+            result = conn.execute(
+                text("SELECT 1 FROM pg_indexes WHERE indexname = :n"),
+                {'n': index_name},
+            )
+        else:
+            result = conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='index' AND name = :n"),
+                {'n': index_name},
+            )
+        return result.fetchone() is not None
+
+    if not _index_exists('ix_campaign_reg_user_created', 'campaign_registrations'):
+        if dialect == 'postgresql':
+            conn.execute(
+                text(
+                    'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_campaign_reg_user_created '
+                    'ON campaign_registrations (user_id, created_at DESC)'
+                )
+            )
+        else:
+            op.create_index(
+                'ix_campaign_reg_user_created',
+                'campaign_registrations',
+                ['user_id', 'created_at'],
+            )
+
+    if not _index_exists('ix_transactions_user_type_completed_amount', 'transactions'):
+        if dialect == 'postgresql':
+            conn.execute(
+                text(
+                    'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_transactions_user_type_completed_amount '
+                    'ON transactions (user_id, type, is_completed, amount_kopeks)'
+                )
+            )
+        else:
+            op.create_index(
+                'ix_transactions_user_type_completed_amount',
+                'transactions',
+                ['user_id', 'type', 'is_completed', 'amount_kopeks'],
+            )
+
+    # ── From upstream 0042: retry_count + metadata indexes ───────────────────
+
+    if not _column_exists('guest_purchases', 'retry_count'):
+        op.add_column(
+            'guest_purchases',
+            sa.Column('retry_count', sa.Integer(), nullable=False, server_default='0'),
+        )
+
+    for idx_name, tbl, cols in [
+        ('ix_yookassa_payments_metadata', 'yookassa_payments', ['metadata_json']),
+        ('ix_cryptobot_payments_payload', 'cryptobot_payments', ['payload']),
+        ('ix_heleket_payments_metadata', 'heleket_payments', ['metadata_json']),
+        ('ix_mulenpay_payments_metadata', 'mulenpay_payments', ['metadata_json']),
+        ('ix_pal24_payments_metadata', 'pal24_payments', ['metadata_json']),
+        ('ix_wata_payments_metadata', 'wata_payments', ['metadata_json']),
+        ('ix_freekassa_payments_metadata', 'freekassa_payments', ['metadata_json']),
+        ('ix_kassa_ai_payments_metadata', 'kassa_ai_payments', ['metadata_json']),
+    ]:
+        if _table_exists(tbl) and not _index_exists(idx_name, tbl):
+            try:
+                op.create_index(idx_name, tbl, cols)
+            except Exception:
+                pass  # index may already exist under a different name
+
+    # ── From upstream 0043: RBAC + email indexes ─────────────────────────────
+
+    for idx_name, tbl, cols in [
+        ('ix_user_roles_role_id', 'user_roles', ['role_id']),
+        ('ix_access_policies_role_id', 'access_policies', ['role_id']),
+    ]:
+        if _table_exists(tbl) and not _index_exists(idx_name, tbl):
+            try:
+                op.create_index(idx_name, tbl, cols)
+            except Exception:
+                pass
+
+    if _table_exists('users') and not _index_exists('ix_users_email_lower', 'users'):
+        if dialect == 'postgresql':
+            try:
+                conn.execute(
+                    text(
+                        'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_users_email_lower '
+                        'ON users (lower(email))'
+                    )
+                )
+            except Exception:
+                pass
+        # SQLite does not support functional indexes — skip silently
+
+    # ── From upstream 0044: fix null payment_method on manual top-ups ─────────
+
+    conn.execute(
+        text(
+            "UPDATE transactions SET payment_method = 'manual' "
+            "WHERE type = 'deposit' "
+            "  AND payment_method IS NULL "
+            "  AND is_completed = TRUE "
+            "  AND (description IS NULL "
+            "       OR (description NOT LIKE '%Stars%' "
+            "           AND description NOT LIKE '%YooKassa%' "
+            "           AND description NOT LIKE '%CryptoBot%' "
+            "           AND description NOT LIKE '%Heleket%' "
+            "           AND description NOT LIKE '%MulenPay%' "
+            "           AND description NOT LIKE '%Pal24%' "
+            "           AND description NOT LIKE '%Platega%' "
+            "           AND description NOT LIKE '%WATA%' "
+            "           AND description NOT LIKE '%CloudPayments%' "
+            "           AND description NOT LIKE '%Freekassa%' "
+            "           AND description NOT LIKE '%KassaAI%' "
+            "           AND description NOT LIKE '%Tribute%'))"
+        )
+    )
+
+    # ── From upstream 0045: receipt_uuid + receipt_created_at ────────────────
+
+    if not _column_exists('guest_purchases', 'receipt_uuid'):
+        op.add_column(
+            'guest_purchases',
+            sa.Column('receipt_uuid', sa.String(255), nullable=True),
+        )
+
+    if not _column_exists('guest_purchases', 'receipt_created_at'):
+        op.add_column(
+            'guest_purchases',
+            sa.Column('receipt_created_at', sa.DateTime(timezone=True), nullable=True),
+        )
+
+    if not _index_exists('ix_guest_purchases_receipt_uuid', 'guest_purchases'):
+        if _column_exists('guest_purchases', 'receipt_uuid'):
+            try:
+                op.create_index(
+                    'ix_guest_purchases_receipt_uuid',
+                    'guest_purchases',
+                    ['receipt_uuid'],
+                )
+            except Exception:
+                pass
 
 
 def downgrade() -> None:
