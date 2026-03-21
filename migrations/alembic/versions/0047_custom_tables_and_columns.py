@@ -368,21 +368,7 @@ def upgrade() -> None:
             sa.Column('retry_count', sa.Integer(), nullable=False, server_default='0'),
         )
 
-    for idx_name, tbl, cols in [
-        ('ix_yookassa_payments_metadata', 'yookassa_payments', ['metadata_json']),
-        ('ix_cryptobot_payments_payload', 'cryptobot_payments', ['payload']),
-        ('ix_heleket_payments_metadata', 'heleket_payments', ['metadata_json']),
-        ('ix_mulenpay_payments_metadata', 'mulenpay_payments', ['metadata_json']),
-        ('ix_pal24_payments_metadata', 'pal24_payments', ['metadata_json']),
-        ('ix_wata_payments_metadata', 'wata_payments', ['metadata_json']),
-        ('ix_freekassa_payments_metadata', 'freekassa_payments', ['metadata_json']),
-        ('ix_kassa_ai_payments_metadata', 'kassa_ai_payments', ['metadata_json']),
-    ]:
-        if _table_exists(tbl) and not _index_exists(idx_name):
-            try:
-                op.create_index(idx_name, tbl, cols)
-            except Exception:
-                pass  # index may already exist under a different name
+    # JSON-колонки не поддерживают btree-индексы в PostgreSQL — пропускаем
 
     # ── From upstream 0043: RBAC + email indexes ─────────────────────────────
 
