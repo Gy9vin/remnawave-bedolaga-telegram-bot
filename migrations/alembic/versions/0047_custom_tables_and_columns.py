@@ -324,7 +324,7 @@ def upgrade() -> None:
     conn = op.get_bind()
     dialect = conn.dialect.name
 
-    def _index_exists(index_name: str, table_name: str) -> bool:
+    def _index_exists(index_name: str) -> bool:
         if dialect == 'postgresql':
             result = conn.execute(
                 text("SELECT 1 FROM pg_indexes WHERE indexname = :n"),
@@ -337,35 +337,28 @@ def upgrade() -> None:
             )
         return result.fetchone() is not None
 
-    if not _index_exists('ix_campaign_reg_user_created', 'campaign_registrations'):
-        if dialect == 'postgresql':
-            conn.execute(
-                text(
-                    'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_campaign_reg_user_created '
-                    'ON campaign_registrations (user_id, created_at DESC)'
+    # CONCURRENTLY нельзя внутри транзакции Alembic — используем обычный CREATE INDEX
+    if not _index_exists('ix_campaign_reg_user_created'):
+        if _table_exists('campaign_registrations'):
+            try:
+                op.create_index(
+                    'ix_campaign_reg_user_created',
+                    'campaign_registrations',
+                    ['user_id', 'created_at'],
                 )
-            )
-        else:
-            op.create_index(
-                'ix_campaign_reg_user_created',
-                'campaign_registrations',
-                ['user_id', 'created_at'],
-            )
+            except Exception:
+                pass
 
-    if not _index_exists('ix_transactions_user_type_completed_amount', 'transactions'):
-        if dialect == 'postgresql':
-            conn.execute(
-                text(
-                    'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_transactions_user_type_completed_amount '
-                    'ON transactions (user_id, type, is_completed, amount_kopeks)'
+    if not _index_exists('ix_transactions_user_type_completed_amount'):
+        if _table_exists('transactions'):
+            try:
+                op.create_index(
+                    'ix_transactions_user_type_completed_amount',
+                    'transactions',
+                    ['user_id', 'type', 'is_completed', 'amount_kopeks'],
                 )
-            )
-        else:
-            op.create_index(
-                'ix_transactions_user_type_completed_amount',
-                'transactions',
-                ['user_id', 'type', 'is_completed', 'amount_kopeks'],
-            )
+            except Exception:
+                pass
 
     # ── From upstream 0042: retry_count + metadata indexes ───────────────────
 
@@ -385,7 +378,7 @@ def upgrade() -> None:
         ('ix_freekassa_payments_metadata', 'freekassa_payments', ['metadata_json']),
         ('ix_kassa_ai_payments_metadata', 'kassa_ai_payments', ['metadata_json']),
     ]:
-        if _table_exists(tbl) and not _index_exists(idx_name, tbl):
+        if _table_exists(tbl) and not _index_exists(idx_name):
             try:
                 op.create_index(idx_name, tbl, cols)
             except Exception:
@@ -397,24 +390,22 @@ def upgrade() -> None:
         ('ix_user_roles_role_id', 'user_roles', ['role_id']),
         ('ix_access_policies_role_id', 'access_policies', ['role_id']),
     ]:
-        if _table_exists(tbl) and not _index_exists(idx_name, tbl):
+        if _table_exists(tbl) and not _index_exists(idx_name):
             try:
                 op.create_index(idx_name, tbl, cols)
             except Exception:
                 pass
 
-    if _table_exists('users') and not _index_exists('ix_users_email_lower', 'users'):
+    # ix_users_email_lower — функциональный индекс, только PostgreSQL
+    if _table_exists('users') and not _index_exists('ix_users_email_lower'):
         if dialect == 'postgresql':
             try:
                 conn.execute(
-                    text(
-                        'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_users_email_lower '
-                        'ON users (lower(email))'
-                    )
+                    text('CREATE INDEX IF NOT EXISTS ix_users_email_lower ON users (lower(email))')
                 )
             except Exception:
                 pass
-        # SQLite does not support functional indexes — skip silently
+        # SQLite не поддерживает функциональные индексы — пропускаем
 
     # ── From upstream 0044: fix null payment_method on manual top-ups ─────────
 
@@ -454,7 +445,7 @@ def upgrade() -> None:
             sa.Column('receipt_created_at', sa.DateTime(timezone=True), nullable=True),
         )
 
-    if not _index_exists('ix_guest_purchases_receipt_uuid', 'guest_purchases'):
+    if not _index_exists('ix_guest_purchases_receipt_uuid'):
         if _column_exists('guest_purchases', 'receipt_uuid'):
             try:
                 op.create_index(
