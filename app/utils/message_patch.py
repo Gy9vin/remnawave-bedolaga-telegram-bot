@@ -115,7 +115,12 @@ async def _text_answer(self: Message, text: str = None, **kwargs):
 async def _text_edit(self: Message, text: str, **kwargs):
     """Обёртка над оригинальным Message.edit_text с подавлением web page preview."""
     kwargs.setdefault('disable_web_page_preview', True)
-    return await _original_edit_text(self, text, **kwargs)
+    try:
+        return await _original_edit_text(self, text, **kwargs)
+    except TelegramBadRequest as error:
+        if 'message is not modified' in str(error).lower():
+            return None
+        raise
 
 
 def _get_language(message: Message) -> str | None:
@@ -258,7 +263,12 @@ async def _edit_with_photo(self: Message, text: str, **kwargs):
                 if is_topic_required_error(error):
                     return None
                 raise
-        return await _original_edit_text(self, text, **kwargs)
+        try:
+            return await _original_edit_text(self, text, **kwargs)
+        except TelegramBadRequest as error:
+            if 'message is not modified' in str(error).lower():
+                return None
+            raise
     if self.photo:
         language = _get_language(self)
         # Если caption потенциально слишком длинный — отправим как текст вместо caption
