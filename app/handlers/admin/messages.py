@@ -84,6 +84,7 @@ TEXT_MENU_MINIAPP_BUTTON_KEYS = {
     'promocode',
     'connect',
     'subscription',
+    'support',
 }
 
 
@@ -100,7 +101,10 @@ async def get_updated_message_buttons_selector_keyboard(
 
 
 async def create_broadcast_keyboard(
-    selected_buttons: list, language: str = 'ru', db: AsyncSession | None = None
+    selected_buttons: list,
+    language: str = 'ru',
+    custom_buttons: list[dict] | None = None,
+    db: AsyncSession | None = None,
 ) -> types.InlineKeyboardMarkup | None:
     selected_buttons = selected_buttons or []
     keyboard: list[list[types.InlineKeyboardButton]] = []
@@ -145,6 +149,20 @@ async def create_broadcast_keyboard(
                 )
         if row_buttons:
             keyboard.append(row_buttons)
+
+    # Append custom buttons (each on its own row)
+    if custom_buttons:
+        for btn in custom_buttons:
+            label = btn.get('label', '')
+            action_type = btn.get('action_type', 'callback')
+            action_value = btn.get('action_value', '')
+            if not label or not action_value:
+                continue
+            if action_type == 'url':
+                keyboard.append([types.InlineKeyboardButton(text=label, url=action_value)])
+            else:
+                # callback type
+                keyboard.append([types.InlineKeyboardButton(text=label, callback_data=action_value)])
 
     if not keyboard:
         return None

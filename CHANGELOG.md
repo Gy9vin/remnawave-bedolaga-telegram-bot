@@ -1,5 +1,47 @@
 # Changelog
 
+## [3.41.0](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/compare/v3.40.0...v3.41.0) (2026-03-22)
+
+
+### New Features
+
+* add subscription status to referral network graph nodes ([de91d32](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/de91d3282ffa15c0cec60c0d62871d39e7ee4c05))
+* add total subscription revenue to referral network stats ([2bdb764](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/2bdb7643f8fd142e99caee0fe989348161377348))
+
+
+### Bug Fixes
+
+* add abs() to all remaining subscription payment sum queries ([1eb4e18](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/1eb4e18c1776b2265a48e0b923a0ca4ee057d912))
+* add missing total_subscription_revenue_kopeks in scoped graph early return ([bcc761f](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/bcc761f9d3f673bd2b404adf817762058d8e0df4))
+* consider subscription status field in network graph ([454dc93](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/454dc9321bb9405c5ff0ff559ae4ced15533f3af))
+* superadmin role managed exclusively via env config ([e0bedc8](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/e0bedc8e780a2f91509517110639773e90bb6125))
+* treat expired and limited subscription statuses as inactive in referral network graph ([5ed2f0c](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/5ed2f0c95842a43ab57220dc05ca346748bd6adb))
+* use abs() for subscription payment amounts in referral network ([056c13b](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/056c13bc23e6737f44bbcb802a66b643349f75a9))
+
+
+### Refactoring
+
+* extract _compute_subscription_status shared helper ([8b8f1b9](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/8b8f1b91f37f829528f785a40e3a9cb98c85e043))
+
+## [3.40.0](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/compare/v3.39.0...v3.40.0) (2026-03-22)
+
+
+### New Features
+
+* allow inactive tariffs for trial subscription activation ([cce3b0c](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/cce3b0c13bcbf0b567bd4dcf2670973382e7cab0))
+* custom broadcast buttons and fix home button to use bot menu ([13ea376](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/13ea3768b516337c4e0320120bc60a9acb27a16b))
+
+
+### Bug Fixes
+
+* accept stale Telegram initData to prevent MiniApp auth failures ([4c2cb63](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/4c2cb63cf9f71fb392c3723a99e88ca3d02b127d))
+* daily subscription pause not persisting in cabinet and miniapp ([d3c9940](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/d3c994083e3b054d02d4911172968c914724d051))
+* handle spurious user.deleted webhooks — preserve active subscriptions and prevent orphaned panel users ([9eab802](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/9eab80200006e576967204b52f90bf9866875917))
+* prevent MESSAGE_TOO_LONG in promo groups list ([c307278](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/c30727823169159b4b6b61f54897b209ced8dfd2))
+* referral system — self-referral protection, race condition fix, deleted user re-registration ([ed5a92a](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/ed5a92ab966dac54c15217050eae87f4b05eed62))
+* sanitize email dots in RemnaWave username generation ([6c20858](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/6c208581d936f5ab7d6b978baafd50881b8ce9f1))
+* send DISABLED instead of EXPIRED status to RemnaWave API ([79cfcbc](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/commit/79cfcbcece3938f2daa83206f96ec1bffd0857e0))
+
 ## [3.39.0](https://github.com/BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot/compare/v3.38.0...v3.39.0) (2026-03-21)
 
 

@@ -1449,6 +1449,7 @@ async def create_pending_subscription(
     payment_method: str = 'pending',
     total_price_kopeks: int = 0,
     is_trial: bool = False,
+    tariff_id: int | None = None,
 ) -> Subscription:
     """Creates a pending subscription that will be activated after payment.
 
@@ -1482,6 +1483,8 @@ async def create_pending_subscription(
         existing_subscription.connected_squads = connected_squads or []
         existing_subscription.traffic_used_gb = 0.0
         existing_subscription.updated_at = current_time
+        if tariff_id is not None:
+            existing_subscription.tariff_id = tariff_id
 
         await db.commit()
         await db.refresh(existing_subscription)
@@ -1504,6 +1507,7 @@ async def create_pending_subscription(
         traffic_limit_gb=traffic_limit_gb,
         device_limit=device_limit,
         connected_squads=connected_squads or [],
+        tariff_id=tariff_id,
         autopay_enabled=settings.is_autopay_enabled_by_default(),
         autopay_days_before=settings.DEFAULT_AUTOPAY_DAYS_BEFORE,
     )
@@ -1533,6 +1537,7 @@ async def create_pending_trial_subscription(
     connected_squads: list[str] = None,
     payment_method: str = 'pending',
     total_price_kopeks: int = 0,
+    tariff_id: int | None = None,
 ) -> Subscription:
     """Creates a pending trial subscription. Wrapper for create_pending_subscription with is_trial=True."""
     return await create_pending_subscription(
@@ -1545,6 +1550,7 @@ async def create_pending_trial_subscription(
         payment_method=payment_method,
         total_price_kopeks=total_price_kopeks,
         is_trial=True,
+        tariff_id=tariff_id,
     )
 
 
