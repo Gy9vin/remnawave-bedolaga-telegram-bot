@@ -75,6 +75,33 @@ async def _has_orphaned_revision() -> bool:
 
 _INITIAL_REVISION = '0001'
 
+# Ревизии нашего старого 0046/0047, которые upstream теперь использует для других миграций.
+# Если DB на этих ревизиях, но news_articles не существует — значит нужно откатить stamp
+# до 0045 чтобы upstream-миграции 0046-0049 запустились корректно.
+_UPSTREAM_REBASE_REVISIONS = frozenset({'0046', '0047'})
+
+
+async def _needs_news_migration_rebase() -> bool:
+    """Проверить: DB на 0046/0047 (наши старые), но news_articles не существует.
+
+    После переименования наших миграций в 9001/9002, upstream занял ревизии 0046-0049.
+    Серверы, которые были на нашем старом 0047, имеют alembic_version='0047', но
+    upstream-миграция 0046 (news_articles) никогда не запускалась. Нужно rebase до 0045.
+    """
+    from app.database.database import engine
+
+    current = await _get_current_db_revision()
+    if current not in _UPSTREAM_REBASE_REVISIONS:
+        return False
+
+    async with engine.connect() as conn:
+        has_news = await conn.run_sync(lambda sync_conn: inspect(sync_conn).has_table('news_articles'))
+
+    if not has_news:
+        return True
+    return False
+
+
 # Паттерн наших "правильных" файлов миграций: 0001_..., 0002_... и т.д.
 # Наши кастомные миграции с высокими ID (9001+) никогда не совпадут с upstream.
 import re as _re
@@ -190,6 +217,12 @@ async def run_alembic_upgrade() -> None:
     elif await _has_orphaned_revision():
         logger.warning('Принудительный stamp head — старая ревизия несовместима с текущими миграциями')
         await _stamp_alembic_revision('head')
+    elif await _needs_news_migration_rebase():
+        logger.warning(
+            'Обнаружена БД на ревизии 0046/0047 без таблицы news_articles — '
+            'stamp 0045 для повторного запуска upstream-миграций 0046-0049'
+        )
+        await _stamp_alembic_revision('0045')
 
     cfg = _get_alembic_config()
     loop = asyncio.get_running_loop()
