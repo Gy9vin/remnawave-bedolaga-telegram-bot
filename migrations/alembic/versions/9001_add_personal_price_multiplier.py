@@ -8,8 +8,8 @@ Create Date: 2026-03-18
 
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect, text
 
 revision: str = '9001'
 down_revision: Union[str, None] = '0049'
@@ -18,10 +18,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        'users',
-        sa.Column('personal_price_multiplier', sa.Float(), nullable=False, server_default='1.0'),
-    )
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    columns = [c['name'] for c in inspector.get_columns('users')]
+    if 'personal_price_multiplier' not in columns:
+        op.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN personal_price_multiplier FLOAT NOT NULL DEFAULT 1.0"
+            )
+        )
 
 
 def downgrade() -> None:
