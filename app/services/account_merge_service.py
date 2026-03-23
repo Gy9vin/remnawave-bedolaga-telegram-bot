@@ -23,9 +23,11 @@ from app.database.models import (
     CryptoBotPayment,
     DiscountOffer,
     FreekassaPayment,
+    GuestPurchase,
     HeleketPayment,
     KassaAiPayment,
     MulenPayPayment,
+    NewsArticle,
     Pal24Payment,
     PartnerApplication,
     PartnerStatus,
@@ -40,10 +42,14 @@ from app.database.models import (
     ReferralContest,
     ReferralContestEvent,
     ReferralEarning,
+    RioPayPayment,
+    SavedPaymentMethod,
     SentNotification,
+    SeverPayPayment,
     Subscription,
     SubscriptionConversion,
     SubscriptionEvent,
+    SubscriptionServer,
     SupportAuditLog,
     Ticket,
     TicketMessage,
@@ -78,6 +84,8 @@ _PAYMENT_MODELS: tuple[type, ...] = (
     MulenPayPayment,
     Pal24Payment,
     PlategaPayment,
+    RioPayPayment,
+    SeverPayPayment,
     WataPayment,
     YooKassaPayment,
 )
@@ -294,12 +302,12 @@ async def _handle_subscription_merge(
     if not has_primary_sub and has_secondary_sub:
         assert secondary_sub is not None
         secondary_sub.user_id = primary.id
-        # Переносим remnawave_uuid с secondary на primary — двухфазно, чтобы не нарушить UNIQUE
+        # Переносим remnawave_uuid (clear→flush→assign — unique constraint safety)
         if secondary.remnawave_uuid:
-            new_uuid = secondary.remnawave_uuid
+            uuid_to_transfer = secondary.remnawave_uuid
             secondary.remnawave_uuid = None
-            await db.flush()  # Сначала освобождаем UUID у secondary
-            primary.remnawave_uuid = new_uuid
+            await db.flush()
+            primary.remnawave_uuid = uuid_to_transfer
         await db.flush()
         logger.info(
             'Мерж подписок: перенесена подписка secondary на primary',
@@ -317,18 +325,20 @@ async def _handle_subscription_merge(
         if primary.remnawave_uuid:
             await _delete_remnawave_user_with_fallback(primary.remnawave_uuid)
             primary.remnawave_uuid = None
+        # Явно удаляем subscription_servers перед подпиской (CASCADE настроен, но делаем явно для ясности)
+        await db.execute(delete(SubscriptionServer).where(SubscriptionServer.subscription_id == primary_sub.id))
         # Удаляем запись подписки primary
         await db.delete(primary_sub)
         await db.flush()
         # Переносим подписку secondary на primary
         secondary_sub.user_id = primary.id
-        # Переносим remnawave_uuid — двухфазно, чтобы не нарушить UNIQUE
+        # Переносим remnawave_uuid (clear→flush→assign — unique constraint safety)
         if secondary.remnawave_uuid:
-            new_uuid = secondary.remnawave_uuid
+            uuid_to_transfer = secondary.remnawave_uuid
             secondary.remnawave_uuid = None
-            await db.flush()  # Сначала освобождаем UUID у secondary
-            primary.remnawave_uuid = new_uuid
-        # Flush — гарантируем, что DELETE предшествует UPDATE (unique constraint на subscription.user_id)
+            await db.flush()
+            primary.remnawave_uuid = uuid_to_transfer
+        # Flush сразу — гарантируем, что DELETE предшествует UPDATE (unique constraint на subscription.user_id)
         await db.flush()
         logger.info(
             'Мерж подписок: оставлена подписка secondary, подписка primary удалена',
@@ -341,6 +351,8 @@ async def _handle_subscription_merge(
         if secondary.remnawave_uuid:
             await _delete_remnawave_user_with_fallback(secondary.remnawave_uuid)
             secondary.remnawave_uuid = None
+        # Явно удаляем subscription_servers перед подпиской (CASCADE настроен, но делаем явно для ясности)
+        await db.execute(delete(SubscriptionServer).where(SubscriptionServer.subscription_id == secondary_sub.id))
         # Удаляем запись подписки secondary
         await db.delete(secondary_sub)
         await db.flush()
@@ -509,6 +521,11 @@ async def execute_merge(
     # 7. Переназначение всех платёжных таблиц
     for payment_model in _PAYMENT_MODELS:
         await db.execute(update(payment_model).where(payment_model.user_id == secondary.id).values(user_id=primary.id))
+
+    # 7b. Переназначение saved_payment_methods (FK без ondelete)
+    await db.execute(
+        update(SavedPaymentMethod).where(SavedPaymentMethod.user_id == secondary.id).values(user_id=primary.id)
+    )
 
     # 8. Переназначение referral_earnings
     # 8a. Удаляем cross-referral записи между участниками мержа (иначе станут self-referral)
@@ -720,6 +737,13 @@ async def execute_merge(
     await db.execute(update(PinnedMessage).where(PinnedMessage.created_by == secondary.id).values(created_by=None))
     await db.execute(update(AdminRole).where(AdminRole.created_by == secondary.id).values(created_by=None))
     await db.execute(update(AccessPolicy).where(AccessPolicy.created_by == secondary.id).values(created_by=None))
+    await db.execute(update(NewsArticle).where(NewsArticle.created_by == secondary.id).values(created_by=None))
+
+    # 10s. Переназначение guest_purchases (оба FK — buyer_user_id и user_id)
+    await db.execute(
+        update(GuestPurchase).where(GuestPurchase.buyer_user_id == secondary.id).values(buyer_user_id=primary.id)
+    )
+    await db.execute(update(GuestPurchase).where(GuestPurchase.user_id == secondary.id).values(user_id=primary.id))
 
     # 11. Инвалидация refresh-токенов обоих пользователей (после мержа будет создан новый)
     now = datetime.now(UTC)

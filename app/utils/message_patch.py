@@ -266,6 +266,10 @@ async def _edit_with_photo(self: Message, text: str, **kwargs):
         try:
             return await _original_edit_text(self, text, **kwargs)
         except TelegramBadRequest as error:
+            if is_topic_required_error(error):
+                return None
+            if 'MESSAGE_ID_INVALID' in str(error) or 'message to edit not found' in str(error).lower():
+                return None
             if 'message is not modified' in str(error).lower():
                 return None
             raise
