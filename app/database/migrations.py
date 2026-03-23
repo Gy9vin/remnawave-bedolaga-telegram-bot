@@ -78,7 +78,7 @@ _INITIAL_REVISION = '0001'
 # Ревизии нашего старого 0046/0047, которые upstream теперь использует для других миграций.
 # Если DB на этих ревизиях, но news_articles не существует — значит нужно откатить stamp
 # до 0045 чтобы upstream-миграции 0046-0049 запустились корректно.
-_UPSTREAM_REBASE_REVISIONS = frozenset({'0046', '0047'})
+_UPSTREAM_REBASE_REVISIONS = frozenset({'0046', '0047', '0048', '0049'})
 
 
 async def _needs_news_migration_rebase() -> bool:
