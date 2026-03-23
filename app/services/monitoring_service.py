@@ -2361,6 +2361,13 @@ class MonitoringService:
 
         except Exception as e:
             logger.error('Ошибка логирования события мониторинга', error=e)
+            # После ошибки commit (например, connection is closed) сессия остаётся
+            # в состоянии PendingRollback. Откатываем чтобы следующие задачи могли
+            # использовать эту же сессию без PendingRollbackError.
+            try:
+                await db.rollback()
+            except Exception:
+                pass
 
     async def get_monitoring_status(self, db: AsyncSession) -> dict[str, Any]:
         try:
