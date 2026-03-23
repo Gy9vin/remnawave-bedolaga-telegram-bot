@@ -76,10 +76,11 @@ async def _has_orphaned_revision() -> bool:
 _INITIAL_REVISION = '0001'
 
 # Паттерн наших "правильных" файлов миграций: 0001_..., 0002_... и т.д.
+# Наши кастомные миграции с высокими ID (9001+) никогда не совпадут с upstream.
 import re as _re
 
 
-_OUR_MIGRATION_PATTERN = _re.compile(r'^00\d{2}_')
+_OUR_MIGRATION_PATTERN = _re.compile(r'^(00\d{2}_|9\d{3}_)')
 
 
 def _cleanup_foreign_migration_files() -> int:
@@ -87,6 +88,7 @@ def _cleanup_foreign_migration_files() -> int:
 
     Upstream BEDOLAGA-DEV использует hash-based ID (например cbd1be472f3d),
     а наш форк использует числовые ID (0001, 0002, ...).
+    Наши кастомные миграции используют ID 9001+ чтобы никогда не конфликтовать с upstream.
     При деплое на сервер, куда ранее устанавливался upstream, эти файлы могут смешаться.
     """
     cfg = _get_alembic_config()

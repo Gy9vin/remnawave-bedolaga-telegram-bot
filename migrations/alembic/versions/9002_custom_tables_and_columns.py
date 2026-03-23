@@ -6,8 +6,8 @@ Also applies upstream 0041-0045 content (indexes, retry_count, receipt_uuid,
 payment_method data migration) that was skipped on the production server.
 All operations are idempotent (IF NOT EXISTS checks).
 
-Revision ID: 0047
-Revises: 0046
+Revision ID: 9002
+Revises: 9001
 Create Date: 2026-03-21
 """
 
@@ -17,8 +17,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect, text
 
-revision: str = '0047'
-down_revision: Union[str, None] = '0046'
+revision: str = '9002'
+down_revision: Union[str, None] = '9001'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
