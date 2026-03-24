@@ -6,7 +6,12 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.crud.referral import create_referral_earning, get_commission_payment_count, get_user_campaign_id
+from app.database.crud.referral import (
+    create_referral_earning,
+    get_commission_payment_count,
+    get_referral_earnings_by_referral,
+    get_user_campaign_id,
+)
 from app.database.crud.user import add_user_balance, get_user_by_id
 from app.database.models import ReferralEarning, TransactionType, User
 from app.services.notification_delivery_service import (
@@ -96,6 +101,16 @@ async def process_referral_registration(db: AsyncSession, new_user_id: int, refe
         if new_user.referred_by_id != referrer_id:
             logger.error('Пользователь не привязан к рефереру', new_user_id=new_user_id, referrer_id=referrer_id)
             return False
+
+        # Идемпотентность: не создавать дублирующую запись регистрации
+        existing = await get_referral_earnings_by_referral(db, new_user_id)
+        if any(e.reason == 'referral_registration_pending' for e in existing):
+            logger.info(
+                'Реферальная регистрация уже обработана, пропуск',
+                new_user_id=new_user_id,
+                referrer_id=referrer_id,
+            )
+            return True
 
         campaign_id = await get_user_campaign_id(db, new_user_id)
         await create_referral_earning(

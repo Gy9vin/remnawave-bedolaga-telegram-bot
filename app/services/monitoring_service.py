@@ -208,7 +208,15 @@ class MonitoringService:
         Если задача падает (в т.ч. InterfaceError / connection is closed),
         делает rollback сессии и продолжает. Это позволяет следующим задачам
         получить свежее соединение из пула вместо PendingRollbackError.
+
+        Превентивный rollback в начале нужен для случаев, когда предыдущая задача
+        поймала исключение внутри себя (не дав ему всплыть до нас), но не сделала
+        rollback — сессия остаётся в состоянии PendingRollback.
         """
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         try:
             await coro
             return True

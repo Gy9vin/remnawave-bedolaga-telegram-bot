@@ -276,6 +276,7 @@ async def _process_referral_code(
         # Case 2: referred_by_id not set — resolve referral code and set it
         referrer = await get_user_by_referral_code(db, referral_code)
         if not referrer:
+            logger.warning('Referral code not found', referral_code=referral_code, user_id=user.id)
             return
         if referrer.id == user.id:
             return
@@ -922,6 +923,10 @@ async def register_email_standalone(
                 logger.info(
                     f'Found referrer for email registration: referrer_id={referrer.id}, code={request.referral_code}'
                 )
+        else:
+            logger.warning(
+                f'Referral code not found in DB for email registration: code={request.referral_code}, email={request.email}'
+            )
 
     # Создать пользователя
     user = await create_user_by_email(
@@ -1044,6 +1049,19 @@ async def verify_email(
 
     # Check if user has subscription in RemnaWave panel by email
     await _sync_subscription_from_panel_by_email(db, user)
+
+    # Recovery: если referred_by_id задан, но реферальная регистрация не была обработана
+    # (например бот был недоступен в момент регистрации) — повторяем попытку.
+    # process_referral_registration идемпотентен: дублей не создаёт.
+    if user.referred_by_id:
+        try:
+            from app.bot_factory import create_bot
+            from app.services.referral_service import process_referral_registration
+
+            async with create_bot() as bot:
+                await process_referral_registration(db, user.id, user.referred_by_id, bot=bot)
+        except Exception as _e:
+            logger.warning('Не удалось выполнить recovery реферальной регистрации', error=_e, user_id=user.id)
 
     # Return auth tokens so user is logged in after verification
     response = await _create_auth_response(user, db)
