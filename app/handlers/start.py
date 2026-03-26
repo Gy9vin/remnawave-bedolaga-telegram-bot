@@ -2213,6 +2213,11 @@ async def required_sub_channel_check(
                         campaign_id=campaign.id,
                         partner_user_id=campaign.partner_user_id,
                     )
+                elif pending_start_payload.startswith('webauth_'):
+                    logger.info(
+                        '🔐 CHANNEL CHECK: Payload webauth — пропускаем как реф-код',
+                        pending_start_payload=pending_start_payload[:20],
+                    )
                 else:
                     state_data['referral_code'] = pending_start_payload
                     logger.info(

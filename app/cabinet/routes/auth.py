@@ -1975,8 +1975,29 @@ async def poll_deep_link_token(
     response = await _create_auth_response(user, db)
     await _store_refresh_token(db, user.id, response.refresh_token, device_info='deep_link')
 
-    # Deep link auth is always for existing users — referral code not applicable
-    # (kept for campaign bonus processing only)
+    # Process referral code — new users can register via deep link flow
+    if request.referral_code and not user.referred_by_id:
+        referrer = await get_user_by_referral_code(db, request.referral_code)
+        if referrer and referrer.id != user.id:
+            try:
+                from app.services.referral_service import process_referral_registration
+
+                user.referred_by_id = referrer.id
+                await db.flush()
+                await process_referral_registration(db=db, new_user_id=user.id, referrer_id=referrer.id)
+                logger.info(
+                    'Deep link referral processed',
+                    user_id=user.id,
+                    referrer_id=referrer.id,
+                    referral_code=request.referral_code,
+                )
+            except Exception as ref_err:
+                logger.warning(
+                    'Deep link referral processing failed',
+                    user_id=user.id,
+                    referral_code=request.referral_code,
+                    error=str(ref_err),
+                )
 
     # Process campaign bonus
     response.campaign_bonus = await _process_campaign_bonus(db, user, request.campaign_slug)
