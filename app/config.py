@@ -148,6 +148,13 @@ class Settings(BaseSettings):
     WEBHOOK_NOTIFY_BANDWIDTH_THRESHOLD: bool = True
     WEBHOOK_NOTIFY_DEVICES: bool = True
 
+    # Notification discounts (can be overridden via env)
+    NOTIFY_SECOND_WAVE_DISCOUNT_PERCENT: int = 10  # скидка через 2-3 дня после истечения
+    NOTIFY_SECOND_WAVE_VALID_HOURS: int = 24  # часов действия скидки
+    NOTIFY_THIRD_WAVE_DISCOUNT_PERCENT: int = 20  # скидка через N дней после истечения
+    NOTIFY_THIRD_WAVE_VALID_HOURS: int = 24  # часов действия скидки
+    NOTIFY_THIRD_WAVE_TRIGGER_DAYS: int = 5  # через сколько дней отправлять 3-ю волну
+
     TRIAL_DURATION_DAYS: int = 3
     TRIAL_TRAFFIC_LIMIT_GB: int = 10
     TRIAL_DEVICE_LIMIT: int = 2

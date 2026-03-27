@@ -18,20 +18,30 @@ class NotificationSettingsService:
     _data: dict[str, dict[str, Any]] = {}
     _loaded: bool = False
 
+    @classmethod
+    def _get_defaults(cls) -> dict[str, dict[str, Any]]:
+        return {
+            'trial_channel_unsubscribed': {'enabled': True},
+            'expired_1d': {'enabled': True},
+            'expired_second_wave': {
+                'enabled': True,
+                'discount_percent': settings.NOTIFY_SECOND_WAVE_DISCOUNT_PERCENT,
+                'valid_hours': settings.NOTIFY_SECOND_WAVE_VALID_HOURS,
+            },
+            'expired_third_wave': {
+                'enabled': True,
+                'discount_percent': settings.NOTIFY_THIRD_WAVE_DISCOUNT_PERCENT,
+                'valid_hours': settings.NOTIFY_THIRD_WAVE_VALID_HOURS,
+                'trigger_days': settings.NOTIFY_THIRD_WAVE_TRIGGER_DAYS,
+            },
+        }
+
+    # Kept for backward compat — replaced by _get_defaults() at runtime
     _DEFAULTS: dict[str, dict[str, Any]] = {
         'trial_channel_unsubscribed': {'enabled': True},
         'expired_1d': {'enabled': True},
-        'expired_second_wave': {
-            'enabled': True,
-            'discount_percent': 10,
-            'valid_hours': 24,
-        },
-        'expired_third_wave': {
-            'enabled': True,
-            'discount_percent': 20,
-            'valid_hours': 24,
-            'trigger_days': 5,
-        },
+        'expired_second_wave': {'enabled': True, 'discount_percent': 10, 'valid_hours': 24},
+        'expired_third_wave': {'enabled': True, 'discount_percent': 20, 'valid_hours': 24, 'trigger_days': 5},
     }
 
     @classmethod
@@ -65,7 +75,7 @@ class NotificationSettingsService:
     @classmethod
     def _apply_defaults(cls) -> bool:
         changed = False
-        for key, defaults in cls._DEFAULTS.items():
+        for key, defaults in cls._get_defaults().items():
             current = cls._data.get(key)
             if not isinstance(current, dict):
                 cls._data[key] = deepcopy(defaults)
