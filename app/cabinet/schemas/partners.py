@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ==================== User-facing ====================
@@ -13,10 +13,18 @@ class PartnerApplicationRequest(BaseModel):
 
     company_name: str | None = Field(None, max_length=255)
     website_url: str | None = Field(None, max_length=500)
-    telegram_channel: str | None = Field(None, max_length=255)
-    description: str | None = Field(None, max_length=2000)
-    expected_monthly_referrals: int | None = Field(None, ge=0, le=2_000_000_000)
+    telegram_channel: str = Field(..., min_length=3, max_length=255)
+    description: str = Field(..., min_length=10, max_length=2000)
+    expected_monthly_referrals: int | None = Field(None, ge=1, le=2_000_000_000)
     desired_commission_percent: int | None = Field(None, ge=1, le=100)
+
+    @field_validator('telegram_channel', 'description')
+    @classmethod
+    def strip_and_validate(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError('Поле не может быть пустым или состоять только из пробелов')
+        return stripped
 
 
 class PartnerApplicationInfo(BaseModel):
