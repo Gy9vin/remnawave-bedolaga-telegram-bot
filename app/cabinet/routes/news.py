@@ -161,16 +161,15 @@ async def get_article_by_slug(
             detail='Article not found',
         )
 
-    # Build response dict while the session is still open (before any commit
-    # that would expire ORM attributes and cause MissingGreenlet on lazy-load).
+    # Build response dict while session attributes are still loaded.
+    # increment_views() calls db.commit() which expires all ORM attributes;
+    # accessing them afterwards triggers lazy-load → MissingGreenlet in async.
     response_data = _article_to_response(article, include_content=True)
 
     # Increment views with per-user deduplication (5-min TTL).
-    # Prevents view count inflation from repeated requests by the same user.
     if _should_count_view(user.id, article.id):
         try:
             new_count = await increment_views(db, article.id)
-            # Patch the already-built dict so the response reflects the new count
             response_data['views_count'] = new_count
         except Exception:
             logger.warning('Failed to increment views', article_id=article.id)
