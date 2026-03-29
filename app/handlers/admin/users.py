@@ -2093,6 +2093,13 @@ async def process_add_single_referral(
             ).format(amount=settings.format_price(first_topup_kopeks))
         )
 
+        # Сбрасываем флаг has_made_first_topup: он мог быть выставлен в True
+        # при первом пополнении без реферера (webhook строка 877). Теперь реферер
+        # добавлен задним числом, поэтому process_referral_topup должна видеть
+        # флаг False, чтобы начислить первый бонус, а не комиссию.
+        referral.has_made_first_topup = False
+        await db.commit()
+
         # Передаём сумму первого пополнения (как в оригинальной логике)
         topup_success = await process_referral_topup(db, referral.id, first_topup_kopeks, message.bot)
 
