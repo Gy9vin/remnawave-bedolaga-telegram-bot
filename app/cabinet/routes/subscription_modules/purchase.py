@@ -406,6 +406,29 @@ async def preview_purchase(
         pricing = await purchase_service.calculate_pricing(db, context, selection)
         preview = purchase_service.build_preview_payload(context, pricing)
 
+        # Если баланса не хватает — сохраняем корзину сразу в preview.
+        # Фронтенд при can_purchase=False показывает кнопку "Пополнить" и
+        # НЕ вызывает /purchase, поэтому корзина должна сохраняться здесь.
+        if not preview.get('can_purchase', True):
+            try:
+                cart_data = {
+                    'cart_mode': 'subscription_purchase',
+                    'period_id': request.selection.period_id,
+                    'period_days': request.selection.period_days,
+                    'traffic_gb': request.selection.traffic_value,
+                    'countries': request.selection.servers,
+                    'devices': request.selection.devices,
+                    'total_price': pricing.final_total,
+                    'user_id': user.id,
+                    'saved_cart': True,
+                    'return_to_cart': True,
+                    'source': 'cabinet',
+                }
+                await user_cart_service.save_user_cart(user.id, cart_data)
+                logger.info('Cart saved at preview (insufficient balance, cabinet)', user_id=user.id)
+            except Exception as _cart_err:
+                logger.error('Failed to save cart at preview', user_id=user.id, error=_cart_err)
+
         return preview
 
     except PurchaseValidationError as e:
