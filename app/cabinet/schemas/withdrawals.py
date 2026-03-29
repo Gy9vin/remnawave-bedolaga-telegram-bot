@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ==================== User-facing ====================
@@ -30,6 +30,14 @@ class WithdrawalCreateRequest(BaseModel):
 
     amount_kopeks: int = Field(..., gt=0, le=10_000_000)
     payment_details: str = Field(..., min_length=5, max_length=1000)
+
+    @field_validator('payment_details')
+    @classmethod
+    def strip_and_validate_details(cls, v: str) -> str:
+        stripped = v.strip()
+        if len(stripped) < 5:
+            raise ValueError('Реквизиты должны содержать не менее 5 символов без учёта пробелов')
+        return stripped
 
 
 class WithdrawalItemResponse(BaseModel):
