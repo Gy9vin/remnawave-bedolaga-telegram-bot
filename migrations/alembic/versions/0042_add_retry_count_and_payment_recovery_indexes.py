@@ -52,9 +52,22 @@ def upgrade() -> None:
     # 2. Create expression indexes for payment recovery queries.
     #    These allow efficient lookup of succeeded payments by purchase_token
     #    stored inside the metadata_json column.
+    bind = op.get_bind()
+
+    def _table_exists(tname: str) -> bool:
+        r = bind.execute(
+            sa.text(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = :t"
+            ),
+            {'t': tname},
+        )
+        return r.fetchone() is not None
+
     with op.get_context().autocommit_block():
         # Tables with is_paid boolean column
         for table in _TABLES_WITH_IS_PAID:
+            if not _table_exists(table):
+                continue
             idx_name = f'ix_{table}_metadata_purchase_token'
             op.execute(
                 sa.text(
@@ -65,23 +78,25 @@ def upgrade() -> None:
             )
 
         # Heleket: no is_paid column (it's a Python @property), use status filter
-        op.execute(
-            sa.text(
-                'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_heleket_payments_metadata_purchase_token '
-                "ON heleket_payments ((metadata_json ->> 'purchase_token')) "
-                "WHERE status IN ('paid', 'paid_over')"
+        if _table_exists('heleket_payments'):
+            op.execute(
+                sa.text(
+                    'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_heleket_payments_metadata_purchase_token '
+                    "ON heleket_payments ((metadata_json ->> 'purchase_token')) "
+                    "WHERE status IN ('paid', 'paid_over')"
+                )
             )
-        )
 
         # CryptoBot: payload (text) column with JSON inside, no metadata_json.
         # Filter payload LIKE '{%' to skip non-JSON values (e.g. "balance_2_10000").
-        op.execute(
-            sa.text(
-                'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_cryptobot_payments_payload_purchase_token '
-                "ON cryptobot_payments ((CAST(payload AS json) ->> 'purchase_token')) "
-                "WHERE status = 'paid' AND payload LIKE '{%'"
+        if _table_exists('cryptobot_payments'):
+            op.execute(
+                sa.text(
+                    'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_cryptobot_payments_payload_purchase_token '
+                    "ON cryptobot_payments ((CAST(payload AS json) ->> 'purchase_token')) "
+                    "WHERE status = 'paid' AND payload LIKE '{%'"
+                )
             )
-        )
 
 
 def downgrade() -> None:

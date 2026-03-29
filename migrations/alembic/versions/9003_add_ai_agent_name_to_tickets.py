@@ -13,7 +13,7 @@ from sqlalchemy import inspect
 
 
 revision: str = '9003'
-down_revision: Union[str, None] = '9002'
+down_revision: Union[str, Sequence[str], None] = ('9002', '0052')
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
