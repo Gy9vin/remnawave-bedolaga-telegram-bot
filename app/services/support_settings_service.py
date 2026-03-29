@@ -266,3 +266,98 @@ class SupportSettingsService:
         cls._load()
         cls._data['ticket_ai_mode'] = mode_clean
         return cls._save()
+
+    # AI Bot settings
+    VALID_AI_STYLES = frozenset({'friendly', 'formal', 'brief', 'empathetic'})
+
+    @classmethod
+    def get_ai_names(cls) -> list[str]:
+        """Получить список имён AI-агента."""
+        cls._load()
+        names = cls._data.get('ai_bot_names')
+        if isinstance(names, list) and names:
+            result = [n.strip() for n in names if isinstance(n, str) and n.strip()]
+            if result:
+                return result
+        # Совместимость со старым полем
+        old_name = cls._data.get('ai_bot_name')
+        if old_name and isinstance(old_name, str) and old_name.strip():
+            return [old_name.strip()]
+        return [getattr(settings, 'SUPPORT_AI_BOT_NAME', 'Алиса')]
+
+    @classmethod
+    def get_ai_name(cls) -> str:
+        """Получить первое имя (для обратной совместимости)."""
+        return cls.get_ai_names()[0]
+
+    @classmethod
+    def get_random_ai_name(cls) -> str:
+        """Выбрать случайное имя из списка."""
+        import random
+
+        names = cls.get_ai_names()
+        return random.choice(names)
+
+    @classmethod
+    def set_ai_names(cls, names: list[str]) -> bool:
+        """Установить список имён AI-агента."""
+        cleaned = [n.strip() for n in names if isinstance(n, str) and n.strip() and len(n.strip()) <= 32]
+        if not cleaned:
+            return False
+        cls._load()
+        cls._data['ai_bot_names'] = cleaned
+        cls._data.pop('ai_bot_name', None)  # Убрать старое поле
+        return cls._save()
+
+    @classmethod
+    def set_ai_name(cls, name: str) -> bool:
+        """Установить одно имя (обратная совместимость)."""
+        return cls.set_ai_names([name])
+
+    # AI Test mode
+    @classmethod
+    def get_ai_test_telegram_id(cls) -> int | None:
+        """Получить telegram_id тестового пользователя (None = тест-режим выключен)."""
+        cls._load()
+        tid = cls._data.get('ai_test_telegram_id')
+        if tid is None:
+            return None
+        try:
+            return int(tid)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def set_ai_test_telegram_id(cls, telegram_id: int) -> bool:
+        """Включить тест-режим для конкретного пользователя."""
+        try:
+            tid = int(telegram_id)
+        except (TypeError, ValueError):
+            return False
+        cls._load()
+        cls._data['ai_test_telegram_id'] = tid
+        return cls._save()
+
+    @classmethod
+    def clear_ai_test_telegram_id(cls) -> bool:
+        """Выключить тест-режим."""
+        cls._load()
+        cls._data.pop('ai_test_telegram_id', None)
+        return cls._save()
+
+    @classmethod
+    def get_ai_style(cls) -> str:
+        """Получить стиль ответов: 'friendly' | 'formal' | 'brief' | 'empathetic'."""
+        cls._load()
+        style = (cls._data.get('ai_response_style') or 'friendly').strip().lower()
+        return style if style in cls.VALID_AI_STYLES else 'friendly'
+
+    @classmethod
+    def set_ai_style(cls, style: str) -> bool:
+        """Установить стиль ответов AI."""
+        style_clean = (style or '').strip().lower()
+        if style_clean not in cls.VALID_AI_STYLES:
+            return False
+        cls._load()
+        cls._data['ai_response_style'] = style_clean
+        return cls._save()

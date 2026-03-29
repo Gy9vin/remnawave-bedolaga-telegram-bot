@@ -231,6 +231,10 @@ class AdminTicketStates(StatesGroup):
 
 class SupportSettingsStates(StatesGroup):
     waiting_for_desc = State()
+    waiting_for_ai_name = State()
+    waiting_for_kb_text = State()
+    waiting_for_rules_text = State()
+    waiting_for_ai_test_id = State()
 
 
 class BotConfigStates(StatesGroup):

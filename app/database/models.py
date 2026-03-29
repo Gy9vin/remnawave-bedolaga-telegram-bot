@@ -2555,6 +2555,7 @@ class Ticket(Base):
     forum_control_msg_id = Column(Integer, nullable=True)  # ID сообщения с кнопками управления
     ai_enabled = Column(Boolean, default=True, nullable=False)
     operator_telegram_id = Column(BigInteger, nullable=True)
+    ai_agent_name = Column(String(64), nullable=True)  # Имя AI-агента, зафиксированное при создании тикета
 
     # Связи
     user = relationship('User', backref='tickets')

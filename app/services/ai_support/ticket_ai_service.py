@@ -106,14 +106,30 @@ class TicketAIService:
             logger.error('Ошибка получения истории тикета', ticket_id=ticket_id, error=e)
             return []
 
-    def _build_system_prompt(self, user_context: str) -> str:
+    def _build_system_prompt(self, user_context: str, agent_name: str | None = None) -> str:
         """Собрать system prompt из правил, базы знаний и контекста пользователя."""
-        bot_name = getattr(settings, 'SUPPORT_AI_BOT_NAME', 'Алиса')
+        try:
+            from app.services.support_settings_service import SupportSettingsService
+
+            bot_name = agent_name or SupportSettingsService.get_ai_name()
+            style = SupportSettingsService.get_ai_style()
+        except Exception:
+            bot_name = agent_name or getattr(settings, 'SUPPORT_AI_BOT_NAME', 'Алиса')
+            style = 'friendly'
+
+        _style_hints = {
+            'friendly': 'Стиль: тёплый, дружелюбный, разговорный — как общение с хорошим знакомым.',
+            'formal': 'Стиль: вежливый, официальный — строго по делу, без лишних слов.',
+            'brief': 'Стиль: максимально кратко — одно-два предложения, только суть.',
+            'empathetic': 'Стиль: мягкий, участливый — покажи что тебе важна проблема человека.',
+        }
+        style_hint = _style_hints.get(style, _style_hints['friendly'])
+
         rules = _load_text(_RULES_PATH).replace('{bot_name}', bot_name)
         knowledge = _load_text(_KB_PATH)
-        return f'{rules}\n\n## База знаний\n{knowledge}\n\n## {user_context}'
+        return f'{rules}\n\n## Приоритетный стиль общения\n{style_hint}\n\n## База знаний\n{knowledge}\n\n## {user_context}'
 
-    async def generate_reply(self, db, ticket_id: int, user_id: int) -> str | None:
+    async def generate_reply(self, db, ticket_id: int, user_id: int, agent_name: str | None = None) -> str | None:
         """Сгенерировать ответ ИИ на тикет."""
         if not getattr(settings, 'GIGACHAT_AUTH_KEY', None):
             return None
@@ -122,7 +138,7 @@ class TicketAIService:
 
             user_context = await self.build_user_context(db, user_id)
             history = await self.get_history(db, ticket_id)
-            system_prompt = self._build_system_prompt(user_context)
+            system_prompt = self._build_system_prompt(user_context, agent_name=agent_name)
             return await gigachat_client.chat(messages=history, system_prompt=system_prompt)
         except Exception as e:
             logger.error('Ошибка генерации AI ответа', ticket_id=ticket_id, error=e)
@@ -188,6 +204,32 @@ class TicketAIService:
             if not ticket_id or not user_id:
                 return
 
+            # Проверить тест-режим
+            try:
+                from app.services.support_settings_service import SupportSettingsService
+
+                test_tid = SupportSettingsService.get_ai_test_telegram_id()
+                if test_tid is not None:
+                    # Тест-режим: проверить, наш ли это тестировщик
+                    user_telegram_id = payload.get('telegram_id')
+                    if user_telegram_id is None:
+                        # Получить из БД
+                        from app.database.crud.user import get_user_by_id
+                        from app.database.database import AsyncSessionLocal
+
+                        async with AsyncSessionLocal() as _check_db:
+                            _check_user = await get_user_by_id(_check_db, user_id)
+                            user_telegram_id = getattr(_check_user, 'telegram_id', None) if _check_user else None
+                    if user_telegram_id != test_tid:
+                        logger.debug(
+                            'AI: тест-режим активен, пользователь не тестировщик',
+                            user_id=user_id,
+                            test_tid=test_tid,
+                        )
+                        return
+            except Exception as _te:
+                logger.debug('AI: ошибка проверки тест-режима', error=_te)
+
             bot = _get_bot()
             from app.database.database import AsyncSessionLocal
 
@@ -243,9 +285,22 @@ class TicketAIService:
                         ticket.ai_enabled = ai_mode == 'ai'
                         await db.commit()
 
+                # Выбрать случайное имя AI для этого тикета
+                agent_name: str | None = None
+                if ai_mode == 'ai':
+                    try:
+                        from app.services.support_settings_service import SupportSettingsService
+
+                        agent_name = SupportSettingsService.get_random_ai_name()
+                        if agent_name:
+                            ticket.ai_agent_name = agent_name
+                            await db.commit()
+                    except Exception as _ne:
+                        logger.debug('AI: ошибка выбора имени', error=_ne)
+
                 # Если режим AI — сгенерировать ответ
                 if ai_mode == 'ai' and bot:
-                    ai_reply = await self.generate_reply(db, ticket_id, user_id)
+                    ai_reply = await self.generate_reply(db, ticket_id, user_id, agent_name=agent_name)
                     if ai_reply:
                         await self._send_ai_reply(db, ticket, user_id, ai_reply, bot)
 
@@ -272,6 +327,25 @@ class TicketAIService:
             message_text = payload.get('message_text', '')
             if not ticket_id or not user_id:
                 return
+
+            # Проверить тест-режим
+            try:
+                from app.services.support_settings_service import SupportSettingsService
+
+                test_tid = SupportSettingsService.get_ai_test_telegram_id()
+                if test_tid is not None:
+                    user_telegram_id = payload.get('telegram_id')
+                    if user_telegram_id is None:
+                        from app.database.crud.user import get_user_by_id
+                        from app.database.database import AsyncSessionLocal
+
+                        async with AsyncSessionLocal() as _check_db:
+                            _check_user = await get_user_by_id(_check_db, user_id)
+                            user_telegram_id = getattr(_check_user, 'telegram_id', None) if _check_user else None
+                    if user_telegram_id != test_tid:
+                        return
+            except Exception as _te:
+                logger.debug('AI: ошибка проверки тест-режима (message)', error=_te)
 
             bot = _get_bot()
             from app.database.database import AsyncSessionLocal
@@ -303,7 +377,8 @@ class TicketAIService:
                 if not getattr(settings, 'GIGACHAT_AUTH_KEY', None):
                     return
 
-                ai_reply = await self.generate_reply(db, ticket_id, user_id)
+                agent_name = getattr(ticket, 'ai_agent_name', None) or None
+                ai_reply = await self.generate_reply(db, ticket_id, user_id, agent_name=agent_name)
                 if not ai_reply:
                     return
 
