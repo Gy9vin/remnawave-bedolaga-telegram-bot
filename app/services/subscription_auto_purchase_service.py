@@ -2924,6 +2924,9 @@ async def _process_single_cart(
         return await _auto_add_devices(db, user, cart_data, bot=bot)
     if cart_mode == 'add_traffic':
         return await _auto_add_traffic(db, user, cart_data, bot=bot)
+    if cart_mode == 'subscription_purchase':
+        # Cabinet classic-mode purchase: same structure as legacy FSM carts
+        return await _process_legacy_generic_cart(db, user, cart_data, bot=bot)
 
     logger.warning(
         'Автопокупка: неизвестный cart_mode, пропускаем',
