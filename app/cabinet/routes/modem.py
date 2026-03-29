@@ -78,7 +78,7 @@ async def get_modem_status(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get modem status and availability for current user."""
-    await db.refresh(user, ['subscription'])
+    await db.refresh(user, ['subscriptions'])
 
     modem_service = get_modem_service()
     availability = modem_service.check_availability(user)
@@ -107,7 +107,7 @@ async def get_modem_price(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Calculate modem price for current user's subscription."""
-    await db.refresh(user, ['subscription'])
+    await db.refresh(user, ['subscriptions'])
 
     modem_service = get_modem_service()
 
@@ -153,7 +153,7 @@ async def enable_modem(
         )
 
     try:
-        await db.refresh(user, ['subscription'])
+        await db.refresh(user, ['subscriptions'])
 
         modem_service = get_modem_service()
 
@@ -272,7 +272,7 @@ async def disable_modem(
 ):
     """Disable modem for current user's subscription (no refund)."""
     try:
-        await db.refresh(user, ['subscription'])
+        await db.refresh(user, ['subscriptions'])
 
         modem_service = get_modem_service()
 
