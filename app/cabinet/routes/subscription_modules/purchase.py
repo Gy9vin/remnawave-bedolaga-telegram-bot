@@ -561,6 +561,28 @@ async def submit_purchase(
         )
     except Exception as e:
         logger.error('Failed to submit purchase for user', user_id=user.id, error=e)
+        # Сохранить корзину даже при непредвиденной ошибке (например, ORM-баг при lock).
+        # Без этого пользователь платит через YooKassa, но корзина не найдена и подписка
+        # не активируется автоматически.
+        try:
+            total_price = pricing.final_total if 'pricing' in locals() else 0
+            _cart = {
+                'cart_mode': 'subscription_purchase',
+                'period_id': request.selection.period_id,
+                'period_days': request.selection.period_days,
+                'traffic_gb': request.selection.traffic_value,
+                'countries': request.selection.servers,
+                'devices': request.selection.devices,
+                'total_price': total_price,
+                'user_id': user.id,
+                'saved_cart': True,
+                'return_to_cart': True,
+                'source': 'cabinet',
+            }
+            await user_cart_service.save_user_cart(user.id, _cart)
+            logger.info('Cart saved after purchase error (cabinet /purchase) user', user_id=user.id)
+        except Exception as _cart_err:
+            logger.error('Failed to save cart after purchase error', user_id=user.id, error=_cart_err)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to process purchase',
