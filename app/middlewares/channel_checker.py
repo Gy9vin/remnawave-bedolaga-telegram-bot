@@ -370,6 +370,7 @@ class ChannelCheckerMiddleware(BaseMiddleware):
                 # Per-channel settings: check if any unsubscribed channel requires deactivation
                 unsubscribed = [ch for ch in channels if not ch.get('is_subscribed', False)]
 
+                actually_deactivated = []
                 for subscription in active_subs:
                     should_disable = any(
                         channel_subscription_service.should_disable_subscription(ch, subscription.is_trial)
@@ -379,6 +380,7 @@ class ChannelCheckerMiddleware(BaseMiddleware):
                         continue
 
                     await deactivate_subscription(db, subscription)
+                    actually_deactivated.append(subscription)
                     sub_type = 'trial' if subscription.is_trial else 'paid'
                     logger.info(
                         'Subscription deactivated after channel unsubscribe',
@@ -387,7 +389,7 @@ class ChannelCheckerMiddleware(BaseMiddleware):
                     )
 
                 service = SubscriptionService()
-                for subscription in active_subs:
+                for subscription in actually_deactivated:
                     panel_uuid = (
                         subscription.remnawave_uuid
                         if settings.is_multi_tariff_enabled() and subscription.remnawave_uuid
@@ -403,11 +405,13 @@ class ChannelCheckerMiddleware(BaseMiddleware):
                                 api_error=api_error,
                             )
 
-                # Notify user about deactivation
+                # Notify user about deactivation (only if something was actually deactivated)
+                if not actually_deactivated:
+                    return
                 try:
                     normalized = _normalize_channels(channels)
                     texts = get_texts(user.language or DEFAULT_LANGUAGE)
-                    if settings.is_multi_tariff_enabled() and len(active_subs) > 1:
+                    if settings.is_multi_tariff_enabled() and len(actually_deactivated) > 1:
                         notification_text = texts.t(
                             'SUBSCRIPTION_DEACTIVATED_CHANNEL_UNSUBSCRIBE_MULTI',
                             '🚫 Ваши подписки приостановлены, так как вы отписались от обязательного канала.\n\n'
