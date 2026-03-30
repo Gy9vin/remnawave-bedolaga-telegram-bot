@@ -23,7 +23,15 @@ from app.services.referral_service import process_referral_registration
 logger = structlog.get_logger(__name__)
 
 # Потеряшки: (telegram_id, referral_code)
+# Источник: анализ nginx access.log + bot.log за 15-30 марта 2026
 LOST_REFERRALS = [
+    # 22 марта
+    (436781661,  "refqApI9o3O"),
+    # 23 марта
+    (1819652291, "refwzdBRveo"),
+    # 28 марта
+    (5582012892, "refwaG1AWUR"),
+    # 30 марта
     (6288305269, "ref3b63UZZG"),
     (6041335621, "refyS9uSfgU"),
     (453596870,  "refyS9uSfgU"),
