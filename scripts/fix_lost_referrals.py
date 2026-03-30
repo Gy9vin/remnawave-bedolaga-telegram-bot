@@ -1,98 +1,113 @@
 """
-Скрипт для восстановления потерянных рефералов.
+Скрипт восстановления потерянных рефералов 15-30 марта 2026.
 
-Пользователи, которые пришли по реф-ссылке через кабинет
-(Telegram WebApp — другой localStorage), но реф не записался.
+Причина потери: пользователь переходил по реф-ссылке в браузере,
+затем авторизовывался через Telegram WebApp (deeplink) — разный localStorage.
 
-Запуск: python3 scripts/fix_lost_referrals.py
+Использование:
+  python3 scripts/fix_lost_referrals.py            # dry run — только показать
+  python3 scripts/fix_lost_referrals.py --apply    # применить в БД
 """
 
 import asyncio
 import sys
-import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import structlog
 from sqlalchemy import select
 
-from app.database.engine import get_session_maker
-from app.database.crud.user import get_user_by_telegram_id, get_user_by_referral_code
+from app.database.database import AsyncSessionLocal
+from app.database.models import User
 from app.services.referral_service import process_referral_registration
 
-logger = structlog.get_logger(__name__)
 
-# Потеряшки: (telegram_id, referral_code)
+# Потеряшки: ("tg:TELEGRAM_ID", "referral_code")
 # Источник: анализ nginx access.log + bot.log за 15-30 марта 2026
 LOST_REFERRALS = [
     # 22 марта
-    (436781661,  "refqApI9o3O"),
+    ("tg:436781661",  "refqApI9o3O"),
     # 23 марта
-    (1819652291, "refwzdBRveo"),
+    ("tg:1819652291", "refwzdBRveo"),
     # 28 марта
-    (5582012892, "refwaG1AWUR"),
+    ("tg:5582012892", "refwaG1AWUR"),
     # 30 марта
-    (6288305269, "ref3b63UZZG"),
-    (6041335621, "refyS9uSfgU"),
-    (453596870,  "refyS9uSfgU"),
-    (1935864648, "refV30UAUl7"),
-    (5171727463, "ref2KxCqC72"),
-    (8135246513, "ref86ucZn6b"),
-    (7900226054, "ref7dCu86X7"),
-    (1332402535, "ref6uEKUONE"),
+    ("tg:6288305269", "ref3b63UZZG"),
+    ("tg:6041335621", "refyS9uSfgU"),
+    ("tg:453596870",  "refyS9uSfgU"),
+    ("tg:1935864648", "refV30UAUl7"),
+    ("tg:5171727463", "ref2KxCqC72"),
+    ("tg:8135246513", "ref86ucZn6b"),
+    ("tg:7900226054", "ref7dCu86X7"),
+    ("tg:1332402535", "ref6uEKUONE"),
 ]
 
+DRY_RUN = "--apply" not in sys.argv
 
-async def fix_lost_referrals() -> None:
-    session_maker = get_session_maker()
 
-    fixed = 0
-    skipped = 0
-    errors = 0
+async def main() -> None:
+    if DRY_RUN:
+        print("=== DRY RUN (передай --apply чтобы применить) ===\n")
+    else:
+        print("=== ПРИМЕНЯЕМ ИЗМЕНЕНИЯ ===\n")
 
-    async with session_maker() as db:
-        for telegram_id, referral_code in LOST_REFERRALS:
+    fixed = skipped = errors = 0
+
+    async with AsyncSessionLocal() as db:
+        for identifier, referral_code in LOST_REFERRALS:
             try:
-                user = await get_user_by_telegram_id(db, telegram_id)
+                # Получаем пользователя
+                if isinstance(identifier, int):
+                    user = await db.get(User, identifier)
+                elif isinstance(identifier, str) and identifier.startswith("tg:"):
+                    tg_id = int(identifier[3:])
+                    result = await db.execute(select(User).where(User.telegram_id == tg_id))
+                    user = result.scalar_one_or_none()
+                else:
+                    user = await db.get(User, int(identifier))
+
                 if not user:
-                    print(f"[SKIP] telegram_id={telegram_id} — пользователь не найден в БД")
+                    print(f"[SKIP] {identifier} — пользователь не найден в БД")
                     skipped += 1
                     continue
 
                 if user.referred_by_id:
-                    print(f"[SKIP] telegram_id={telegram_id} (user_id={user.id}) — реферал уже назначен (referrer_id={user.referred_by_id})")
+                    print(f"[SKIP] {identifier} (user_id={user.id}) — реферал уже назначен (referrer_id={user.referred_by_id})")
                     skipped += 1
                     continue
 
-                referrer = await get_user_by_referral_code(db, referral_code)
+                # Находим реферера по коду
+                result = await db.execute(select(User).where(User.referral_code == referral_code))
+                referrer = result.scalar_one_or_none()
+
                 if not referrer:
-                    print(f"[SKIP] telegram_id={telegram_id} — реф-код {referral_code!r} не найден")
+                    print(f"[SKIP] {identifier} — реф-код {referral_code!r} не найден")
                     skipped += 1
                     continue
 
                 if referrer.id == user.id:
-                    print(f"[SKIP] telegram_id={telegram_id} — само-реферал, пропускаем")
+                    print(f"[SKIP] {identifier} — само-реферал, пропускаем")
                     skipped += 1
                     continue
 
-                print(f"[FIX]  telegram_id={telegram_id} (user_id={user.id}) ← referral_code={referral_code!r} → referrer_id={referrer.id} (@{referrer.username or referrer.first_name})")
+                print(f"[FIX]  {identifier} (user_id={user.id}) ← {referral_code!r} → referrer_id={referrer.id} (@{referrer.username or referrer.first_name})")
 
-                user.referred_by_id = referrer.id
-                await db.flush()
-                await process_referral_registration(db, user.id, referrer.id, bot=None)
-                await db.commit()
+                if not DRY_RUN:
+                    user.referred_by_id = referrer.id
+                    await db.flush()
+                    await process_referral_registration(db, user.id, referrer.id, bot=None)
+                    await db.commit()
+                    print(f"       ✅ Готово")
 
-                print(f"       ✅ Готово: user_id={user.id} → referred_by_id={referrer.id}")
                 fixed += 1
 
             except Exception as e:
-                await db.rollback()
-                print(f"[ERROR] telegram_id={telegram_id}: {e}")
+                if not DRY_RUN:
+                    await db.rollback()
+                print(f"[ERROR] {identifier}: {e}")
                 errors += 1
 
-    print()
-    print(f"Итого: исправлено={fixed}, пропущено={skipped}, ошибок={errors}")
+    print(f"\nИтого: {'будет исправлено' if DRY_RUN else 'исправлено'}={fixed}, пропущено={skipped}, ошибок={errors}")
+    if DRY_RUN and fixed > 0:
+        print("Запусти с --apply чтобы применить изменения.")
 
 
 if __name__ == "__main__":
-    asyncio.run(fix_lost_referrals())
+    asyncio.run(main())
