@@ -2782,9 +2782,26 @@ async def process_webauth_confirm(
         await callback.message.edit_text('❌ Учётная запись неактивна.')
         return
 
-    linked = await link_web_auth_token(token, callback.from_user.id, user.id)
+    linked_data = await link_web_auth_token(token, callback.from_user.id, user.id)
     texts = get_texts(user.language)
-    if linked:
+    if linked_data:
+        # If referral code was stored with the token, save it as pending referral
+        # so the Telegram WebApp auth path (initData) can pick it up from Redis
+        ref_code = linked_data.get('referral_code')
+        if ref_code and not user.referred_by_id:
+            try:
+                referrer = await get_user_by_referral_code(db, ref_code)
+                if referrer and referrer.id != user.id:
+                    await save_pending_referral(callback.from_user.id, ref_code, referrer.id)
+                    logger.info(
+                        'Pending referral saved from webauth token',
+                        telegram_id=callback.from_user.id,
+                        referral_code=ref_code,
+                        referrer_id=referrer.id,
+                    )
+            except Exception as _ref_err:
+                logger.warning('Failed to save pending referral from webauth', error=_ref_err)
+
         await callback.message.edit_text(
             texts.t('WEB_AUTH_SUCCESS', '✅ Авторизация в кабинете подтверждена! Вернитесь в браузер.'),
         )

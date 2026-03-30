@@ -225,6 +225,18 @@ class LinkResponse(BaseModel):
     provider: str
 
 
+class DeepLinkRequestBody(BaseModel):
+    """Optional body for deep link token request."""
+
+    referral_code: str | None = Field(
+        None,
+        min_length=1,
+        max_length=64,
+        pattern=r'^[a-zA-Z0-9_-]+$',
+        description='Referral code to associate with this auth session',
+    )
+
+
 class DeepLinkTokenResponse(BaseModel):
     """Response with deep link auth token."""
 

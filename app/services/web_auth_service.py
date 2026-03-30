@@ -27,10 +27,11 @@ WEB_AUTH_TOKEN_MIN_LENGTH = 16
 WEB_AUTH_PREFIX = 'web_auth'
 
 
-async def create_web_auth_token() -> str:
+async def create_web_auth_token(referral_code: str | None = None) -> str:
     """Generate a web auth token and store it in Redis (pending state).
 
     Returns the raw token string (URL-safe, 24 bytes of entropy).
+    Optionally stores referral_code so it survives the Telegram WebApp context switch.
     """
     token = secrets.token_urlsafe(24)
     key = cache_key(WEB_AUTH_PREFIX, token)
@@ -38,6 +39,8 @@ async def create_web_auth_token() -> str:
         'status': 'pending',
         'created_at': datetime.now(UTC).isoformat(),
     }
+    if referral_code:
+        value['referral_code'] = referral_code
     stored = await cache.set(key, value, expire=WEB_AUTH_TOKEN_TTL)
     if not stored:
         logger.error('Failed to store web auth token in Redis')
@@ -47,11 +50,12 @@ async def create_web_auth_token() -> str:
     return token
 
 
-async def link_web_auth_token(token: str, telegram_id: int, user_id: int) -> bool:
+async def link_web_auth_token(token: str, telegram_id: int, user_id: int) -> dict[str, Any] | None:
     """Link a web auth token to a Telegram user (called by bot on /start).
 
     Atomically takes the token (GETDEL) so only one caller can win the race.
-    Returns True if token was found and linked, False if expired/invalid.
+    Returns the linked token data dict (including referral_code if present),
+    or None if token was expired/invalid/already used.
     """
     key = cache_key(WEB_AUTH_PREFIX, token)
     # Atomically take the token — only one concurrent caller can succeed
@@ -59,11 +63,11 @@ async def link_web_auth_token(token: str, telegram_id: int, user_id: int) -> boo
 
     if not data or not isinstance(data, dict):
         logger.warning('Web auth token not found or expired', token_prefix=token[:8])
-        return False
+        return None
 
     if data.get('status') != 'pending':
         logger.warning('Web auth token already used', token_prefix=token[:8])
-        return False
+        return None
 
     # Update token with user info
     data['status'] = 'linked'
@@ -75,7 +79,7 @@ async def link_web_auth_token(token: str, telegram_id: int, user_id: int) -> boo
     await cache.set(key, data, expire=WEB_AUTH_LINKED_TTL)
 
     logger.info('Web auth token linked', token_prefix=token[:8], telegram_id=telegram_id)
-    return True
+    return data
 
 
 async def poll_web_auth_token(token: str) -> dict[str, Any] | None:
