@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.crud.subscription import (
     decrement_subscription_server_counts,
-    get_all_subscriptions_by_user_id,
     get_subscription_by_id_for_user,
 )
 from app.database.models import Subscription, SubscriptionStatus, User
@@ -148,7 +147,9 @@ async def show_my_subscriptions(
         # Fallback to legacy single subscription view
         return
 
-    subscriptions = await get_all_subscriptions_by_user_id(db, db_user.id)
+    from app.database.crud.subscription import get_active_subscriptions_by_user_id
+
+    subscriptions = await get_active_subscriptions_by_user_id(db, db_user.id)
 
     if not subscriptions:
         text = '📋 <b>Мои подписки</b>\n\nУ вас нет подписок.'
