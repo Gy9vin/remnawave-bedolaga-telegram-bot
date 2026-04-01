@@ -17,7 +17,7 @@ from app.database.crud.subscription import (
     get_all_subscriptions_by_user_id,
     get_subscription_by_id_for_user,
 )
-from app.database.models import SubscriptionStatus, User
+from app.database.models import User
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
 
@@ -110,23 +110,12 @@ async def delete_subscription(
     user: User = Depends(get_current_cabinet_user),
     db: AsyncSession = Depends(get_cabinet_db),
 ) -> dict:
-    """Delete an expired/disabled subscription. Active subscriptions cannot be deleted."""
+    """Delete a subscription (any status). Removes from RemnaWave and DB."""
     subscription = await get_subscription_by_id_for_user(db, subscription_id, user.id)
     if not subscription:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Subscription not found',
-        )
-
-    # Only expired/disabled subscriptions can be deleted
-    deletable_statuses = {
-        SubscriptionStatus.EXPIRED.value,
-        SubscriptionStatus.DISABLED.value,
-    }
-    if getattr(subscription, 'actual_status', subscription.status) not in deletable_statuses:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='Only expired or disabled subscriptions can be deleted',
         )
 
     # Delete from RemnaWave panel (stops webhooks / phantom notifications)
