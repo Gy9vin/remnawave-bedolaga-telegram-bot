@@ -570,13 +570,8 @@ async def show_tariffs_list(
         await callback.answer()
         return
 
-    # В мульти-тарифе определяем какие тарифы уже куплены
+    # Не ограничиваем покупку — один тариф можно покупать несколько раз
     purchased_tariff_ids: set[int] = set()
-    if settings.is_multi_tariff_enabled():
-        from app.database.crud.subscription import get_active_subscriptions_by_user_id
-
-        active_subs = await get_active_subscriptions_by_user_id(db, db_user.id)
-        purchased_tariff_ids = {s.tariff_id for s in active_subs if s.tariff_id and s.status in ('active', 'trial')}
 
     # Проверяем есть ли у пользователя скидки по периодам
     promo_group = db_user.get_primary_promo_group() if hasattr(db_user, 'get_primary_promo_group') else None
@@ -613,20 +608,6 @@ async def select_tariff(
     if not tariff or not tariff.is_active:
         await callback.answer('Тариф недоступен', show_alert=True)
         return
-
-    # В мульти-тарифе проверяем не куплен ли уже этот тариф
-    if settings.is_multi_tariff_enabled():
-        from app.database.crud.subscription import get_active_subscriptions_by_user_id
-
-        _active = await get_active_subscriptions_by_user_id(db, db_user.id)
-        _existing = next((s for s in _active if s.tariff_id == tariff_id and s.status in ('active', 'trial')), None)
-        if _existing:
-            days_left = max(0, (_existing.end_date - datetime.now(UTC)).days) if _existing.end_date else 0
-            await callback.answer(
-                f'Тариф «{tariff.name}» уже активен ({days_left} дн.). Продлите через "Мои подписки".',
-                show_alert=True,
-            )
-            return
 
     # Проверяем, суточный ли это тариф
     is_daily = getattr(tariff, 'is_daily', False)
@@ -2530,13 +2511,8 @@ async def show_tariff_switch_list(
     promo_group_id = getattr(db_user, 'promo_group_id', None)
     tariffs = await get_tariffs_for_user(db, promo_group_id)
 
-    # Filter out ALL tariffs user already has active subscriptions for
-    if settings.is_multi_tariff_enabled():
-        _all_active = await get_active_subscriptions_by_user_id(db, db_user.id)
-        _purchased_ids = {s.tariff_id for s in _all_active if s.tariff_id}
-        available_tariffs = [t for t in tariffs if t.id not in _purchased_ids]
-    else:
-        available_tariffs = [t for t in tariffs if t.id != current_tariff_id]
+    # Показываем все тарифы кроме текущего (для переключения)
+    available_tariffs = [t for t in tariffs if t.id != current_tariff_id]
 
     if not available_tariffs:
         await callback.message.edit_text(
@@ -3415,13 +3391,8 @@ async def show_instant_switch_list(
     promo_group_id = getattr(db_user, 'promo_group_id', None)
     tariffs = await get_tariffs_for_user(db, promo_group_id)
 
-    # Filter out ALL tariffs user already has active subscriptions for
-    if settings.is_multi_tariff_enabled():
-        _all_active_instant = await get_active_subscriptions_by_user_id(db, db_user.id)
-        _purchased_ids_instant = {s.tariff_id for s in _all_active_instant if s.tariff_id}
-        available_tariffs = [t for t in tariffs if t.id not in _purchased_ids_instant]
-    else:
-        available_tariffs = [t for t in tariffs if t.id != current_tariff.id]
+    # Показываем все тарифы кроме текущего (для переключения)
+    available_tariffs = [t for t in tariffs if t.id != current_tariff.id]
 
     if not available_tariffs:
         await callback.message.edit_text(

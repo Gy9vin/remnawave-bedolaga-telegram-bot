@@ -334,7 +334,6 @@ async def _handle_subscription_merge(
         keep_subscription_from: 'primary' или 'secondary' — чью подписку оставить.
     """
     # Multi-tariff mode: transfer ALL subscriptions from secondary to primary
-    # Handles uq_subscriptions_user_tariff_active: (user_id, tariff_id) WHERE status IN ('active','trial')
     if settings.is_multi_tariff_enabled():
         secondary_subs = list(getattr(secondary, 'subscriptions', None) or [])
         primary_subs = list(getattr(primary, 'subscriptions', None) or [])

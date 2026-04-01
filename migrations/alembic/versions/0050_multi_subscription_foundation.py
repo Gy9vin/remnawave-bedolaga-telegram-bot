@@ -29,18 +29,7 @@ def upgrade() -> None:
     op.create_index('ix_subscriptions_user_status', 'subscriptions', ['user_id', 'status'])
     op.create_index('ix_subscriptions_user_tariff_status', 'subscriptions', ['user_id', 'tariff_id', 'status'])
 
-    # 3. Partial unique index: prevent duplicate active/trial subscriptions for same tariff
-    op.execute(
-        sa.text(
-            """
-            CREATE UNIQUE INDEX uq_subscriptions_user_tariff_active
-            ON subscriptions (user_id, tariff_id)
-            WHERE tariff_id IS NOT NULL AND status IN ('active', 'trial')
-            """
-        )
-    )
-
-    # 4. Add remnawave_uuid column to subscriptions
+    # 3. Add remnawave_uuid column to subscriptions
     op.add_column('subscriptions', sa.Column('remnawave_uuid', sa.String(255), nullable=True))
 
     # 5. Data migration: copy User.remnawave_uuid → Subscription.remnawave_uuid
@@ -84,9 +73,6 @@ def downgrade() -> None:
 
     # Remove remnawave_uuid column
     op.drop_column('subscriptions', 'remnawave_uuid')
-
-    # Remove partial unique index
-    op.drop_index('uq_subscriptions_user_tariff_active', 'subscriptions')
 
     # Remove composite indexes
     op.drop_index('ix_subscriptions_user_tariff_status', 'subscriptions')

@@ -1,4 +1,4 @@
-"""Тесты для скрипта миграции SHM → Bedolaga."""
+"""Тесты для скрипта миграции SHM -> Bedolaga."""
 
 import json
 import sqlite3
@@ -13,6 +13,7 @@ from migrate_from_shm import (
     SERVICE_NAME_MAP,
     STATUS_MAP,
     SqlDumpConnection,
+    SqliteAdapter,
     extract_telegram_id,
     extract_tg_data,
     gen_referral_code,
@@ -36,13 +37,18 @@ from migrate_from_shm import (
 
 @pytest.fixture()
 def bedolaga_db():
-    """Создать in-memory SQLite БД с полной схемой Bedolaga."""
+    """Создать in-memory SQLite БД с полной схемой Bedolaga, обёрнутую в SqliteAdapter."""
     conn = sqlite3.connect(':memory:')
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys=OFF')
     conn.executescript(SCHEMA_SQL)
     conn.commit()
-    yield conn
+    # Создать тариф для миграции (MIGRATION_TARIFF_ID = 2)
+    conn.execute("INSERT INTO tariffs (id, name, period_prices) VALUES (1, 'Тестовый', '{}')")
+    conn.execute("INSERT INTO tariffs (id, name, period_prices) VALUES (2, 'Стандарт', '{}')")
+    conn.commit()
+    adapter = SqliteAdapter(conn)
+    yield adapter
     conn.close()
 
 
@@ -403,7 +409,7 @@ class TestMigrateUsers:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
 
         # 3 пользователя с telegram_id (admin без @)
-        count = bedolaga_db.execute('SELECT COUNT(*) FROM users').fetchone()[0]
+        count = bedolaga_db.fetchone('SELECT COUNT(*) FROM users')[0]
         assert count == 3
 
         # Проверяем маппинг
@@ -417,7 +423,7 @@ class TestMigrateUsers:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
 
         user_id = mapping[2]
-        row = bedolaga_db.execute('SELECT balance_kopeks FROM users WHERE id = ?', (user_id,)).fetchone()
+        row = bedolaga_db.fetchone('SELECT balance_kopeks FROM users WHERE id = %s', (user_id,))
         # 500 + 100 = 600 руб = 60000 коп
         assert row[0] == 60000
 
@@ -426,7 +432,7 @@ class TestMigrateUsers:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
 
         user_id = mapping[4]
-        row = bedolaga_db.execute('SELECT status FROM users WHERE id = ?', (user_id,)).fetchone()
+        row = bedolaga_db.fetchone('SELECT status FROM users WHERE id = %s', (user_id,))
         assert row[0] == 'blocked'
 
     def test_telegram_data_extracted(self, bedolaga_db, shm_data_minimal):
@@ -434,10 +440,10 @@ class TestMigrateUsers:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
 
         user_id = mapping[2]
-        row = bedolaga_db.execute(
-            'SELECT username, first_name, last_name FROM users WHERE id = ?',
+        row = bedolaga_db.fetchone(
+            'SELECT username, first_name, last_name FROM users WHERE id = %s',
             (user_id,),
-        ).fetchone()
+        )
         assert row[0] == 'testuser'
         assert row[1] == 'Тест'
         assert row[2] == 'Юзер'
@@ -461,14 +467,14 @@ class TestMigrateUsers:
         shm_conn = MockShmConnection(shm_data_minimal)
         migrate_users(shm_conn, bedolaga_db, dry_run=False)
 
-        count = bedolaga_db.execute('SELECT COUNT(*) FROM users WHERE telegram_id = 111222333').fetchone()[0]
+        count = bedolaga_db.fetchone('SELECT COUNT(*) FROM users WHERE telegram_id = 111222333')[0]
         assert count == 1
 
     def test_dry_run_no_writes(self, bedolaga_db, shm_data_minimal):
         shm_conn = MockShmConnection(shm_data_minimal)
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=True)
 
-        count = bedolaga_db.execute('SELECT COUNT(*) FROM users').fetchone()[0]
+        count = bedolaga_db.fetchone('SELECT COUNT(*) FROM users')[0]
         assert count == 0
         assert len(mapping) > 0  # Маппинг всё равно заполняется
 
@@ -479,15 +485,15 @@ class TestMigrateUsers:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
 
         user_id = mapping[2]
-        row = bedolaga_db.execute('SELECT balance_kopeks FROM users WHERE id = ?', (user_id,)).fetchone()
-        # -100 + 50 = -50 → 0 (обнуляется)
+        row = bedolaga_db.fetchone('SELECT balance_kopeks FROM users WHERE id = %s', (user_id,))
+        # -100 + 50 = -50 -> 0 (обнуляется)
         assert row[0] == 0
 
     def test_referral_code_generated(self, bedolaga_db, shm_data_minimal):
         shm_conn = MockShmConnection(shm_data_minimal)
         migrate_users(shm_conn, bedolaga_db, dry_run=False)
 
-        codes = bedolaga_db.execute('SELECT referral_code FROM users WHERE referral_code IS NOT NULL').fetchall()
+        codes = bedolaga_db.fetchall('SELECT referral_code FROM users WHERE referral_code IS NOT NULL')
         assert len(codes) == 3
         code_set = {c[0] for c in codes}
         assert len(code_set) == 3  # Все уникальные
@@ -507,7 +513,7 @@ class TestMigrateReferrals:
         # user_id=3 имеет partner_id=2
         user3_id = mapping[3]
         user2_id = mapping[2]
-        row = bedolaga_db.execute('SELECT referred_by_id FROM users WHERE id = ?', (user3_id,)).fetchone()
+        row = bedolaga_db.fetchone('SELECT referred_by_id FROM users WHERE id = %s', (user3_id,))
         assert row[0] == user2_id
 
 
@@ -524,13 +530,13 @@ class TestMigrateSubscriptions:
         migrate_subscriptions(shm_conn, bedolaga_db, mapping, dry_run=False)
 
         user2_id = mapping[2]
-        row = bedolaga_db.execute(
-            'SELECT status, is_trial, autopay_enabled FROM subscriptions WHERE user_id = ?',
+        row = bedolaga_db.fetchone(
+            'SELECT status, is_trial, autopay_enabled FROM subscriptions WHERE user_id = %s',
             (user2_id,),
-        ).fetchone()
+        )
         assert row[0] == 'active'
         assert row[1] == 0  # Не триал
-        assert row[2] == 1  # autopay
+        assert row[2] == 0  # autopay отключён при миграции
 
     def test_subscription_status_mapping(self, bedolaga_db, shm_data_minimal):
         shm_conn = MockShmConnection(shm_data_minimal)
@@ -538,11 +544,11 @@ class TestMigrateSubscriptions:
         migrate_subscriptions(shm_conn, bedolaga_db, mapping, dry_run=False)
 
         user3_id = mapping[3]
-        row = bedolaga_db.execute(
-            'SELECT status FROM subscriptions WHERE user_id = ?',
+        row = bedolaga_db.fetchone(
+            'SELECT status FROM subscriptions WHERE user_id = %s',
             (user3_id,),
-        ).fetchone()
-        assert row[0] == 'expired'  # NOT PAID → expired
+        )
+        assert row[0] == 'expired'  # NOT PAID -> expired
 
     def test_has_had_paid_subscription_set(self, bedolaga_db, shm_data_minimal):
         shm_conn = MockShmConnection(shm_data_minimal)
@@ -550,10 +556,10 @@ class TestMigrateSubscriptions:
         migrate_subscriptions(shm_conn, bedolaga_db, mapping, dry_run=False)
 
         user2_id = mapping[2]
-        row = bedolaga_db.execute(
-            'SELECT has_had_paid_subscription FROM users WHERE id = ?',
+        row = bedolaga_db.fetchone(
+            'SELECT has_had_paid_subscription FROM users WHERE id = %s',
             (user2_id,),
-        ).fetchone()
+        )
         assert row[0] == 1
 
     def test_one_subscription_per_user(self, bedolaga_db, shm_data_minimal):
@@ -563,10 +569,10 @@ class TestMigrateSubscriptions:
         migrate_subscriptions(shm_conn, bedolaga_db, mapping, dry_run=False)
 
         user2_id = mapping[2]
-        count = bedolaga_db.execute(
-            'SELECT COUNT(*) FROM subscriptions WHERE user_id = ?',
+        count = bedolaga_db.fetchone(
+            'SELECT COUNT(*) FROM subscriptions WHERE user_id = %s',
             (user2_id,),
-        ).fetchone()[0]
+        )[0]
         assert count == 1
 
 
@@ -581,7 +587,7 @@ class TestMigrateTransactions:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
         migrate_transactions(shm_conn, bedolaga_db, mapping, dry_run=False)
 
-        count = bedolaga_db.execute("SELECT COUNT(*) FROM transactions WHERE type = 'deposit'").fetchone()[0]
+        count = bedolaga_db.fetchone("SELECT COUNT(*) FROM transactions WHERE type = 'deposit'")[0]
         assert count == 2
 
     def test_amount_converted_to_kopeks(self, bedolaga_db, shm_data_minimal):
@@ -590,11 +596,11 @@ class TestMigrateTransactions:
         migrate_transactions(shm_conn, bedolaga_db, mapping, dry_run=False)
 
         user2_id = mapping[2]
-        row = bedolaga_db.execute(
-            "SELECT amount_kopeks FROM transactions WHERE user_id = ? AND external_id = 'pay_abc123'",
+        row = bedolaga_db.fetchone(
+            "SELECT amount_kopeks FROM transactions WHERE user_id = %s AND external_id = 'pay_abc123'",
             (user2_id,),
-        ).fetchone()
-        assert row[0] == 50000  # 500₽
+        )
+        assert row[0] == 50000  # 500 rub
 
     def test_payment_method_mapped(self, bedolaga_db, shm_data_minimal):
         shm_conn = MockShmConnection(shm_data_minimal)
@@ -602,10 +608,10 @@ class TestMigrateTransactions:
         migrate_transactions(shm_conn, bedolaga_db, mapping, dry_run=False)
 
         user2_id = mapping[2]
-        row = bedolaga_db.execute(
-            "SELECT payment_method FROM transactions WHERE user_id = ? AND external_id = 'pay_abc123'",
+        row = bedolaga_db.fetchone(
+            "SELECT payment_method FROM transactions WHERE user_id = %s AND external_id = 'pay_abc123'",
             (user2_id,),
-        ).fetchone()
+        )
         assert row[0] == 'yookassa'
 
     def test_yoomoney_mapped_to_yookassa(self, bedolaga_db, shm_data_minimal):
@@ -614,11 +620,11 @@ class TestMigrateTransactions:
         migrate_transactions(shm_conn, bedolaga_db, mapping, dry_run=False)
 
         user3_id = mapping[3]
-        row = bedolaga_db.execute(
-            'SELECT payment_method FROM transactions WHERE user_id = ?',
+        row = bedolaga_db.fetchone(
+            'SELECT payment_method FROM transactions WHERE user_id = %s',
             (user3_id,),
-        ).fetchone()
-        assert row[0] == 'yookassa'  # yoomoney → yookassa
+        )
+        assert row[0] == 'yookassa'  # yoomoney -> yookassa
 
     def test_description_from_comment(self, bedolaga_db, shm_data_minimal):
         shm_conn = MockShmConnection(shm_data_minimal)
@@ -626,10 +632,10 @@ class TestMigrateTransactions:
         migrate_transactions(shm_conn, bedolaga_db, mapping, dry_run=False)
 
         user2_id = mapping[2]
-        row = bedolaga_db.execute(
-            "SELECT description FROM transactions WHERE user_id = ? AND external_id = 'pay_abc123'",
+        row = bedolaga_db.fetchone(
+            "SELECT description FROM transactions WHERE user_id = %s AND external_id = 'pay_abc123'",
             (user2_id,),
-        ).fetchone()
+        )
         assert row[0] == 'Пополнение баланса'
 
 
@@ -644,9 +650,7 @@ class TestMigrateSubscriptionPurchases:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
         migrate_subscription_purchases(shm_conn, bedolaga_db, mapping, dry_run=False)
 
-        count = bedolaga_db.execute("SELECT COUNT(*) FROM transactions WHERE type = 'subscription_payment'").fetchone()[
-            0
-        ]
+        count = bedolaga_db.fetchone("SELECT COUNT(*) FROM transactions WHERE type = 'subscription_payment'")[0]
         # 2 оплаченных (withdraw_id 200 и 201), 1 бесплатный триал пропущен
         assert count == 2
 
@@ -656,22 +660,20 @@ class TestMigrateSubscriptionPurchases:
         migrate_subscription_purchases(shm_conn, bedolaga_db, mapping, dry_run=False)
 
         # Не должно быть записи для бесплатного триала (cost=0, bonus=0)
-        count = bedolaga_db.execute(
-            "SELECT COUNT(*) FROM transactions WHERE external_id = 'shm_withdraw_202'"
-        ).fetchone()[0]
+        count = bedolaga_db.fetchone("SELECT COUNT(*) FROM transactions WHERE external_id = 'shm_withdraw_202'")[0]
         assert count == 0
 
     def test_bonus_in_description(self, bedolaga_db, shm_data_minimal):
-        """Если часть оплачена бонусом — указано в описании."""
+        """Если часть оплачена бонусом -- указано в описании."""
         shm_conn = MockShmConnection(shm_data_minimal)
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
         migrate_subscription_purchases(shm_conn, bedolaga_db, mapping, dry_run=False)
 
-        row = bedolaga_db.execute(
+        row = bedolaga_db.fetchone(
             "SELECT description, amount_kopeks FROM transactions WHERE external_id = 'shm_withdraw_201'"
-        ).fetchone()
+        )
         assert 'бонус' in row[0].lower()
-        # cost=420 + bonus=50 = 470₽ = 47000 коп
+        # cost=420 + bonus=50 = 470 rub = 47000 kop
         assert row[1] == 47000
 
     def test_amount_includes_bonus(self, bedolaga_db, shm_data_minimal):
@@ -679,19 +681,15 @@ class TestMigrateSubscriptionPurchases:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
         migrate_subscription_purchases(shm_conn, bedolaga_db, mapping, dry_run=False)
 
-        row = bedolaga_db.execute(
-            "SELECT amount_kopeks FROM transactions WHERE external_id = 'shm_withdraw_200'"
-        ).fetchone()
-        assert row[0] == 17000  # 170₽, без бонуса
+        row = bedolaga_db.fetchone("SELECT amount_kopeks FROM transactions WHERE external_id = 'shm_withdraw_200'")
+        assert row[0] == 17000  # 170 rub, без бонуса
 
     def test_service_name_in_description(self, bedolaga_db, shm_data_minimal):
         shm_conn = MockShmConnection(shm_data_minimal)
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
         migrate_subscription_purchases(shm_conn, bedolaga_db, mapping, dry_run=False)
 
-        row = bedolaga_db.execute(
-            "SELECT description FROM transactions WHERE external_id = 'shm_withdraw_200'"
-        ).fetchone()
+        row = bedolaga_db.fetchone("SELECT description FROM transactions WHERE external_id = 'shm_withdraw_200'")
         assert 'VPN 1 мес' in row[0]
 
 
@@ -706,7 +704,7 @@ class TestMigrateBonusDeposits:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
         migrate_bonus_deposits(shm_conn, bedolaga_db, mapping, dry_run=False)
 
-        count = bedolaga_db.execute("SELECT COUNT(*) FROM transactions WHERE payment_method = 'bonus'").fetchone()[0]
+        count = bedolaga_db.fetchone("SELECT COUNT(*) FROM transactions WHERE payment_method = 'bonus'")[0]
         # Только "Акция" (id=301), withdraw (id=302 отрицательный), referral (id=300) исключены
         assert count == 1
 
@@ -717,9 +715,7 @@ class TestMigrateBonusDeposits:
         migrate_bonus_deposits(shm_conn, bedolaga_db, mapping, dry_run=False)
 
         # Не должно быть записи с external_id shm_bonus_300 (это реферальное)
-        count = bedolaga_db.execute("SELECT COUNT(*) FROM transactions WHERE external_id = 'shm_bonus_300'").fetchone()[
-            0
-        ]
+        count = bedolaga_db.fetchone("SELECT COUNT(*) FROM transactions WHERE external_id = 'shm_bonus_300'")[0]
         assert count == 0
 
     def test_bonus_amount_converted(self, bedolaga_db, shm_data_minimal):
@@ -727,10 +723,10 @@ class TestMigrateBonusDeposits:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
         migrate_bonus_deposits(shm_conn, bedolaga_db, mapping, dry_run=False)
 
-        row = bedolaga_db.execute(
+        row = bedolaga_db.fetchone(
             "SELECT amount_kopeks, description FROM transactions WHERE external_id = 'shm_bonus_301'"
-        ).fetchone()
-        assert row[0] == 10000  # 100₽
+        )
+        assert row[0] == 10000  # 100 rub
         assert 'Акция' in row[1]
 
 
@@ -745,7 +741,7 @@ class TestMigrateReferralEarnings:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
         migrate_referral_earnings(shm_conn, bedolaga_db, mapping, dry_run=False)
 
-        count = bedolaga_db.execute('SELECT COUNT(*) FROM referral_earnings').fetchone()[0]
+        count = bedolaga_db.fetchone('SELECT COUNT(*) FROM referral_earnings')[0]
         assert count == 1
 
     def test_earning_amount_and_ids(self, bedolaga_db, shm_data_minimal):
@@ -753,14 +749,12 @@ class TestMigrateReferralEarnings:
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
         migrate_referral_earnings(shm_conn, bedolaga_db, mapping, dry_run=False)
 
-        row = bedolaga_db.execute(
-            'SELECT user_id, referral_id, amount_kopeks, reason FROM referral_earnings'
-        ).fetchone()
+        row = bedolaga_db.fetchone('SELECT user_id, referral_id, amount_kopeks, reason FROM referral_earnings')
 
-        # user_id=2 получил 10₽ от user_id=3
+        # user_id=2 получил 10 rub от user_id=3
         assert row[0] == mapping[2]  # Реферер
         assert row[1] == mapping[3]  # Реферал
-        assert row[2] == 1000  # 10₽
+        assert row[2] == 1000  # 10 rub
         assert '10pct' in row[3]
 
 
@@ -786,7 +780,7 @@ INSERT INTO `test_table` VALUES (1,'hello',10.50),(2,'world',NULL);
             encoding='utf-8',
         )
 
-        conn = SqlDumpConnection(str(dump))
+        conn = SqlDumpConnection(str(dump), parse_all=True)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM test_table')
         rows = cursor.fetchall()
@@ -813,7 +807,7 @@ INSERT INTO `data` VALUES (1,'it\\'s a test'),(2,'line1\\nline2');
             encoding='utf-8',
         )
 
-        conn = SqlDumpConnection(str(dump))
+        conn = SqlDumpConnection(str(dump), parse_all=True)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM data')
         rows = cursor.fetchall()
@@ -838,7 +832,7 @@ INSERT INTO `users` VALUES (1,'admin'),(2,'@12345'),(3,'@67890');
             encoding='utf-8',
         )
 
-        conn = SqlDumpConnection(str(dump))
+        conn = SqlDumpConnection(str(dump), parse_all=True)
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM users WHERE login LIKE '@%'")
         rows = cursor.fetchall()
@@ -861,7 +855,7 @@ INSERT INTO `pays` VALUES (1,0.00),(2,100.00),(3,200.00);
             encoding='utf-8',
         )
 
-        conn = SqlDumpConnection(str(dump))
+        conn = SqlDumpConnection(str(dump), parse_all=True)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM pays WHERE money > 0')
         rows = cursor.fetchall()
@@ -902,27 +896,25 @@ class TestFullMigration:
         migrate_referral_earnings(shm_conn, bedolaga_db, mapping, dry_run=False)
 
         # Проверки
-        users = bedolaga_db.execute('SELECT COUNT(*) FROM users').fetchone()[0]
+        users = bedolaga_db.fetchone('SELECT COUNT(*) FROM users')[0]
         assert users == 3
 
-        subs = bedolaga_db.execute('SELECT COUNT(*) FROM subscriptions').fetchone()[0]
+        subs = bedolaga_db.fetchone('SELECT COUNT(*) FROM subscriptions')[0]
         assert subs == 2  # user_id=2 и user_id=3
 
-        deposits = bedolaga_db.execute("SELECT COUNT(*) FROM transactions WHERE type = 'deposit'").fetchone()[0]
+        deposits = bedolaga_db.fetchone("SELECT COUNT(*) FROM transactions WHERE type = 'deposit'")[0]
         assert deposits == 3  # 2 pays_history + 1 бонус "Акция"
 
-        purchases = bedolaga_db.execute(
-            "SELECT COUNT(*) FROM transactions WHERE type = 'subscription_payment'"
-        ).fetchone()[0]
+        purchases = bedolaga_db.fetchone("SELECT COUNT(*) FROM transactions WHERE type = 'subscription_payment'")[0]
         assert purchases == 2
 
-        bonus_tx = bedolaga_db.execute("SELECT COUNT(*) FROM transactions WHERE payment_method = 'bonus'").fetchone()[0]
+        bonus_tx = bedolaga_db.fetchone("SELECT COUNT(*) FROM transactions WHERE payment_method = 'bonus'")[0]
         assert bonus_tx == 1
 
-        earnings = bedolaga_db.execute('SELECT COUNT(*) FROM referral_earnings').fetchone()[0]
+        earnings = bedolaga_db.fetchone('SELECT COUNT(*) FROM referral_earnings')[0]
         assert earnings == 1
 
-        referrals = bedolaga_db.execute('SELECT COUNT(*) FROM users WHERE referred_by_id IS NOT NULL').fetchone()[0]
+        referrals = bedolaga_db.fetchone('SELECT COUNT(*) FROM users WHERE referred_by_id IS NOT NULL')[0]
         assert referrals == 1
 
     def test_idempotent_rerun(self, bedolaga_db, shm_data_minimal):
@@ -935,7 +927,7 @@ class TestFullMigration:
         migrate_subscription_purchases(shm_conn, bedolaga_db, mapping, dry_run=False)
         migrate_bonus_deposits(shm_conn, bedolaga_db, mapping, dry_run=False)
 
-        count1 = bedolaga_db.execute('SELECT COUNT(*) FROM transactions').fetchone()[0]
+        count1 = bedolaga_db.fetchone('SELECT COUNT(*) FROM transactions')[0]
 
         # Второй запуск
         mapping2 = migrate_users(shm_conn, bedolaga_db, dry_run=False)
@@ -943,7 +935,7 @@ class TestFullMigration:
         migrate_subscription_purchases(shm_conn, bedolaga_db, mapping2, dry_run=False)
         migrate_bonus_deposits(shm_conn, bedolaga_db, mapping2, dry_run=False)
 
-        count2 = bedolaga_db.execute('SELECT COUNT(*) FROM transactions').fetchone()[0]
+        count2 = bedolaga_db.fetchone('SELECT COUNT(*) FROM transactions')[0]
 
         # Количество не должно удвоиться
         assert count2 == count1
@@ -953,23 +945,23 @@ class TestFullMigration:
         shm_conn = MockShmConnection(shm_data_minimal)
         mapping = migrate_users(shm_conn, bedolaga_db, dry_run=False)
 
-        # user_id=2: balance=500, bonus=100 → 60000 коп
-        user2 = bedolaga_db.execute(
-            'SELECT balance_kopeks FROM users WHERE id = ?',
+        # user_id=2: balance=500, bonus=100 -> 60000 коп
+        user2 = bedolaga_db.fetchone(
+            'SELECT balance_kopeks FROM users WHERE id = %s',
             (mapping[2],),
-        ).fetchone()
+        )
         assert user2[0] == 60000
 
-        # user_id=3: balance=200, bonus=50 → 25000 коп
-        user3 = bedolaga_db.execute(
-            'SELECT balance_kopeks FROM users WHERE id = ?',
+        # user_id=3: balance=200, bonus=50 -> 25000 коп
+        user3 = bedolaga_db.fetchone(
+            'SELECT balance_kopeks FROM users WHERE id = %s',
             (mapping[3],),
-        ).fetchone()
+        )
         assert user3[0] == 25000
 
-        # user_id=4: balance=0, bonus=0, blocked → 0 коп
-        user4 = bedolaga_db.execute(
-            'SELECT balance_kopeks FROM users WHERE id = ?',
+        # user_id=4: balance=0, bonus=0, blocked -> 0 коп
+        user4 = bedolaga_db.fetchone(
+            'SELECT balance_kopeks FROM users WHERE id = %s',
             (mapping[4],),
-        ).fetchone()
+        )
         assert user4[0] == 0
