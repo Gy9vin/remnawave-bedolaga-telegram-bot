@@ -1556,10 +1556,11 @@ async def get_target_users_count(db: AsyncSession, target: str) -> int:
     base_filter = User.status == UserStatus.ACTIVE.value
 
     if target == 'admins':
-        admin_ids = settings.ADMIN_IDS or []
-        if not admin_ids:
+        admin_ids_raw = settings.ADMIN_IDS or ''
+        admin_ids_list = [int(x.strip()) for x in str(admin_ids_raw).split(',') if x.strip().isdigit()]
+        if not admin_ids_list:
             return 0
-        query = select(sql_func.count(User.id)).where(User.telegram_id.in_(admin_ids))
+        query = select(sql_func.count(User.id)).where(User.telegram_id.in_(admin_ids_list))
         result = await db.execute(query)
         return result.scalar() or 0
 
@@ -1800,8 +1801,9 @@ async def get_target_users(db: AsyncSession, target: str) -> list:
         offset += batch_size
 
     if target == 'admins':
-        admin_ids = settings.ADMIN_IDS or []
-        return [u for u in users if u.telegram_id in admin_ids]
+        admin_ids_raw = settings.ADMIN_IDS or ''
+        admin_ids_list = [int(x.strip()) for x in str(admin_ids_raw).split(',') if x.strip().isdigit()]
+        return [u for u in users if u.telegram_id in admin_ids_list]
 
     if target == 'all':
         return users
