@@ -147,9 +147,14 @@ async def show_my_subscriptions(
         # Fallback to legacy single subscription view
         return
 
-    from app.database.crud.subscription import get_active_subscriptions_by_user_id
+    all_subscriptions = await get_all_subscriptions_by_user_id(db, db_user.id)
 
-    subscriptions = await get_active_subscriptions_by_user_id(db, db_user.id)
+    # Показываем active первыми, потом последние 10 неактивных
+    active = [s for s in all_subscriptions if s.status in ('active', 'trial')]
+    inactive = [s for s in all_subscriptions if s.status not in ('active', 'trial')]
+    MAX_INACTIVE = 10
+    shown_inactive = inactive[:MAX_INACTIVE]
+    subscriptions = active + shown_inactive
 
     if not subscriptions:
         text = '📋 <b>Мои подписки</b>\n\nУ вас нет подписок.'
@@ -161,9 +166,17 @@ async def show_my_subscriptions(
         )
     else:
         lines = ['📋 <b>Мои подписки</b>\n']
-        for idx, sub in enumerate(subscriptions, 1):
-            lines.append(_format_subscription_line(sub, idx))
-            lines.append('')  # empty line between subscriptions
+        if active:
+            lines.append(f'<b>Активные ({len(active)}):</b>')
+            for idx, sub in enumerate(active, 1):
+                lines.append(_format_subscription_line(sub, idx))
+                lines.append('')
+        if shown_inactive:
+            hidden = len(inactive) - len(shown_inactive)
+            lines.append(f'<b>Неактивные (последние {len(shown_inactive)}{f", ещё {hidden}" if hidden else ""}):</b>')
+            for idx, sub in enumerate(shown_inactive, len(active) + 1):
+                lines.append(_format_subscription_line(sub, idx))
+                lines.append('')
         text = '\n'.join(lines)
         keyboard = _build_subscriptions_keyboard(subscriptions, db_user.language)
 
