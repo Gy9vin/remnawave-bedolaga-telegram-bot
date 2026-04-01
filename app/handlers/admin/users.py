@@ -998,7 +998,8 @@ async def _render_user_subscription_overview(
                 [
                     types.InlineKeyboardButton(
                         text='🚫 Деактивировать', callback_data=f'admin_sub_deactivate_{user_id}{_sid}'
-                    )
+                    ),
+                    types.InlineKeyboardButton(text='🗑 Удалить', callback_data=f'admin_sub_delete_{user_id}{_sid}'),
                 ]
             )
         else:
@@ -1006,7 +1007,8 @@ async def _render_user_subscription_overview(
                 [
                     types.InlineKeyboardButton(
                         text='✅ Активировать', callback_data=f'admin_sub_activate_{user_id}{_sid}'
-                    )
+                    ),
+                    types.InlineKeyboardButton(text='🗑 Удалить', callback_data=f'admin_sub_delete_{user_id}{_sid}'),
                 ]
             )
     else:
@@ -3680,6 +3682,64 @@ async def confirm_subscription_deactivation(callback: types.CallbackQuery, db_us
 
 @admin_required
 @error_handler
+async def admin_delete_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Админ удаляет подписку пользователя — без подтверждения, сразу."""
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    back_cb = f'admin_user_subscription_{user_id}'
+
+    if subscription_id:
+        subscription = await db.get(Subscription, subscription_id)
+    else:
+        subscription = await get_subscription_by_user_id(db, user_id)
+
+    if not subscription:
+        await callback.message.edit_text(
+            '❌ Подписка не найдена',
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[[types.InlineKeyboardButton(text='◀️ Назад', callback_data=back_cb)]]
+            ),
+        )
+        await callback.answer()
+        return
+
+    # Удалить из RemnaWave
+    if subscription.remnawave_uuid:
+        try:
+            from app.services.subscription_service import SubscriptionService
+
+            service = SubscriptionService()
+            await service.delete_remnawave_user(subscription.remnawave_uuid)
+        except Exception as e:
+            logger.warning('Failed to delete RemnaWave user', error=e)
+
+    # Уменьшить счётчики серверов
+    from app.database.crud.subscription import decrement_subscription_server_counts
+
+    await decrement_subscription_server_counts(db, subscription)
+
+    # Удалить из БД
+    await db.delete(subscription)
+    await db.commit()
+
+    logger.info(
+        'Subscription deleted by admin',
+        subscription_id=subscription_id or subscription.id,
+        target_user_id=user_id,
+        admin_user_id=db_user.id,
+    )
+
+    await callback.message.edit_text(
+        '✅ Подписка удалена безвозвратно',
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[[types.InlineKeyboardButton(text='◀️ К пользователю', callback_data=back_cb)]]
+        ),
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
 async def activate_user_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     user_id, subscription_id = _extract_admin_sub_context(callback.data)
 
@@ -6323,6 +6383,8 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(confirm_subscription_deactivation, F.data.startswith('admin_sub_deactivate_confirm_'))
 
     dp.callback_query.register(activate_user_subscription, F.data.startswith('admin_sub_activate_'))
+
+    dp.callback_query.register(admin_delete_subscription, F.data.startswith('admin_sub_delete_'))
 
     dp.callback_query.register(grant_trial_subscription, F.data.startswith('admin_sub_grant_trial_'))
 

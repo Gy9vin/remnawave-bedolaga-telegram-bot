@@ -17,7 +17,7 @@ from app.database.crud.subscription import (
     decrement_subscription_server_counts,
     get_subscription_by_id_for_user,
 )
-from app.database.models import Subscription, SubscriptionStatus, User
+from app.database.models import Subscription, User
 from app.localization.texts import get_texts
 from app.services.subscription_service import SubscriptionService
 
@@ -128,8 +128,8 @@ def _build_subscription_detail_keyboard(sub_id: int, sub=None) -> types.InlineKe
         buttons.append([types.InlineKeyboardButton(text='📊 Трафик', callback_data=f'st:{sub_id}')])
         buttons.append([types.InlineKeyboardButton(text='📱 Устройства', callback_data=f'sd:{sub_id}')])
 
-    if is_inactive:
-        buttons.append([types.InlineKeyboardButton(text='🗑 Удалить подписку', callback_data=f'sub_del:{sub_id}')])
+    # Удалить подписку — доступно всегда
+    buttons.append([types.InlineKeyboardButton(text='🗑 Удалить подписку', callback_data=f'sub_del:{sub_id}')])
 
     buttons.append([types.InlineKeyboardButton(text='◀️ К списку подписок', callback_data='my_subscriptions')])
 
@@ -397,18 +397,27 @@ async def handle_subscription_delete_confirm(
         await callback.answer('Подписка не найдена', show_alert=True)
         return
 
-    if subscription.actual_status not in ('expired', 'disabled'):
-        await callback.answer('Можно удалить только истекшую или отключённую подписку', show_alert=True)
-        return
-
     tariff_name = subscription.tariff.name if subscription.tariff else 'Подписка'
+    is_active = subscription.actual_status in ('active', 'trial')
 
-    text = (
-        f'🗑 <b>Удалить подписку «{tariff_name}»?</b>\n\n'
-        '⚠️ Подписка будет удалена безвозвратно.\n'
-        'Все данные, устройства и настройки будут потеряны.\n'
-        'Это действие нельзя отменить.'
-    )
+    if is_active:
+        end_date = subscription.end_date.strftime('%d.%m.%Y') if subscription.end_date else '—'
+        text = (
+            f'🗑 <b>Удалить подписку «{tariff_name}»?</b>\n\n'
+            f'🚨 <b>ВНИМАНИЕ! Подписка АКТИВНА до {end_date}!</b>\n\n'
+            '❌ VPN перестанет работать СРАЗУ\n'
+            '❌ Деньги НЕ возвращаются\n'
+            '❌ Ключ подключения будет удалён\n'
+            '❌ Это действие НЕЛЬЗЯ отменить\n\n'
+            '⚠️ Вы уверены что хотите удалить ОПЛАЧЕННУЮ подписку?'
+        )
+    else:
+        text = (
+            f'🗑 <b>Удалить подписку «{tariff_name}»?</b>\n\n'
+            '⚠️ Подписка будет удалена безвозвратно.\n'
+            'Все данные, устройства и настройки будут потеряны.\n'
+            'Это действие нельзя отменить.'
+        )
 
     keyboard = types.InlineKeyboardMarkup(
         inline_keyboard=[
@@ -437,11 +446,6 @@ async def handle_subscription_delete_execute(
     subscription = await get_subscription_by_id_for_user(db, sub_id, db_user.id)
     if not subscription:
         await callback.answer('Подписка не найдена', show_alert=True)
-        return
-
-    deletable_statuses = {SubscriptionStatus.EXPIRED.value, SubscriptionStatus.DISABLED.value}
-    if getattr(subscription, 'actual_status', subscription.status) not in deletable_statuses:
-        await callback.answer('Можно удалить только истекшую или отключённую подписку', show_alert=True)
         return
 
     # Delete from RemnaWave panel (stops webhooks / phantom notifications)
