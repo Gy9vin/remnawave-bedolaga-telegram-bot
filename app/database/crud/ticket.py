@@ -480,6 +480,24 @@ class TicketMessageCRUD:
         return result.scalars().all()
 
     @staticmethod
+    async def delete_message(db: AsyncSession, message_id: int, user_id: int) -> bool:
+        """Удалить своё сообщение из тикета (только не-админские)."""
+        msg = await db.execute(
+            select(TicketMessage).where(
+                TicketMessage.id == message_id,
+                TicketMessage.user_id == user_id,
+                TicketMessage.is_from_admin == False,
+            )
+        )
+        message = msg.scalar_one_or_none()
+        if not message:
+            return False
+
+        await db.delete(message)
+        await db.commit()
+        return True
+
+    @staticmethod
     async def get_first_message(db: AsyncSession, ticket_id: int) -> TicketMessage | None:
         """Получить первое сообщение в тикете"""
         query = (

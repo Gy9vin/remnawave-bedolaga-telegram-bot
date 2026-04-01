@@ -338,3 +338,29 @@ async def add_ticket_message(
         logger.error('Error creating cabinet notification for user reply', error=e)
 
     return _message_to_response(message)
+
+
+@router.delete('/{ticket_id}/messages/{message_id}')
+async def delete_ticket_message(
+    ticket_id: int,
+    message_id: int,
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Delete own message from ticket."""
+    # Проверить что тикет принадлежит юзеру
+    query = select(Ticket).where(Ticket.id == ticket_id, Ticket.user_id == user.id)
+    result = await db.execute(query)
+    ticket = result.scalar_one_or_none()
+
+    if not ticket:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Ticket not found')
+
+    deleted = await TicketMessageCRUD.delete_message(db, message_id, user.id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Message not found or cannot be deleted',
+        )
+
+    return {'message': 'Message deleted'}

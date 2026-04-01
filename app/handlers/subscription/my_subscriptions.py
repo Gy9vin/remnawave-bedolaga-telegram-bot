@@ -400,21 +400,33 @@ async def handle_subscription_delete_confirm(
     tariff_name = subscription.tariff.name if subscription.tariff else 'Подписка'
     is_active = subscription.actual_status in ('active', 'trial')
 
+    devices = subscription.device_limit or 0
+    servers = len(subscription.connected_squads or [])
+    details = []
+    if devices > 0:
+        details.append(f'📱 Устройства: {devices}')
+    if servers > 0:
+        details.append(f'🌍 Серверы: {servers}')
+    details_text = '\n'.join(details)
+
     if is_active:
         end_date = subscription.end_date.strftime('%d.%m.%Y') if subscription.end_date else '—'
         text = (
             f'🗑 <b>Удалить подписку «{tariff_name}»?</b>\n\n'
             f'🚨 <b>ВНИМАНИЕ! Подписка АКТИВНА до {end_date}!</b>\n\n'
-            '❌ VPN перестанет работать СРАЗУ\n'
+            + (f'{details_text}\n\n' if details_text else '')
+            + '❌ VPN перестанет работать СРАЗУ\n'
             '❌ Деньги НЕ возвращаются\n'
             '❌ Ключ подключения будет удалён\n'
+            '❌ Все привязанные устройства отключатся\n'
             '❌ Это действие НЕЛЬЗЯ отменить\n\n'
             '⚠️ Вы уверены что хотите удалить ОПЛАЧЕННУЮ подписку?'
         )
     else:
         text = (
             f'🗑 <b>Удалить подписку «{tariff_name}»?</b>\n\n'
-            '⚠️ Подписка будет удалена безвозвратно.\n'
+            + (f'{details_text}\n\n' if details_text else '')
+            + '⚠️ Подписка будет удалена безвозвратно.\n'
             'Все данные, устройства и настройки будут потеряны.\n'
             'Это действие нельзя отменить.'
         )
