@@ -429,6 +429,41 @@ async def link_provider_callback(
     )
 
 
+@router.post('/unlink/email', response_model=UnlinkResponse)
+async def unlink_email(
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> UnlinkResponse:
+    """Unlink email/password authentication from the current account."""
+    if not user.email or not user.password_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Email is not linked to your account',
+        )
+
+    if _count_auth_methods(user) <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Cannot unlink last authentication method',
+        )
+
+    user.email = None
+    user.password_hash = None
+    user.email_verified = False
+    user.email_verified_at = None
+    user.email_verification_token = None
+    user.email_verification_expires = None
+    user.email_change_new = None
+    user.email_change_code = None
+    user.email_change_expires = None
+
+    if user.auth_type == 'email':
+        user.auth_type = 'telegram'
+
+    await db.commit()
+    return UnlinkResponse(success=True)
+
+
 @router.post('/unlink/{provider}', response_model=UnlinkResponse)
 async def unlink_provider(
     provider: OAuthProviderName,

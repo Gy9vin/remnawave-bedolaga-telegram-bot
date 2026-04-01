@@ -926,7 +926,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
                 if trial_tariff:
                     trial_traffic_limit = trial_tariff.traffic_limit_gb
                     trial_device_limit = trial_tariff.device_limit
-                    trial_squads = trial_tariff.allowed_squads or []
+                    # trial_squads остаётся None — create_trial_subscription выберет is_trial_eligible сквад
                     tariff_id_for_trial = trial_tariff.id
                     tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
                     if tariff_trial_days:
@@ -3311,7 +3311,7 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
                 if trial_tariff:
                     trial_traffic_limit = trial_tariff.traffic_limit_gb
                     trial_device_limit = trial_tariff.device_limit
-                    trial_squads = trial_tariff.allowed_squads or []
+                    # trial_squads остаётся None — create_trial_subscription выберет is_trial_eligible сквад
                     tariff_id_for_trial = trial_tariff.id
                     tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
                     if tariff_trial_days:
@@ -3670,7 +3670,7 @@ async def handle_trial_payment_method(callback: types.CallbackQuery, db_user: Us
                 if trial_tariff:
                     trial_traffic = trial_tariff.traffic_limit_gb
                     trial_devices = trial_tariff.device_limit
-                    trial_squads_list = trial_tariff.allowed_squads or []
+                    # trial_squads_list остаётся [] — ниже выберется is_trial_eligible сквад
                     tariff_id_for_trial = trial_tariff.id
                     tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
                     if tariff_trial_days:
