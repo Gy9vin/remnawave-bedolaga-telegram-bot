@@ -766,6 +766,7 @@ async def select_broadcast_target(callback: types.CallbackQuery, db_user: User, 
         'expired': 'С истекшей подпиской',
         'active_zero': 'Активная подписка, трафик 0 ГБ',
         'trial_zero': 'Триальная подписка, трафик 0 ГБ',
+        'admins': '🛡 Только админам (тест)',
     }
 
     # Обработка фильтра по тарифу
@@ -1554,6 +1555,14 @@ async def get_target_users_count(db: AsyncSession, target: str) -> int:
 
     base_filter = User.status == UserStatus.ACTIVE.value
 
+    if target == 'admins':
+        admin_ids = settings.ADMIN_IDS or []
+        if not admin_ids:
+            return 0
+        query = select(sql_func.count(User.id)).where(User.telegram_id.in_(admin_ids))
+        result = await db.execute(query)
+        return result.scalar() or 0
+
     if target == 'all':
         query = select(sql_func.count(User.id)).where(base_filter)
         result = await db.execute(query)
@@ -1789,6 +1798,10 @@ async def get_target_users(db: AsyncSession, target: str) -> list:
 
         users.extend(batch)
         offset += batch_size
+
+    if target == 'admins':
+        admin_ids = settings.ADMIN_IDS or []
+        return [u for u in users if u.telegram_id in admin_ids]
 
     if target == 'all':
         return users
@@ -2058,6 +2071,7 @@ def get_target_name(target_type: str) -> str:
         'custom_inactive_month': 'Неактивные 30+ дней',
         'custom_referrals': 'Через рефералов',
         'custom_direct': 'Прямая регистрация',
+        'admins': '🛡 Только админам (тест)',
     }
     # Обработка фильтра по тарифу
     if target_type.startswith('tariff_'):

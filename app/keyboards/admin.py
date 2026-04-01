@@ -1426,6 +1426,12 @@ def get_broadcast_target_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
                     callback_data='broadcast_by_tariff',
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text='🛡 Только админам (тест)',
+                    callback_data='broadcast_admins',
+                )
+            ],
             [InlineKeyboardButton(text=texts.BACK, callback_data='admin_messages')],
         ]
     )
