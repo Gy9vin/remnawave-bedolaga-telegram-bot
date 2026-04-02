@@ -2232,6 +2232,60 @@ async def reset_user_devices(
         return ResetDevicesResponse(success=False, message='Ошибка сброса устройств')
 
 
+# === Delete Subscription (Admin) ===
+
+
+@router.delete('/{user_id}/subscriptions/{subscription_id}')
+async def admin_delete_subscription(
+    user_id: int,
+    subscription_id: int,
+    admin: User = Depends(require_permission('users:subscription')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Admin delete any subscription by ID."""
+    from sqlalchemy import text
+
+    subscription = await db.get(Subscription, subscription_id)
+    if not subscription:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Subscription not found')
+
+    # Delete from RemnaWave
+    if subscription.remnawave_uuid:
+        try:
+            from app.services.subscription_service import SubscriptionService
+
+            service = SubscriptionService()
+            await service.delete_remnawave_user(subscription.remnawave_uuid)
+        except Exception as e:
+            logger.warning('Failed to delete RemnaWave user', error=e)
+
+    # Cascade delete related records
+    for table in [
+        'subscription_servers',
+        'subscription_temporary_access',
+        'traffic_purchases',
+        'subscription_events',
+        'sent_notifications',
+        'discount_offers',
+    ]:
+        try:
+            await db.execute(text(f'DELETE FROM {table} WHERE subscription_id = :sid'), {'sid': subscription_id})
+        except Exception:
+            pass
+
+    await db.execute(text('DELETE FROM subscriptions WHERE id = :sid'), {'sid': subscription_id})
+    await db.commit()
+
+    logger.info(
+        'Subscription deleted by admin (cabinet)',
+        subscription_id=subscription_id,
+        target_user_id=user_id,
+        admin_id=admin.id,
+    )
+
+    return {'message': 'Subscription deleted'}
+
+
 # === Delete User ===
 
 
