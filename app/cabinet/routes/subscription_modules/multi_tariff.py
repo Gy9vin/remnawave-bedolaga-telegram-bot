@@ -129,10 +129,32 @@ async def delete_subscription(
             logger.warning('Failed to delete RemnaWave user on subscription delete', error=e)
 
     # Decrement server counts
-    await decrement_subscription_server_counts(db, subscription)
+    try:
+        await decrement_subscription_server_counts(db, subscription)
+    except Exception as e:
+        logger.warning('Failed to decrement server counts', error=e)
 
-    # Delete the subscription
-    await db.delete(subscription)
+    # Hard delete — каскадно удаляем связанные записи
+    from sqlalchemy import text
+
+    sub_id_val = subscription.id
+    for table in [
+        'subscription_servers',
+        'subscription_temporary_access',
+        'traffic_purchases',
+        'subscription_events',
+        'sent_notifications',
+        'discount_offers',
+    ]:
+        try:
+            await db.execute(text(f'DELETE FROM {table} WHERE subscription_id = :sid'), {'sid': sub_id_val})
+        except Exception:
+            pass
+
+    await db.execute(
+        text('DELETE FROM subscriptions WHERE id = :sid AND user_id = :uid'),
+        {'sid': sub_id_val, 'uid': user.id},
+    )
     await db.commit()
 
     logger.info(

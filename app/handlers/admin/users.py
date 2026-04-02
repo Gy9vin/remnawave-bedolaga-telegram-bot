@@ -3716,15 +3716,34 @@ async def admin_delete_subscription(callback: types.CallbackQuery, db_user: User
     # Уменьшить счётчики серверов
     from app.database.crud.subscription import decrement_subscription_server_counts
 
-    await decrement_subscription_server_counts(db, subscription)
+    try:
+        await decrement_subscription_server_counts(db, subscription)
+    except Exception as e:
+        logger.warning('Failed to decrement server counts', error=e)
 
-    # Удалить из БД
-    await db.delete(subscription)
+    # Каскадное удаление из БД
+    from sqlalchemy import text
+
+    sub_id_val = subscription.id
+    for table in [
+        'subscription_servers',
+        'subscription_temporary_access',
+        'traffic_purchases',
+        'subscription_events',
+        'sent_notifications',
+        'discount_offers',
+    ]:
+        try:
+            await db.execute(text(f'DELETE FROM {table} WHERE subscription_id = :sid'), {'sid': sub_id_val})
+        except Exception:
+            pass
+
+    await db.execute(text('DELETE FROM subscriptions WHERE id = :sid'), {'sid': sub_id_val})
     await db.commit()
 
     logger.info(
         'Subscription deleted by admin',
-        subscription_id=subscription_id or subscription.id,
+        subscription_id=subscription_id or sub_id_val,
         target_user_id=user_id,
         admin_user_id=db_user.id,
     )

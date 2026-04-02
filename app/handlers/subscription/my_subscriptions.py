@@ -470,19 +470,47 @@ async def handle_subscription_delete_execute(
             logger.warning('Failed to delete RemnaWave user on subscription delete', error=e)
 
     # Decrement server counts
-    await decrement_subscription_server_counts(db, subscription)
+    try:
+        await decrement_subscription_server_counts(db, subscription)
+    except Exception as e:
+        logger.warning('Failed to decrement server counts', error=e)
 
-    # Hard delete from DB
-    await db.delete(subscription)
-    await db.commit()
+    # Hard delete from DB — каскадно удаляем все связанные записи
+    try:
+        from sqlalchemy import text
 
-    logger.info(
-        'Subscription deleted by user via bot',
-        subscription_id=sub_id,
-        user_id=db_user.id,
-    )
+        sub_id_val = subscription.id
+        # Удалить связанные записи
+        for table in [
+            'subscription_servers',
+            'subscription_temporary_access',
+            'traffic_purchases',
+            'subscription_events',
+            'sent_notifications',
+            'discount_offers',
+        ]:
+            try:
+                await db.execute(text(f'DELETE FROM {table} WHERE subscription_id = :sid'), {'sid': sub_id_val})
+            except Exception:
+                pass
 
-    await callback.answer('Подписка удалена', show_alert=True)
+        await db.execute(
+            text('DELETE FROM subscriptions WHERE id = :sid AND user_id = :uid'),
+            {'sid': sub_id_val, 'uid': db_user.id},
+        )
+        await db.commit()
+
+        logger.info(
+            'Subscription deleted by user via bot',
+            subscription_id=sub_id_val,
+            user_id=db_user.id,
+        )
+        await callback.answer('Подписка удалена', show_alert=True)
+    except Exception as e:
+        logger.error('Failed to delete subscription from DB', error=e, subscription_id=sub_id)
+        await db.rollback()
+        await callback.answer(f'Ошибка удаления: {e}', show_alert=True)
+        return
 
     # Return to subscriptions list
     await show_my_subscriptions(callback, db_user, db, state)
