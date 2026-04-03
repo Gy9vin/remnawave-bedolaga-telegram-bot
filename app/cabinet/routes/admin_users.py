@@ -238,8 +238,9 @@ async def _sync_subscription_to_panel(
     """
     try:
         from app.config import settings
-        from app.external.remnawave_api import TrafficLimitStrategy, UserStatus as PanelUserStatus
+        from app.external.remnawave_api import UserStatus as PanelUserStatus
         from app.services.remnawave_service import RemnaWaveService
+        from app.services.subscription_service import get_traffic_reset_strategy
         from app.utils.subscription_utils import resolve_hwid_device_limit_for_payload
 
         service = RemnaWaveService()
@@ -325,7 +326,7 @@ async def _sync_subscription_to_panel(
                     'uuid': panel_uuid,
                     'status': panel_status,
                     'traffic_limit_bytes': traffic_limit_bytes,
-                    'traffic_limit_strategy': TrafficLimitStrategy.MONTH,
+                    'traffic_limit_strategy': get_traffic_reset_strategy(subscription.tariff),
                     'description': description,
                 }
                 if expire_at:
@@ -360,7 +361,7 @@ async def _sync_subscription_to_panel(
                     'expire_at': expire_at or (datetime.now(UTC) + timedelta(days=30)),
                     'status': panel_status,
                     'traffic_limit_bytes': traffic_limit_bytes,
-                    'traffic_limit_strategy': TrafficLimitStrategy.MONTH,
+                    'traffic_limit_strategy': get_traffic_reset_strategy(subscription.tariff),
                     'telegram_id': user.telegram_id,
                     'email': user.email,
                     'description': description,
@@ -3218,8 +3219,9 @@ async def sync_user_to_panel(
 
     try:
         from app.config import settings
-        from app.external.remnawave_api import TrafficLimitStrategy, UserStatus as PanelUserStatus
+        from app.external.remnawave_api import UserStatus as PanelUserStatus
         from app.services.remnawave_service import RemnaWaveService
+        from app.services.subscription_service import get_traffic_reset_strategy
         from app.utils.subscription_utils import resolve_hwid_device_limit_for_payload
 
         service = RemnaWaveService()
@@ -3318,7 +3320,7 @@ async def sync_user_to_panel(
 
                 if request.update_traffic_limit:
                     update_kwargs['traffic_limit_bytes'] = traffic_limit_bytes
-                    update_kwargs['traffic_limit_strategy'] = TrafficLimitStrategy.MONTH
+                    update_kwargs['traffic_limit_strategy'] = get_traffic_reset_strategy(sub.tariff)
                     changes['traffic_limit_gb'] = sub.traffic_limit_gb
 
                 if request.update_squads and sub.connected_squads:
@@ -3352,7 +3354,7 @@ async def sync_user_to_panel(
                     'expire_at': expire_at or (datetime.now(UTC) + timedelta(days=30)),
                     'status': panel_status,
                     'traffic_limit_bytes': traffic_limit_bytes,
-                    'traffic_limit_strategy': TrafficLimitStrategy.MONTH,
+                    'traffic_limit_strategy': get_traffic_reset_strategy(sub.tariff),
                     'telegram_id': user.telegram_id,
                     'email': user.email,
                     'description': description,

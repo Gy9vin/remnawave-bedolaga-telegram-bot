@@ -720,7 +720,7 @@ async def purchase_tariff(
             )
 
         # Check balance
-        if user.balance_kopeks < price_kopeks:
+        if price_kopeks > 0 and user.balance_kopeks < price_kopeks:
             missing = price_kopeks - user.balance_kopeks
 
             # Save cart for auto-purchase after balance top-up
@@ -1192,7 +1192,7 @@ async def activate_trial(
         from app.database.crud.user import subtract_user_balance
 
         price_kopeks = settings.TRIAL_ACTIVATION_PRICE
-        if user.balance_kopeks < price_kopeks:
+        if price_kopeks > 0 and user.balance_kopeks < price_kopeks:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f'Insufficient balance. Need {price_kopeks / 100:.2f} RUB',

@@ -963,6 +963,11 @@ class BotConfigurationService:
             'example': '3:15,6:20,12:25',
             'warning': 'Скидка применяется для оставшегося периода подписки.',
         },
+        'WEBHOOK_NOTIFY_TORRENT_DETECTED': {
+            'description': 'Уведомление пользователю при обнаружении торрент-трафика.',
+            'format': 'Булево значение.',
+            'example': 'true',
+        },
         'RESET_TRAFFIC_ON_TARIFF_SWITCH': {
             'description': (
                 'Автоматически сбрасывает счётчик использованного трафика '

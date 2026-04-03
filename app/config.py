@@ -147,6 +147,7 @@ class Settings(BaseSettings):
     WEBHOOK_NOTIFY_NOT_CONNECTED: bool = True
     WEBHOOK_NOTIFY_BANDWIDTH_THRESHOLD: bool = True
     WEBHOOK_NOTIFY_DEVICES: bool = True
+    WEBHOOK_NOTIFY_TORRENT_DETECTED: bool = True
 
     # Notification discounts (can be overridden via env)
     NOTIFY_SECOND_WAVE_DISCOUNT_PERCENT: int = 10  # скидка через 2-3 дня после истечения
