@@ -3,16 +3,18 @@
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.rules import get_current_rules_content, get_rules_by_language
-from app.database.models import User
+from app.database.crud.system_setting import get_setting_value
+from app.database.models import SystemSetting, User
 from app.services.faq_service import FaqService
 from app.services.privacy_policy_service import PrivacyPolicyService
 from app.services.public_offer_service import PublicOfferService
 
-from ..dependencies import get_cabinet_db, get_current_cabinet_user
+from ..dependencies import get_cabinet_db, get_current_cabinet_user, require_permission
 
 
 logger = structlog.get_logger(__name__)
@@ -94,6 +96,26 @@ class SupportConfigResponse(BaseModel):
     support_type: str  # "tickets", "profile", "url", "both"
     support_url: str | None = None
     support_username: str | None = None
+
+
+# ============ Support Helper Models ============
+
+SUPPORT_HELPER_ENABLED_KEY = 'CABINET_SUPPORT_HELPER_ENABLED'
+SUPPORT_HELPER_DEV_MODE_KEY = 'CABINET_SUPPORT_HELPER_DEV_MODE'
+
+
+class SupportHelperConfigResponse(BaseModel):
+    """Support helper configuration."""
+
+    enabled: bool = False
+    dev_mode: bool = True
+
+
+class SupportHelperConfigUpdate(BaseModel):
+    """Request to update support helper configuration."""
+
+    enabled: bool | None = None
+    dev_mode: bool | None = None
 
 
 # ============ Routes ============
@@ -306,4 +328,63 @@ async def get_support_config():
         support_type=support_type,
         support_url=None,  # Cabinet doesn't use custom URLs
         support_username=settings.SUPPORT_USERNAME,  # Always return for fallback
+    )
+
+
+# ============ Support Helper Routes ============
+
+
+async def _set_setting_value(db: AsyncSession, key: str, value: str) -> None:
+    """Set a setting value in database."""
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+    setting = result.scalar_one_or_none()
+
+    if setting:
+        setting.value = value
+    else:
+        setting = SystemSetting(key=key, value=value)
+        db.add(setting)
+
+    await db.commit()
+
+
+@router.get('/support-helper-config', response_model=SupportHelperConfigResponse)
+async def get_support_helper_config(
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Get support helper configuration. Public endpoint."""
+    enabled_value = await get_setting_value(db, SUPPORT_HELPER_ENABLED_KEY)
+    dev_mode_value = await get_setting_value(db, SUPPORT_HELPER_DEV_MODE_KEY)
+
+    enabled = enabled_value is not None and enabled_value.lower() == 'true'
+    dev_mode = dev_mode_value is None or dev_mode_value.lower() != 'false'
+
+    return SupportHelperConfigResponse(enabled=enabled, dev_mode=dev_mode)
+
+
+@router.patch('/support-helper-config', response_model=SupportHelperConfigResponse)
+async def update_support_helper_config(
+    payload: SupportHelperConfigUpdate,
+    admin: User = Depends(require_permission('settings:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Update support helper configuration. Admin only."""
+    if payload.enabled is not None:
+        await _set_setting_value(db, SUPPORT_HELPER_ENABLED_KEY, str(payload.enabled).lower())
+    if payload.dev_mode is not None:
+        await _set_setting_value(db, SUPPORT_HELPER_DEV_MODE_KEY, str(payload.dev_mode).lower())
+
+    logger.info(
+        'Admin updated support helper config',
+        telegram_id=admin.telegram_id,
+        enabled=payload.enabled,
+        dev_mode=payload.dev_mode,
+    )
+
+    enabled_value = await get_setting_value(db, SUPPORT_HELPER_ENABLED_KEY)
+    dev_mode_value = await get_setting_value(db, SUPPORT_HELPER_DEV_MODE_KEY)
+
+    return SupportHelperConfigResponse(
+        enabled=enabled_value is not None and enabled_value.lower() == 'true',
+        dev_mode=dev_mode_value is None or dev_mode_value.lower() != 'false',
     )
