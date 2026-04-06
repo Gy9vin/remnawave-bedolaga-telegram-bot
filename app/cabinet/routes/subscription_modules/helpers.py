@@ -214,6 +214,7 @@ def _subscription_to_response(
         traffic_used_gb=round(traffic_used_gb, 2),
         traffic_used_percent=round(traffic_used_percent, 1),
         device_limit=subscription.device_limit or 0,
+        modem_enabled=getattr(subscription, 'modem_enabled', False) or False,
         connected_squads=subscription.connected_squads or [],
         servers=servers or [],
         autopay_enabled=subscription.autopay_enabled or False,

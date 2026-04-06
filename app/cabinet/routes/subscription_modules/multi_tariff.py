@@ -35,6 +35,7 @@ class SubscriptionListItem(BaseModel):
     traffic_limit_gb: int = 0
     traffic_used_gb: float = 0.0
     device_limit: int = 1
+    modem_enabled: bool = False
     end_date: str | None = None
     subscription_url: str | None = None
     subscription_crypto_link: str | None = None
@@ -63,6 +64,7 @@ def _subscription_to_list_item(sub) -> SubscriptionListItem:
         traffic_limit_gb=sub.traffic_limit_gb or 0,
         traffic_used_gb=sub.traffic_used_gb or 0.0,
         device_limit=sub.device_limit or 1,
+        modem_enabled=getattr(sub, 'modem_enabled', False) or False,
         end_date=sub.end_date.isoformat() if sub.end_date else None,
         subscription_url=sub.subscription_url,
         subscription_crypto_link=sub.subscription_crypto_link,
