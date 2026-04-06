@@ -175,6 +175,7 @@ def _build_subscription_info(subscription: Subscription, tariff_name: str | None
         traffic_limit_gb=subscription.traffic_limit_gb,
         traffic_used_gb=subscription.traffic_used_gb or 0.0,
         device_limit=subscription.device_limit,
+        modem_enabled=getattr(subscription, 'modem_enabled', False) or False,
         tariff_id=subscription.tariff_id,
         tariff_name=tariff_name,
         autopay_enabled=subscription.autopay_enabled,
@@ -1020,6 +1021,7 @@ async def update_user_subscription(
     - **change_tariff**: Change subscription tariff
     - **set_traffic**: Set traffic limit and/or used traffic
     - **toggle_autopay**: Enable/disable autopay
+    - **toggle_modem**: Enable/disable modem (adjusts device_limit)
     - **cancel**: Cancel subscription (set status to expired)
     - **activate**: Activate subscription
     - **create**: Create new subscription if not exists
@@ -1466,6 +1468,45 @@ async def update_user_subscription(
         return UpdateSubscriptionResponse(
             success=True,
             message=f'Device limit set to {request.device_limit}',
+            subscription=await _build_subscription_info_async(db, subscription),
+        )
+
+    if request.action == 'toggle_modem':
+        if request.modem_enabled is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='modem_enabled parameter is required for toggle_modem action',
+            )
+
+        old_modem = getattr(subscription, 'modem_enabled', False) or False
+        new_modem = request.modem_enabled
+
+        if old_modem != new_modem:
+            subscription.modem_enabled = new_modem
+            # Adjust device limit: +1 when enabling, -1 when disabling
+            if new_modem and not old_modem:
+                subscription.device_limit = (subscription.device_limit or 1) + 1
+            elif not new_modem and old_modem and (subscription.device_limit or 1) > 1:
+                subscription.device_limit = (subscription.device_limit or 1) - 1
+
+            await db.commit()
+            await db.refresh(subscription)
+
+            # Sync to Remnawave panel
+            await _sync_subscription_to_panel(db, user, subscription)
+
+        action_text = 'enabled' if new_modem else 'disabled'
+        logger.info(
+            f'Admin {action_text} modem for user',
+            admin_id=admin.id,
+            user_id=user_id,
+            modem_enabled=new_modem,
+            device_limit=subscription.device_limit,
+        )
+
+        return UpdateSubscriptionResponse(
+            success=True,
+            message=f'Modem {action_text} (device limit: {subscription.device_limit})',
             subscription=await _build_subscription_info_async(db, subscription),
         )
 

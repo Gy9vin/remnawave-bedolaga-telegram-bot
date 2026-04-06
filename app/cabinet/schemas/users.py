@@ -62,6 +62,7 @@ class UserSubscriptionInfo(BaseModel):
     traffic_limit_gb: int = 0
     traffic_used_gb: float = 0.0
     device_limit: int = 1
+    modem_enabled: bool = False
     tariff_id: int | None = None
     tariff_name: str | None = None
     autopay_enabled: bool = False
@@ -319,6 +320,9 @@ class UpdateSubscriptionRequest(BaseModel):
     # For create new subscription
     is_trial: bool | None = Field(None, description='Is trial subscription')
     device_limit: int | None = Field(None, ge=1, description='Device limit')
+
+    # For toggle_modem
+    modem_enabled: bool | None = Field(None, description='Enable/disable modem')
 
 
 class UpdateSubscriptionResponse(BaseModel):
