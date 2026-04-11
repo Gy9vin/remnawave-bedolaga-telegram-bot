@@ -4,13 +4,12 @@ from typing import Any
 
 import structlog
 from aiogram import Bot
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 from fastapi import APIRouter, Depends, HTTPException, Query, Security, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.bot_factory import create_bot
 from app.config import settings
 from app.database.crud.promo_group import get_promo_group_by_id
 from app.database.crud.subscription import (
@@ -556,10 +555,7 @@ async def delete_user_subscription(
 
 def _get_bot() -> Bot:
     """Создать экземпляр бота для API операций."""
-    return Bot(
-        token=settings.BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
+    return create_bot()
 
 
 @router.post('/{user_id}/block', response_model=BlockUserResponse)
