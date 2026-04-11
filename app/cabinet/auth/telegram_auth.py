@@ -195,7 +195,8 @@ async def _get_jwks(force: bool = False) -> dict[str, Any]:
         if not force and _jwks_cache and _jwks_cache_expiry and now < _jwks_cache_expiry:
             return _jwks_cache
 
-        async with httpx.AsyncClient(timeout=10) as client:
+        proxy = settings.get_proxy_url()
+        async with httpx.AsyncClient(timeout=10, proxy=proxy) as client:
             response = await client.get(_JWKS_URL)
             response.raise_for_status()
             _jwks_cache = response.json()
