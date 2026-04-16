@@ -822,6 +822,7 @@
   "ADMIN_USER_ALREADY_DELETED": "❌ کاربر حذف شده",
   "ADMIN_USER_BALANCE": "💰 موجودی",
   "ADMIN_USER_BLOCK": "🚫 مسدود کردن",
+  "ADMIN_USER_PRICE_MULTIPLIER": "💸 ضریب قیمت",
   "ADMIN_USER_DELETE": "🗑️ حذف",
   "ADMIN_USER_LAST_ACTIVITY_UNKNOWN": "نامشخص",
   "ADMIN_USER_MANAGEMENT_PROFILE": "👤 <b>مدیریت کاربر</b>\n\n<b>اطلاعات اصلی:</b>\n• نام: {name}\n• ID: <code>{telegram_id}</code>\n• نام‌کاربری: @{username}\n• ثبت‌نام: {registered_at}\n• آخرین فعالیت: {last_activity}\n• وضعیت: {status}\n• موجودی: {balance}\n• ریفرال‌ها: {referrals_count}",

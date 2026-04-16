@@ -1155,7 +1155,10 @@ class Settings(BaseSettings):
             },
         )
 
-        description = template_for_formatting.format_map(values)
+        try:
+            description = template_for_formatting.format_map(values)
+        except (ValueError, KeyError):
+            description = f'Bot user: {full_name} {values["username"]}'
 
         if not username_clean:
             description = re.sub(r'@(?=\W|$)', '', description)

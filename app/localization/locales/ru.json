@@ -822,6 +822,7 @@
   "ADMIN_USER_ALREADY_DELETED": "❌ Пользователь удален",
   "ADMIN_USER_BALANCE": "💰 Баланс",
   "ADMIN_USER_BLOCK": "🚫 Заблокировать",
+  "ADMIN_USER_PRICE_MULTIPLIER": "💸 Множитель цены",
   "ADMIN_USER_DELETE": "🗑️ Удалить",
   "ADMIN_USER_LAST_ACTIVITY_UNKNOWN": "Неизвестно",
   "ADMIN_USER_MANAGEMENT_PROFILE": "👤 <b>Управление пользователем</b>\n\n<b>Основная информация:</b>\n• Имя: {name}\n• ID: <code>{telegram_id}</code>\n• Username: {username}\n• Статус: {status}\n• Язык: {language}\n\n<b>Финансы:</b>\n• Баланс: {balance}\n• Транзакций: {transactions}\n\n<b>Активность:</b>\n• Регистрация: {registration}\n• Последняя активность: {last_activity}\n• Дней с регистрации: {registration_days}",

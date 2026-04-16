@@ -97,7 +97,7 @@ class RemnaWaveRetryQueue:
                     if item.action == 'create':
                         await service.create_remnawave_user(db, sub)
                     else:
-                        await service.update_remnawave_user(db, sub)
+                        await service.update_remnawave_user(db, sub, sync_squads=False)
 
                     logger.info(
                         'Retry succeeded',

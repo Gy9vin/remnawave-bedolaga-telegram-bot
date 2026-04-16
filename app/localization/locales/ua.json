@@ -744,6 +744,7 @@
   "ADMIN_USER_ALREADY_DELETED": "❌ Користувач видалений",
   "ADMIN_USER_BALANCE": "💰 Баланс",
   "ADMIN_USER_BLOCK": "🚫 Заблокувати",
+  "ADMIN_USER_PRICE_MULTIPLIER": "💸 Множник ціни",
   "ADMIN_USER_DELETE": "🗑️ Видалити",
   "ADMIN_USER_LAST_ACTIVITY_UNKNOWN": "Невідомо",
   "ADMIN_USER_MANAGEMENT_PROFILE": "👤 <b>Керування користувачем</b>\n\n<b>Основна інформація:</b>\n• Ім'я: {name}\n• ID: <code>{telegram_id}</code>\n• Username: {username}\n• Статус: {status}\n• Мова: {language}\n\n<b>Фінанси:</b>\n• Баланс: {balance}\n• Транзакцій: {transactions}\n\n<b>Активність:</b>\n• Реєстрація: {registration}\n• Остання активність: {last_activity}\n• Днів з реєстрації: {registration_days}",

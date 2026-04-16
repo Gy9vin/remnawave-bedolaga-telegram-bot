@@ -742,6 +742,7 @@
   "ADMIN_USER_ALREADY_DELETED": "❌用户已删除",
   "ADMIN_USER_BALANCE": "💰余额",
   "ADMIN_USER_BLOCK": "🚫封锁",
+  "ADMIN_USER_PRICE_MULTIPLIER": "💸价格倍数",
   "ADMIN_USER_DELETE": "🗑️删除",
   "ADMIN_USER_LAST_ACTIVITY_UNKNOWN": "未知",
   "ADMIN_USER_MANAGEMENT_PROFILE": "👤<b>用户管理</b>\n\n<b>基本信息：</b>\n•姓名：{name}\n•ID：<code>{telegram_id}</code>\n•用户名：{username}\n•状态：{status}\n•语言：{language}\n\n<b>财务：</b>\n•余额：{balance}\n•交易：{transactions}\n\n<b>活动：</b>\n•注册时间：{registration}\n•最后活跃时间：{last_activity}\n•注册天数：{registration_days}",

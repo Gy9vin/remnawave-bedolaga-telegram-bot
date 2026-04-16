@@ -552,6 +552,7 @@ class SubscriptionRenewalService:
                     subscription_after,
                     reset_traffic=reset_traffic,
                     reset_reason='subscription renewal',
+                    sync_squads=False,
                 )
             else:
                 await subscription_service.create_remnawave_user(

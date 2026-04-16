@@ -1318,7 +1318,7 @@ async def show_user_management(callback: types.CallbackQuery, db_user: User, db:
             else texts.ADMIN_USER_SUBSCRIPTION_STATUS_INACTIVE
         )
         traffic_usage = texts.ADMIN_USER_TRAFFIC_USAGE.format(
-            used=f'{subscription.traffic_used_gb:.1f}',
+            used=f'{(subscription.traffic_used_gb or 0):.1f}',
             limit=subscription.traffic_limit_gb,
         )
         sections.append(
