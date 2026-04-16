@@ -911,7 +911,7 @@ async def _render_user_subscription_overview(
         status_emoji = '✅' if subscription.is_active else '❌'
         type_emoji = '🎁' if subscription.is_trial else '💎'
 
-        traffic_display = f'{subscription.traffic_used_gb:.1f}/'
+        traffic_display = f'{(subscription.traffic_used_gb or 0):.1f}/'
         if subscription.traffic_limit_gb == 0:
             traffic_display += '♾️ ГБ'
         else:
@@ -3193,7 +3193,7 @@ async def show_user_statistics(callback: types.CallbackQuery, db_user: User, db:
         sub_status = '✅ Активна' if subscription.is_active else '❌ Неактивна'
         sub_type = ' (пробная)' if subscription.is_trial else ' (платная)'
         text += f'• Статус: {sub_status}{sub_type}\n'
-        text += f'• Трафик: {subscription.traffic_used_gb:.1f}/{subscription.traffic_limit_gb} ГБ\n'
+        text += f'• Трафик: {(subscription.traffic_used_gb or 0):.1f}/{subscription.traffic_limit_gb} ГБ\n'
         text += f'• Устройства: {subscription.device_limit}\n'
         text += f'• Стран: {len(subscription.connected_squads or [])}\n'
     else:

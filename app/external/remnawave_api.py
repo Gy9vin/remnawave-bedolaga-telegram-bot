@@ -575,7 +575,8 @@ class RemnaWaveAPI:
         if description is not None:
             data['description'] = description
         if tag is not None:
-            data['tag'] = tag
+            # Remnawave не принимает пустую строку — для сброса тега отправляем null
+            data['tag'] = tag if tag else None
         if active_internal_squads is not None:
             data['activeInternalSquads'] = active_internal_squads
         if external_squad_uuid is not ...:
