@@ -92,6 +92,15 @@ class PromoCodeService:
                 if getattr(user, 'has_had_paid_subscription', False):
                     return {'success': False, 'error': 'not_first_purchase'}
 
+            # Проверка ограничения по дате регистрации
+            registered_before = getattr(promocode, 'registered_before', None)
+            if registered_before is not None:
+                from app.database.models import _aware
+
+                user_created_at = _aware(user.created_at)
+                if user_created_at is None or user_created_at >= _aware(registered_before):
+                    return {'success': False, 'error': 'registered_too_late'}
+
             balance_before_kopeks = user.balance_kopeks
 
             # Резервируем запись использования ДО применения эффектов (защита от race condition)

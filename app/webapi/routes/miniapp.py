@@ -4130,6 +4130,7 @@ async def activate_promo_code(
         'no_subscription_for_days': status.HTTP_400_BAD_REQUEST,
         'active_discount_exists': status.HTTP_409_CONFLICT,
         'not_first_purchase': status.HTTP_400_BAD_REQUEST,
+        'registered_too_late': status.HTTP_400_BAD_REQUEST,
         'daily_limit': status.HTTP_429_TOO_MANY_REQUESTS,
         'server_error': status.HTTP_500_INTERNAL_SERVER_ERROR,
     }
@@ -4144,6 +4145,7 @@ async def activate_promo_code(
         'no_subscription_for_days': 'This promo code requires an active or expired subscription',
         'active_discount_exists': 'You already have an active discount',
         'not_first_purchase': 'This promo code is only available for first purchase',
+        'registered_too_late': 'This promo code is not available for your account',
         'daily_limit': 'Too many promo code activations today',
         'user_not_found': 'User not found',
         'server_error': 'Failed to activate promo code',

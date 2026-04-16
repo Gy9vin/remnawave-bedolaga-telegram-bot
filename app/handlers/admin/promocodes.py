@@ -188,6 +188,10 @@ async def show_promocode_management(callback: types.CallbackQuery, db_user: User
     first_purchase_emoji = '✅' if first_purchase_only else '❌'
     text += f'🆕 <b>Только первая покупка:</b> {first_purchase_emoji}\n'
 
+    registered_before = getattr(promo, 'registered_before', None)
+    if registered_before:
+        text += f'👤 <b>Только для зарег. до:</b> {format_datetime(registered_before)}\n'
+
     text += f'📅 <b>Создан:</b> {format_datetime(promo.created_at)}\n'
 
     first_purchase_btn_text = '🆕 Первая покупка: ✅' if first_purchase_only else '🆕 Первая покупка: ❌'
@@ -705,12 +709,7 @@ async def process_promocode_expiry(message: types.Message, db_user: User, state:
             await message.answer('❌ Срок действия должен быть от 0 до 3650 дней')
             return
 
-        code = data.get('promocode_code')
         promo_type = data.get('promocode_type')
-        value = data.get('promocode_value', 0)
-        max_uses = data.get('promocode_max_uses', 1)
-        promo_group_id = data.get('promo_group_id')
-        promo_group_name = data.get('promo_group_name')
 
         # Для DISCOUNT типа нужно дополнительно спросить срок действия скидки в часах
         if promo_type == 'discount':
@@ -723,64 +722,15 @@ async def process_promocode_expiry(message: types.Message, db_user: User, state:
             await state.set_state(AdminStates.setting_discount_hours)
             return
 
-        valid_until = None
-        if expiry_days > 0:
-            valid_until = datetime.now(UTC) + timedelta(days=expiry_days)
-
-        type_map = {
-            'balance': PromoCodeType.BALANCE,
-            'days': PromoCodeType.SUBSCRIPTION_DAYS,
-            'trial': PromoCodeType.TRIAL_SUBSCRIPTION,
-            'group': PromoCodeType.PROMO_GROUP,
-        }
-
-        promocode = await create_promocode(
-            db=db,
-            code=code,
-            type=type_map[promo_type],
-            balance_bonus_kopeks=value * 100 if promo_type == 'balance' else 0,
-            subscription_days=value if promo_type in ['days', 'trial'] else 0,
-            max_uses=max_uses,
-            valid_until=valid_until,
-            created_by=db_user.id,
-            promo_group_id=promo_group_id if promo_type == 'group' else None,
-        )
-
-        type_names = {
-            'balance': 'Пополнение баланса',
-            'days': 'Дни подписки',
-            'trial': 'Тестовая подписка',
-            'group': 'Промогруппа',
-        }
-
-        summary_text = f"""
-✅ <b>Промокод создан!</b>
-
-🎫 <b>Код:</b> <code>{promocode.code}</code>
-📝 <b>Тип:</b> {type_names.get(promo_type)}
-"""
-
-        if promo_type == 'balance':
-            summary_text += f'💰 <b>Сумма:</b> {settings.format_price(promocode.balance_bonus_kopeks)}\n'
-        elif promo_type in ['days', 'trial']:
-            summary_text += f'📅 <b>Дней:</b> {promocode.subscription_days}\n'
-        elif promo_type == 'group' and promo_group_name:
-            summary_text += f'🏷️ <b>Промогруппа:</b> {promo_group_name}\n'
-
-        summary_text += f'📊 <b>Использований:</b> {promocode.max_uses}\n'
-
-        if promocode.valid_until:
-            summary_text += f'⏰ <b>Действует до:</b> {format_datetime(promocode.valid_until)}\n'
-
+        await state.update_data(promocode_expiry_days=expiry_days)
         await message.answer(
-            summary_text,
-            reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='🎫 К промокодам', callback_data='admin_promocodes')]]
-            ),
+            f'👤 <b>Ограничение по дате регистрации</b>\n\n'
+            f'Введите дату в формате <b>ДД.ММ.ГГГГ</b> — промокод смогут активировать только пользователи, '
+            f'зарегистрированные <b>до</b> этой даты.\n\n'
+            f'Введите <b>0</b> чтобы пропустить (без ограничения).\n\n'
+            f'<i>Например: 16.04.2026</i>'
         )
-
-        await state.clear()
-        logger.info('Создан промокод администратором', code=code, telegram_id=db_user.telegram_id)
+        await state.set_state(AdminStates.setting_promocode_registered_before)
 
     except ValueError:
         await message.answer('❌ Введите корректное число дней')
@@ -799,56 +749,77 @@ async def process_discount_hours(message: types.Message, db_user: User, state: F
             await message.answer('❌ Срок действия скидки должен быть от 0 до 8760 часов')
             return
 
-        code = data.get('promocode_code')
-        value = data.get('promocode_value', 0)  # Процент скидки
-        max_uses = data.get('promocode_max_uses', 1)
-        expiry_days = data.get('promocode_expiry_days', 0)
+        await state.update_data(discount_hours=discount_hours)
+        await message.answer(
+            f'👤 <b>Ограничение по дате регистрации</b>\n\n'
+            f'Введите дату в формате <b>ДД.ММ.ГГГГ</b> — промокод смогут активировать только пользователи, '
+            f'зарегистрированные <b>до</b> этой даты.\n\n'
+            f'Введите <b>0</b> чтобы пропустить (без ограничения).\n\n'
+            f'<i>Например: 16.04.2026</i>'
+        )
+        await state.set_state(AdminStates.setting_promocode_registered_before)
 
-        valid_until = None
-        if expiry_days > 0:
-            valid_until = datetime.now(UTC) + timedelta(days=expiry_days)
+    except ValueError:
+        await message.answer('❌ Введите корректное число часов')
 
-        # Создаем DISCOUNT промокод
-        # balance_bonus_kopeks = процент скидки (НЕ копейки!)
-        # subscription_days = срок действия скидки в часах (НЕ дни!)
+
+@admin_required
+@error_handler
+async def process_promocode_registered_before(
+    message: types.Message, db_user: User, state: FSMContext, db: AsyncSession
+):
+    """Обработчик ввода даты ограничения регистрации при создании промокода."""
+    data = await state.get_data()
+    text = message.text.strip()
+
+    registered_before = None
+    if text != '0':
+        try:
+            dt = datetime.strptime(text, '%d.%m.%Y')
+            registered_before = dt.replace(tzinfo=UTC)
+        except ValueError:
+            await message.answer(
+                '❌ Неверный формат даты. Введите дату в формате ДД.ММ.ГГГГ или 0 для пропуска.\n'
+                '<i>Например: 16.04.2026</i>'
+            )
+            return
+
+    code = data.get('promocode_code')
+    promo_type = data.get('promocode_type')
+    value = data.get('promocode_value', 0)
+    max_uses = data.get('promocode_max_uses', 1)
+    expiry_days = data.get('promocode_expiry_days', 0)
+    promo_group_id = data.get('promo_group_id')
+    promo_group_name = data.get('promo_group_name')
+    discount_hours = data.get('discount_hours', 0)
+
+    valid_until = None
+    if expiry_days > 0:
+        valid_until = datetime.now(UTC) + timedelta(days=expiry_days)
+
+    if promo_type == 'discount':
         promocode = await create_promocode(
             db=db,
             code=code,
             type=PromoCodeType.DISCOUNT,
-            balance_bonus_kopeks=value,  # Процент (1-100)
-            subscription_days=discount_hours,  # Часы (0-8760)
+            balance_bonus_kopeks=value,
+            subscription_days=discount_hours,
             max_uses=max_uses,
             valid_until=valid_until,
             created_by=db_user.id,
             promo_group_id=None,
+            registered_before=registered_before,
         )
-
-        summary_text = f"""
-✅ <b>Промокод создан!</b>
-
-🎫 <b>Код:</b> <code>{promocode.code}</code>
-📝 <b>Тип:</b> Одноразовая скидка
-💸 <b>Скидка:</b> {promocode.balance_bonus_kopeks}%
-"""
-
+        summary_text = (
+            f'✅ <b>Промокод создан!</b>\n\n'
+            f'🎫 <b>Код:</b> <code>{promocode.code}</code>\n'
+            f'📝 <b>Тип:</b> Одноразовая скидка\n'
+            f'💸 <b>Скидка:</b> {promocode.balance_bonus_kopeks}%\n'
+        )
         if discount_hours > 0:
             summary_text += f'⏰ <b>Срок скидки:</b> {discount_hours} ч.\n'
         else:
             summary_text += '⏰ <b>Срок скидки:</b> до первой покупки\n'
-
-        summary_text += f'📊 <b>Использований:</b> {promocode.max_uses}\n'
-
-        if promocode.valid_until:
-            summary_text += f'⏳ <b>Промокод действует до:</b> {format_datetime(promocode.valid_until)}\n'
-
-        await message.answer(
-            summary_text,
-            reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='🎫 К промокодам', callback_data='admin_promocodes')]]
-            ),
-        )
-
-        await state.clear()
         logger.info(
             'Создан DISCOUNT промокод (%, ч) администратором',
             code=code,
@@ -856,9 +827,57 @@ async def process_discount_hours(message: types.Message, db_user: User, state: F
             discount_hours=discount_hours,
             telegram_id=db_user.telegram_id,
         )
+    else:
+        type_map = {
+            'balance': PromoCodeType.BALANCE,
+            'days': PromoCodeType.SUBSCRIPTION_DAYS,
+            'trial': PromoCodeType.TRIAL_SUBSCRIPTION,
+            'group': PromoCodeType.PROMO_GROUP,
+        }
+        promocode = await create_promocode(
+            db=db,
+            code=code,
+            type=type_map[promo_type],
+            balance_bonus_kopeks=value * 100 if promo_type == 'balance' else 0,
+            subscription_days=value if promo_type in ['days', 'trial'] else 0,
+            max_uses=max_uses,
+            valid_until=valid_until,
+            created_by=db_user.id,
+            promo_group_id=promo_group_id if promo_type == 'group' else None,
+            registered_before=registered_before,
+        )
+        type_names = {
+            'balance': 'Пополнение баланса',
+            'days': 'Дни подписки',
+            'trial': 'Тестовая подписка',
+            'group': 'Промогруппа',
+        }
+        summary_text = (
+            f'✅ <b>Промокод создан!</b>\n\n'
+            f'🎫 <b>Код:</b> <code>{promocode.code}</code>\n'
+            f'📝 <b>Тип:</b> {type_names.get(promo_type)}\n'
+        )
+        if promo_type == 'balance':
+            summary_text += f'💰 <b>Сумма:</b> {settings.format_price(promocode.balance_bonus_kopeks)}\n'
+        elif promo_type in ['days', 'trial']:
+            summary_text += f'📅 <b>Дней:</b> {promocode.subscription_days}\n'
+        elif promo_type == 'group' and promo_group_name:
+            summary_text += f'🏷️ <b>Промогруппа:</b> {promo_group_name}\n'
+        logger.info('Создан промокод администратором', code=code, telegram_id=db_user.telegram_id)
 
-    except ValueError:
-        await message.answer('❌ Введите корректное число часов')
+    summary_text += f'📊 <b>Использований:</b> {promocode.max_uses}\n'
+    if promocode.valid_until:
+        summary_text += f'⏳ <b>Промокод действует до:</b> {format_datetime(promocode.valid_until)}\n'
+    if registered_before:
+        summary_text += f'👤 <b>Только для зарег. до:</b> {registered_before.strftime("%d.%m.%Y")}\n'
+
+    await message.answer(
+        summary_text,
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[[types.InlineKeyboardButton(text='🎫 К промокодам', callback_data='admin_promocodes')]]
+        ),
+    )
+    await state.clear()
 
 
 async def handle_edit_expiry(message: types.Message, db_user: User, state: FSMContext, db: AsyncSession):
@@ -1119,3 +1138,4 @@ def register_handlers(dp: Dispatcher):
     dp.message.register(process_promocode_uses, AdminStates.setting_promocode_uses)
     dp.message.register(process_promocode_expiry, AdminStates.setting_promocode_expiry)
     dp.message.register(process_discount_hours, AdminStates.setting_discount_hours)
+    dp.message.register(process_promocode_registered_before, AdminStates.setting_promocode_registered_before)

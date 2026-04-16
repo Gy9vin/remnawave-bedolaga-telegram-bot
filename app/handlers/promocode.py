@@ -204,6 +204,10 @@ async def process_promocode(message: types.Message, db_user: User, state: FSMCon
             'not_first_purchase': texts.t(
                 'PROMOCODE_NOT_FIRST_PURCHASE', '❌ Этот промокод доступен только для первой покупки'
             ),
+            'registered_too_late': texts.t(
+                'PROMOCODE_REGISTERED_TOO_LATE',
+                '❌ Этот промокод доступен только для пользователей, зарегистрированных ранее.',
+            ),
             'active_discount_exists': texts.t(
                 'PROMOCODE_ACTIVE_DISCOUNT_EXISTS',
                 '❌ У вас уже есть активная скидка. Используйте её перед активацией новой.',

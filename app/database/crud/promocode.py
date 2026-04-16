@@ -61,6 +61,7 @@ async def create_promocode(
     valid_until: datetime | None = None,
     created_by: int | None = None,
     promo_group_id: int | None = None,
+    registered_before: datetime | None = None,
 ) -> PromoCode:
     promocode = PromoCode(
         code=code.upper(),
@@ -71,6 +72,7 @@ async def create_promocode(
         valid_until=valid_until,
         created_by=created_by,
         promo_group_id=promo_group_id,
+        registered_before=registered_before,
     )
 
     db.add(promocode)

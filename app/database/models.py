@@ -1692,6 +1692,7 @@ class PromoCode(Base):
 
     is_active = Column(Boolean, default=True)
     first_purchase_only = Column(Boolean, default=False)  # Только для первой покупки
+    registered_before = Column(AwareDateTime(), nullable=True)  # Только для пользователей, зарегистрированных до этой даты
 
     tariff_id = Column(Integer, ForeignKey('tariffs.id', ondelete='SET NULL'), nullable=True, index=True)
 
