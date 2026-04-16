@@ -3691,6 +3691,8 @@ async def admin_delete_subscription(callback: types.CallbackQuery, db_user: User
     if subscription_id:
         subscription = await db.get(Subscription, subscription_id)
     else:
+        from app.database.crud.subscription import get_subscription_by_user_id
+
         subscription = await get_subscription_by_user_id(db, user_id)
 
     if not subscription:
