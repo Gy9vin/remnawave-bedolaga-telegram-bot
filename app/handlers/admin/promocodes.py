@@ -740,8 +740,6 @@ async def process_promocode_expiry(message: types.Message, db_user: User, state:
 @error_handler
 async def process_discount_hours(message: types.Message, db_user: User, state: FSMContext, db: AsyncSession):
     """Обработчик ввода срока действия скидки в часах для DISCOUNT промокода."""
-    data = await state.get_data()
-
     try:
         discount_hours = int(message.text.strip())
 
