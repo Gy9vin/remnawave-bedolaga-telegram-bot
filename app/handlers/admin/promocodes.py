@@ -724,11 +724,11 @@ async def process_promocode_expiry(message: types.Message, db_user: User, state:
 
         await state.update_data(promocode_expiry_days=expiry_days)
         await message.answer(
-            f'👤 <b>Ограничение по дате регистрации</b>\n\n'
-            f'Введите дату в формате <b>ДД.ММ.ГГГГ</b> — промокод смогут активировать только пользователи, '
-            f'зарегистрированные <b>до</b> этой даты.\n\n'
-            f'Введите <b>0</b> чтобы пропустить (без ограничения).\n\n'
-            f'<i>Например: 16.04.2026</i>'
+            '👤 <b>Ограничение по дате регистрации</b>\n\n'
+            'Введите дату в формате <b>ДД.ММ.ГГГГ</b> — промокод смогут активировать только пользователи, '
+            'зарегистрированные <b>до</b> этой даты.\n\n'
+            'Введите <b>0</b> чтобы пропустить (без ограничения).\n\n'
+            '<i>Например: 16.04.2026</i>'
         )
         await state.set_state(AdminStates.setting_promocode_registered_before)
 
@@ -751,11 +751,11 @@ async def process_discount_hours(message: types.Message, db_user: User, state: F
 
         await state.update_data(discount_hours=discount_hours)
         await message.answer(
-            f'👤 <b>Ограничение по дате регистрации</b>\n\n'
-            f'Введите дату в формате <b>ДД.ММ.ГГГГ</b> — промокод смогут активировать только пользователи, '
-            f'зарегистрированные <b>до</b> этой даты.\n\n'
-            f'Введите <b>0</b> чтобы пропустить (без ограничения).\n\n'
-            f'<i>Например: 16.04.2026</i>'
+            '👤 <b>Ограничение по дате регистрации</b>\n\n'
+            'Введите дату в формате <b>ДД.ММ.ГГГГ</b> — промокод смогут активировать только пользователи, '
+            'зарегистрированные <b>до</b> этой даты.\n\n'
+            'Введите <b>0</b> чтобы пропустить (без ограничения).\n\n'
+            '<i>Например: 16.04.2026</i>'
         )
         await state.set_state(AdminStates.setting_promocode_registered_before)
 
