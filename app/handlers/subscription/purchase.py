@@ -924,6 +924,8 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
                         trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
 
                 if trial_tariff:
+                    from app.database.crud.server_squad import get_effective_tariff_squad_uuids
+
                     trial_traffic_limit = trial_tariff.traffic_limit_gb
                     trial_device_limit = trial_tariff.device_limit
                     # trial_squads остаётся None — create_trial_subscription выберет is_trial_eligible сквад
@@ -939,7 +941,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
             except Exception as e:
                 logger.error('Ошибка получения триального тарифа', error=e)
 
-        # BUG-12 fix: If no squads from tariff, fallback to trial-eligible servers
+        # No trial tariff configured, use the legacy random trial squad fallback.
         if not trial_squads:
             from app.database.crud.server_squad import get_random_trial_squad_uuid
 
@@ -1582,10 +1584,14 @@ async def return_to_saved_cart(callback: types.CallbackQuery, state: FSMContext,
     if settings.is_traffic_fixed():
         traffic_value = prepared_cart_data.get('traffic_gb')
         if traffic_value is None:
+            traffic_value = prepared_cart_data.get('traffic_limit_gb')
+        if traffic_value is None:
             traffic_value = settings.get_fixed_traffic_limit()
         traffic_display = 'Безлимитный' if traffic_value == 0 else f'{traffic_value} ГБ'
     else:
-        traffic_value = prepared_cart_data.get('traffic_gb', 0) or 0
+        traffic_value = prepared_cart_data.get('traffic_gb')
+        if traffic_value is None:
+            traffic_value = prepared_cart_data.get('traffic_limit_gb', 0)
         traffic_display = 'Безлимитный' if traffic_value == 0 else f'{traffic_value} ГБ'
 
     summary_lines = [
@@ -1598,6 +1604,8 @@ async def return_to_saved_cart(callback: types.CallbackQuery, state: FSMContext,
 
     if settings.is_devices_selection_enabled():
         devices_value = prepared_cart_data.get('devices')
+        if devices_value is None:
+            devices_value = prepared_cart_data.get('device_limit')
         if devices_value is not None:
             summary_lines.append(f'📱 Устройства: {devices_value}')
 
@@ -1972,7 +1980,10 @@ async def confirm_extend_subscription(
             'description': f'Продление подписки на {days} дней',
             'consume_promo_offer': bool(promo_offer_discount > 0),
             'device_limit': device_limit,
+            'devices': device_limit,
             'traffic_limit_gb': renewal_traffic_gb,
+            'traffic_gb': renewal_traffic_gb,
+            'countries': list(subscription.connected_squads or []),
         }
 
         await user_cart_service.save_user_cart(db_user.id, cart_data)
@@ -2228,7 +2239,12 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
     devices_selection_enabled = settings.is_devices_selection_enabled()
     forced_disabled_limit: int | None = None
     if devices_selection_enabled:
-        devices_selected = data.get('devices', settings.DEFAULT_DEVICE_LIMIT)
+        # Для extend-корзины ключ может быть 'device_limit' вместо 'devices'
+        devices_selected = data.get('devices')
+        if devices_selected is None:
+            devices_selected = data.get('device_limit')
+        if devices_selected is None:
+            devices_selected = settings.DEFAULT_DEVICE_LIMIT
     else:
         forced_disabled_limit = settings.get_disabled_mode_device_limit()
         if forced_disabled_limit is None:
@@ -3361,6 +3377,8 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
                     if trial_tariff_id > 0:
                         trial_tariff = await _get_tariff(db, trial_tariff_id)
                 if trial_tariff:
+                    from app.database.crud.server_squad import get_effective_tariff_squad_uuids
+
                     trial_traffic_limit = trial_tariff.traffic_limit_gb
                     trial_device_limit = trial_tariff.device_limit
                     # trial_squads остаётся None — create_trial_subscription выберет is_trial_eligible сквад
@@ -3376,7 +3394,7 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
             except Exception as e:
                 logger.error('Ошибка получения триального тарифа для платного триала', error=e)
 
-        # BUG-12 fix: If no squads from tariff, fallback to trial-eligible servers
+        # No trial tariff configured, use the legacy random trial squad fallback.
         if not trial_squads:
             from app.database.crud.server_squad import get_random_trial_squad_uuid
 
@@ -3727,6 +3745,8 @@ async def handle_trial_payment_method(callback: types.CallbackQuery, db_user: Us
                     if trial_tariff_id > 0:
                         trial_tariff = await _get_tariff(db, trial_tariff_id)
                 if trial_tariff:
+                    from app.database.crud.server_squad import get_effective_tariff_squad_uuids
+
                     trial_traffic = trial_tariff.traffic_limit_gb
                     trial_devices = trial_tariff.device_limit
                     # trial_squads_list остаётся [] — ниже выберется is_trial_eligible сквад
@@ -3742,7 +3762,7 @@ async def handle_trial_payment_method(callback: types.CallbackQuery, db_user: Us
             except Exception as e:
                 logger.error('Ошибка получения триального тарифа для платного триала', error=e)
 
-        # Если тариф не задал серверы, получаем случайный сквад
+        # Если триальный тариф не найден, используем legacy fallback со случайным сквадом.
         if not trial_squads_list:
             from app.database.crud.server_squad import get_random_trial_squad_uuid
 
@@ -4560,8 +4580,11 @@ async def _extend_existing_subscription(
             'return_to_cart': True,
             'description': f'Продление подписки на {period_days} дней',
             'device_limit': device_limit,
+            'devices': device_limit,
             'traffic_limit_gb': traffic_limit_gb,
+            'traffic_gb': traffic_limit_gb,
             'squad_uuid': squad_uuid,
+            'countries': [squad_uuid] if squad_uuid else [],
             'consume_promo_offer': consume_promo,
         }
 
