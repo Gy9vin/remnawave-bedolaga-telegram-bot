@@ -175,9 +175,10 @@ class ReferralWithdrawalService:
         else:
             available_total = available_referral
 
-        # Ограничиваем доступную сумму фактическим балансом (минус замороженные)
-        # Нельзя вывести больше, чем реально есть на счету
-        max_withdrawable = max(0, actual_balance - approved - pending)
+        # Ограничиваем доступную сумму фактическим балансом минус заморозки.
+        # approved уже списаны из actual_balance (списываются в approve_request),
+        # поэтому вычитаем только pending (ещё не списанные заявки).
+        max_withdrawable = max(0, actual_balance - pending)
         available_total = min(available_total, max_withdrawable)
 
         return {
@@ -573,8 +574,8 @@ class ReferralWithdrawalService:
         self, db: AsyncSession, request_id: int, admin_id: int, comment: str | None = None
     ) -> tuple[bool, str]:
         """
-        Одобряет заявку на вывод (без списания баланса).
-        Списание происходит при complete_request (когда деньги реально переведены).
+        Одобряет заявку на вывод и списывает сумму с баланса пользователя.
+        Создаёт транзакцию WITHDRAWAL. complete_request только меняет статус на COMPLETED.
         Возвращает (success, error_message).
         """
         result = await db.execute(select(WithdrawalRequest).where(WithdrawalRequest.id == request_id).with_for_update())
@@ -643,7 +644,10 @@ class ReferralWithdrawalService:
     async def complete_request(
         self, db: AsyncSession, request_id: int, admin_id: int, comment: str | None = None
     ) -> tuple[bool, str]:
-        """Отмечает заявку как выполненную (деньги переведены)."""
+        """Отмечает заявку как выполненную (деньги переведены).
+
+        Баланс и транзакция уже списаны в approve_request — здесь только статус.
+        """
         result = await db.execute(select(WithdrawalRequest).where(WithdrawalRequest.id == request_id).with_for_update())
         request = result.scalar_one_or_none()
 
@@ -653,36 +657,6 @@ class ReferralWithdrawalService:
         if request.status != WithdrawalRequestStatus.APPROVED.value:
             return False, 'Заявка не в статусе "одобрена"'
 
-        # Получаем пользователя для списания с баланса
-        user_result = await db.execute(select(User).where(User.id == request.user_id))
-        user = user_result.scalar_one_or_none()
-
-        if not user:
-            return False, 'Пользователь не найден'
-
-        # Проверяем фактический баланс (защита от ухода в минус)
-        if user.balance_kopeks < request.amount_kopeks:
-            return (
-                False,
-                f'Недостаточно средств на балансе пользователя. '
-                f'Баланс: {user.balance_kopeks / 100:.0f}₽, '
-                f'запрошено: {request.amount_kopeks / 100:.0f}₽',
-            )
-
-        user.balance_kopeks -= request.amount_kopeks
-
-        # Создаём транзакцию списания
-        withdrawal_tx = Transaction(
-            user_id=request.user_id,
-            type='withdrawal',
-            amount_kopeks=-request.amount_kopeks,
-            description=f'Вывод реферального баланса (заявка #{request.id})',
-            is_completed=True,
-            completed_at=datetime.now(UTC),
-        )
-        db.add(withdrawal_tx)
-
-        # Обновляем статус заявки
         request.status = WithdrawalRequestStatus.COMPLETED.value
         request.processed_by = admin_id
         request.processed_at = datetime.now(UTC)
