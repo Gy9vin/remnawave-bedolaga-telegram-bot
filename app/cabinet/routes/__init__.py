@@ -9,6 +9,7 @@ from .admin_ban_system import router as admin_ban_system_router
 from .admin_broadcasts import router as admin_broadcasts_router
 from .admin_button_styles import router as admin_button_styles_router
 from .admin_campaigns import router as admin_campaigns_router
+from .admin_channel_reports import router as admin_channel_reports_router
 from .admin_channels import router as admin_channels_router
 from .admin_email_templates import router as admin_email_templates_router
 from .admin_happ_management import router as admin_happ_management_router
@@ -134,6 +135,7 @@ router.include_router(admin_pinned_messages_router)
 router.include_router(admin_button_styles_router)
 router.include_router(admin_menu_layout_router)
 router.include_router(admin_channels_router)
+router.include_router(admin_channel_reports_router)
 router.include_router(admin_apps_router)
 router.include_router(admin_roles_router)
 router.include_router(admin_policies_router)
