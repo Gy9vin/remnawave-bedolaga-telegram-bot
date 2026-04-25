@@ -512,7 +512,6 @@ async def reply_to_ticket(
         primary_caption = primary_caption or first.caption
     has_media = bool(primary_file_id)
 
-
     message = TicketMessage(
         ticket_id=ticket.id,
         user_id=ticket.user_id,

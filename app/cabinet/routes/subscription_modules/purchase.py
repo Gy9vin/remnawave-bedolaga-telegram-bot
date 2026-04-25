@@ -304,6 +304,7 @@ async def get_purchase_options(
                 from app.database.crud.subscription import get_active_subscriptions_by_user_id
 
                 active_subs = await get_active_subscriptions_by_user_id(db, user.id)
+                purchased_tariff_ids = {s.tariff_id for s in active_subs if s.tariff_id and not s.is_trial}
 
                 if subscription_id:
                     from app.database.crud.subscription import get_subscription_by_id_for_user
@@ -316,6 +317,7 @@ async def get_purchase_options(
                 else:
                     subscription = None
             else:
+                purchased_tariff_ids = set()
                 subscription = await get_subscription_by_user_id(db, user.id)
             current_tariff_id = subscription.tariff_id if subscription else None
             language = getattr(user, 'language', 'ru') or 'ru'
@@ -330,7 +332,10 @@ async def get_purchase_options(
             tariff_responses = []
             for tariff in tariffs:
                 tariff_data = await _build_tariff_response(db, tariff, current_tariff_id, language, user, subscription)
-                tariff_data['is_purchased'] = False
+                if settings.is_multi_tariff_enabled() and tariff.id in purchased_tariff_ids:
+                    tariff_data['is_purchased'] = True
+                else:
+                    tariff_data['is_purchased'] = False
                 tariff_responses.append(tariff_data)
 
             return {
