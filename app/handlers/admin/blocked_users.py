@@ -99,7 +99,8 @@ class BlockedUsersText(Enum):
         '• Ошибок: {errors}'
     )
 
-    BUTTON_START_SCAN = '🔍 Начать сканирование'
+    BUTTON_START_SCAN = '🔍 Начать сканирование (все)'
+    BUTTON_START_SCAN_SUBSCRIBERS = '🔍 Сканировать только подписчиков'
     BUTTON_VIEW_BLOCKED = '👥 Список заблокированных ({count})'
     BUTTON_DELETE_DB = '🗑 Удалить из БД'
     BUTTON_DELETE_REMNAWAVE = '🌐 Удалить из Remnawave'
@@ -116,6 +117,7 @@ class BlockedUsersCallback(Enum):
 
     MENU = 'admin_blocked_users'
     START_SCAN = 'admin_blocked_scan'
+    START_SCAN_SUBSCRIBERS = 'admin_blocked_scan_subscribers'
     VIEW_LIST = 'admin_blocked_list'
     VIEW_LIST_PAGE = 'admin_blocked_list_page_'
     ACTION_DELETE_DB = 'admin_blocked_action_db'
@@ -155,7 +157,13 @@ def get_blocked_users_menu_keyboard(
                 text=BlockedUsersText.BUTTON_START_SCAN.value,
                 callback_data=BlockedUsersCallback.START_SCAN.value,
             )
-        ]
+        ],
+        [
+            InlineKeyboardButton(
+                text=BlockedUsersText.BUTTON_START_SCAN_SUBSCRIBERS.value,
+                callback_data=BlockedUsersCallback.START_SCAN_SUBSCRIBERS.value,
+            )
+        ],
     ]
 
     blocked_count = scan_result.get('blocked_count', 0) if scan_result else 0
@@ -398,6 +406,97 @@ async def start_scan(
             errors=result.errors,
             skipped=result.skipped_no_telegram,
             duration=result.scan_duration_seconds,
+        )
+
+    await callback.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_blocked_users_menu_keyboard(scan_result_dict),
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def start_scan_subscribers(
+    callback: types.CallbackQuery,
+    db_user: User,
+    db: AsyncSession,
+    state: FSMContext,
+    bot: Bot,
+) -> None:
+    """Запускает сканирование только пользователей с активной подпиской."""
+    await state.set_state(BlockedUsersStates.scanning)
+
+    await callback.message.edit_text(
+        '🔄 <b>Сканирование подписчиков...</b>\n\nПроверяются только пользователи с активной подпиской.',
+        parse_mode=ParseMode.HTML,
+    )
+
+    service = BlockedUsersService(bot)
+    last_update_time = datetime.now(tz=UTC)
+
+    async def progress_callback(checked: int, total: int) -> None:
+        nonlocal last_update_time
+        now = datetime.now(tz=UTC)
+        if (now - last_update_time).total_seconds() >= 3:
+            last_update_time = now
+            percent = int(checked / total * 100) if total > 0 else 0
+            try:
+                await callback.message.edit_text(
+                    BlockedUsersText.SCAN_PROGRESS.value.format(
+                        checked=checked,
+                        total=total,
+                        percent=percent,
+                    ),
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+    result = await service.scan_all_users(
+        db,
+        only_active=True,
+        only_with_active_subscription=True,
+        progress_callback=progress_callback,
+    )
+
+    scan_result_dict = {
+        'total_checked': result.total_checked,
+        'blocked_count': result.blocked_count,
+        'active_users': result.active_users,
+        'errors': result.errors,
+        'skipped_no_telegram': result.skipped_no_telegram,
+        'scan_duration_seconds': result.scan_duration_seconds,
+    }
+
+    await state.update_data(
+        blocked_users_scan_result=scan_result_dict,
+        blocked_users_list=[
+            {
+                'user_id': u.user_id,
+                'telegram_id': u.telegram_id,
+                'username': u.username,
+                'full_name': u.full_name,
+                'remnawave_uuid': u.remnawave_uuid,
+            }
+            for u in result.blocked_users
+        ],
+    )
+
+    await state.set_state(BlockedUsersStates.viewing_results)
+
+    if result.blocked_count == 0:
+        text = '✅ <b>Отлично!</b>\n\nСреди подписчиков с активной подпиской нет заблокировавших бота.'
+    else:
+        text = (
+            '✅ <b>Сканирование подписчиков завершено</b>\n\n'
+            '📊 <b>Результаты:</b>\n'
+            f'• Проверено подписчиков: {result.total_checked}\n'
+            f'• Заблокировали бота: {result.blocked_count}\n'
+            f'• Активных: {result.active_users}\n'
+            f'• Ошибок: {result.errors}\n\n'
+            f'⏱ Время: {result.scan_duration_seconds:.1f}с'
         )
 
     await callback.message.edit_text(
@@ -686,6 +785,10 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(
         start_scan,
         F.data == BlockedUsersCallback.START_SCAN.value,
+    )
+    dp.callback_query.register(
+        start_scan_subscribers,
+        F.data == BlockedUsersCallback.START_SCAN_SUBSCRIBERS.value,
     )
 
     # Список заблокированных

@@ -359,6 +359,12 @@ def get_admin_users_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
                     callback_data='admin_blocked_users',
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text=_t(texts, 'ADMIN_USERS_CHAN_NONSUB', '🔕 Не в канале (с подпиской)'),
+                    callback_data='admin_chan_nonsub',
+                )
+            ],
             [InlineKeyboardButton(text=texts.BACK, callback_data='admin_submenu_users')],
         ]
     )

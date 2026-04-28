@@ -38,6 +38,7 @@ from app.database.models import (
     ReferralEarning,
     SentNotification,
     Subscription,
+    SubscriptionStatus,
     SubscriptionConversion,
     SubscriptionEvent,
     SubscriptionServer,
@@ -191,6 +192,7 @@ class BlockedUsersService:
         db: AsyncSession,
         *,
         only_active: bool = True,
+        only_with_active_subscription: bool = False,
         batch_size: int = 100,
         progress_callback: Callable | None = None,
     ) -> BlockedUsersScanResult:
@@ -200,6 +202,7 @@ class BlockedUsersService:
         Args:
             db: Сессия БД
             only_active: Проверять только активных пользователей
+            only_with_active_subscription: Проверять только пользователей с активной подпиской
             batch_size: Размер батча для загрузки из БД
             progress_callback: Callback для отчета о прогрессе (checked, total)
 
@@ -214,6 +217,19 @@ class BlockedUsersService:
         if only_active:
             query = query.where(User.status == UserStatus.ACTIVE.value)
         query = query.where(User.telegram_id.isnot(None))
+
+        if only_with_active_subscription:
+            current_time = datetime.now(tz=UTC)
+            active_sub_subquery = (
+                select(Subscription.user_id)
+                .where(
+                    Subscription.status == SubscriptionStatus.ACTIVE.value,
+                    Subscription.end_date > current_time,
+                )
+                .distinct()
+                .scalar_subquery()
+            )
+            query = query.where(User.id.in_(active_sub_subquery))
 
         # Получаем всех пользователей
         users_result = await db.execute(query)
