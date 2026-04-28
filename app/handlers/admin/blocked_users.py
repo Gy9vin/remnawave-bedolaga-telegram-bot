@@ -388,6 +388,7 @@ async def start_scan(
                 'username': u.username,
                 'full_name': u.full_name,
                 'remnawave_uuid': u.remnawave_uuid,
+                'subscription_end_date': u.subscription_end_date.isoformat() if u.subscription_end_date else None,
             }
             for u in result.blocked_users
         ],
@@ -479,6 +480,7 @@ async def start_scan_subscribers(
                 'username': u.username,
                 'full_name': u.full_name,
                 'remnawave_uuid': u.remnawave_uuid,
+                'subscription_end_date': u.subscription_end_date.isoformat() if u.subscription_end_date else None,
             }
             for u in result.blocked_users
         ],
@@ -533,13 +535,23 @@ async def show_blocked_list(
 
     text = BlockedUsersText.BLOCKED_LIST_TITLE.value.format(count=len(blocked_list))
 
+    now = datetime.now(UTC)
     for user_data in page_users:
         name = user_data.get('full_name') or user_data.get('username') or 'Без имени'
         telegram_id = user_data.get('telegram_id', '?')
-        text += BlockedUsersText.BLOCKED_USER_ROW.value.format(
-            name=html.escape(name),
-            telegram_id=telegram_id,
-        )
+
+        end_date_str = user_data.get('subscription_end_date')
+        if end_date_str:
+            end_date = datetime.fromisoformat(end_date_str)
+            days_left = (end_date.replace(tzinfo=UTC) - now).days if end_date.tzinfo else (end_date - now.replace(tzinfo=None)).days
+            if days_left > 0:
+                sub_info = f' — <b>{days_left} дн.</b>'
+            else:
+                sub_info = ' — <i>истекла</i>'
+        else:
+            sub_info = ' — <i>нет подписки</i>'
+
+        text += f'• {html.escape(name)} (<code>{telegram_id}</code>){sub_info}\n'
 
     await callback.message.edit_text(
         text,

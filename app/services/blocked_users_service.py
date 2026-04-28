@@ -90,6 +90,7 @@ class BlockCheckResult:
     error_message: str | None = None
     remnawave_uuid: str | None = None
     remnawave_uuids: list[str] = field(default_factory=list)
+    subscription_end_date: datetime | None = None
 
 
 @dataclass
@@ -161,8 +162,16 @@ class BlockedUsersService:
 
     async def _check_single_user(self, user: User) -> BlockCheckResult:
         """Проверяет одного пользователя."""
-        sub_uuids = [s.remnawave_uuid for s in (getattr(user, 'subscriptions', None) or []) if s.remnawave_uuid]
+        subscriptions = getattr(user, 'subscriptions', None) or []
+        sub_uuids = [s.remnawave_uuid for s in subscriptions if s.remnawave_uuid]
         remnawave_uuids = sub_uuids or ([user.remnawave_uuid] if user.remnawave_uuid else [])
+
+        active_ends = [
+            s.end_date
+            for s in subscriptions
+            if s.end_date and s.status in (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value)
+        ]
+        subscription_end_date = max(active_ends) if active_ends else None
 
         if not user.telegram_id:
             return BlockCheckResult(
@@ -173,6 +182,7 @@ class BlockedUsersService:
                 status=BlockCheckStatus.NO_TELEGRAM_ID,
                 remnawave_uuid=user.remnawave_uuid,
                 remnawave_uuids=remnawave_uuids,
+                subscription_end_date=subscription_end_date,
             )
 
         status = await self.check_user_blocked(user.telegram_id)
@@ -185,6 +195,7 @@ class BlockedUsersService:
             status=status,
             remnawave_uuid=user.remnawave_uuid,
             remnawave_uuids=remnawave_uuids,
+            subscription_end_date=subscription_end_date,
         )
 
     async def scan_all_users(
