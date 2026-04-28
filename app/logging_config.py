@@ -88,11 +88,12 @@ def _auto_capture_exc_info(logger: Any, method_name: str, event_dict: dict[str, 
             event_dict['exc_info'] = current
             return event_dict
 
-    for key in ('error', 'exc', 'exception', 'e', 'err'):
-        candidate = event_dict.get(key)
-        if isinstance(candidate, BaseException) and candidate.__traceback__ is not None:
-            event_dict['exc_info'] = (type(candidate), candidate, candidate.__traceback__)
-            return event_dict
+    if method_name in ('error', 'critical', 'exception'):
+        for key in ('error', 'exc', 'exception', 'e', 'err'):
+            candidate = event_dict.get(key)
+            if isinstance(candidate, BaseException) and candidate.__traceback__ is not None:
+                event_dict['exc_info'] = (type(candidate), candidate, candidate.__traceback__)
+                return event_dict
 
     return event_dict
 

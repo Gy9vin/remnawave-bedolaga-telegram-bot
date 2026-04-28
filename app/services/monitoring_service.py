@@ -133,10 +133,12 @@ class MonitoringService:
                 _cache_logo_file_id(result)
                 return result
             except TelegramBadRequest as exc:
+                if self._is_unreachable_error(exc):
+                    raise
                 logger.warning(
                     'Не удалось отправить сообщение с логотипом пользователю : . Отправляем текстовое сообщение.',
                     chat_id=chat_id,
-                    exc=exc,
+                    exc=str(exc),
                 )
 
         return await self.bot.send_message(
