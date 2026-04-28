@@ -312,6 +312,13 @@ class Settings(BaseSettings):
     SIMPLE_SUBSCRIPTION_TRAFFIC_GB: int = 0  # 0 означает безлимит
     SIMPLE_SUBSCRIPTION_SQUAD_UUID: str | None = None
 
+    # Штрафной сквад (для заблокировавших бота)
+    PENALTY_SQUAD_ENABLED: bool = False
+    PENALTY_SQUAD_UUID: str | None = None
+    DEFAULT_SQUAD_UUID: str | None = None
+    PENALTY_AUTO_SCAN_ENABLED: bool = False
+    PENALTY_AUTO_SCAN_INTERVAL_HOURS: int = 1
+
     # Настройки конструктора меню (API)
     MENU_LAYOUT_ENABLED: bool = False  # Включить управление меню через API
 

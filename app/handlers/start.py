@@ -775,6 +775,16 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
     if user and user.status != UserStatus.DELETED.value:
         logger.info('✅ Активный пользователь найден', telegram_id=user.telegram_id)
 
+        # Авто-возврат из штрафного сквада при разблокировке бота
+        if getattr(user, 'is_penalized', False):
+            try:
+                from app.services.penalty_squad_service import restore_user as restore_from_penalty
+                restored = await restore_from_penalty(db, user)
+                if restored:
+                    logger.info('✅ Пользователь возвращён из штрафного сквада', telegram_id=user.telegram_id)
+            except Exception as _restore_exc:
+                logger.warning('Не удалось вернуть из штрафного сквада', telegram_id=user.telegram_id, exc=str(_restore_exc))
+
         # Check for phantom user created by guest landing purchase and merge
         if message.from_user.username:
             phantom = await find_phantom_user_by_username(db, message.from_user.username)

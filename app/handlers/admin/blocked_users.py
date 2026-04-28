@@ -18,12 +18,15 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
+from app.database.crud.user import get_user_by_id
 from app.database.models import User
 from app.services.blocked_users_service import (
     BlockCheckResult,
     BlockedUserAction,
     BlockedUsersService,
 )
+from app.services.penalty_squad_service import penalize_user
 from app.utils.decorators import admin_required, error_handler
 
 
@@ -102,6 +105,8 @@ class BlockedUsersText(Enum):
     BUTTON_START_SCAN = '🔍 Начать сканирование (все)'
     BUTTON_START_SCAN_SUBSCRIBERS = '🔍 Сканировать только подписчиков'
     BUTTON_VIEW_BLOCKED = '👥 Список заблокированных ({count})'
+    BUTTON_PENALTY_TEST = '🧪 Тест штрафного сквада (один)'
+    BUTTON_PENALTY_ALL = '🚫 Переместить всех в штрафной'
     BUTTON_DELETE_DB = '🗑 Удалить из БД'
     BUTTON_DELETE_REMNAWAVE = '🌐 Удалить из Remnawave'
     BUTTON_DELETE_BOTH = '💀 Удалить везде'
@@ -118,6 +123,11 @@ class BlockedUsersCallback(Enum):
     MENU = 'admin_blocked_users'
     START_SCAN = 'admin_blocked_scan'
     START_SCAN_SUBSCRIBERS = 'admin_blocked_scan_subscribers'
+    PENALTY_TEST_LIST = 'admin_blocked_penalty_test_list'
+    PENALTY_TEST_USER = 'admin_blocked_penalty_test_user_'
+    PENALTY_TEST_CONFIRM = 'admin_blocked_penalty_test_confirm_'
+    PENALTY_ALL = 'admin_blocked_penalty_all'
+    PENALTY_ALL_CONFIRM = 'admin_blocked_penalty_all_confirm'
     VIEW_LIST = 'admin_blocked_list'
     VIEW_LIST_PAGE = 'admin_blocked_list_page_'
     ACTION_DELETE_DB = 'admin_blocked_action_db'
@@ -173,6 +183,22 @@ def get_blocked_users_menu_keyboard(
                 InlineKeyboardButton(
                     text=BlockedUsersText.BUTTON_VIEW_BLOCKED.value.format(count=blocked_count),
                     callback_data=BlockedUsersCallback.VIEW_LIST.value,
+                )
+            ]
+        )
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=BlockedUsersText.BUTTON_PENALTY_TEST.value,
+                    callback_data=BlockedUsersCallback.PENALTY_TEST_LIST.value,
+                )
+            ]
+        )
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=BlockedUsersText.BUTTON_PENALTY_ALL.value,
+                    callback_data=BlockedUsersCallback.PENALTY_ALL.value,
                 )
             ]
         )
@@ -780,6 +806,250 @@ async def handle_cancel(
 
 
 # =============================================================================
+# Penalty squad handlers
+# =============================================================================
+
+
+@admin_required
+@error_handler
+async def show_penalty_test_list(
+    callback: types.CallbackQuery,
+    db_user: User,
+    state: FSMContext,
+) -> None:
+    """Показывает список для тестового перемещения одного пользователя."""
+    if not settings.PENALTY_SQUAD_ENABLED:
+        await callback.answer('Штрафной сквад отключён в настройках конфига.', show_alert=True)
+        return
+    if not settings.PENALTY_SQUAD_UUID:
+        await callback.answer('Не задан PENALTY_SQUAD_UUID в настройках.', show_alert=True)
+        return
+
+    data = await state.get_data()
+    blocked_list: list[dict[str, Any]] = data.get('blocked_users_list', [])
+
+    if not blocked_list:
+        await callback.answer('Список пуст — сначала запустите сканирование.', show_alert=True)
+        return
+
+    # Показываем первых 10 пользователей кнопками (без уже помеченных)
+    buttons = []
+    shown = 0
+    for u in blocked_list[:20]:
+        if shown >= 10:
+            break
+        name = u.get('full_name') or u.get('username') or 'Без имени'
+        tid = u.get('telegram_id', '?')
+        user_id = u.get('user_id')
+        end_date_str = u.get('subscription_end_date')
+        sub_label = ''
+        if end_date_str:
+            from datetime import UTC, datetime
+            end_date = datetime.fromisoformat(end_date_str)
+            days_left = (end_date.replace(tzinfo=UTC) - datetime.now(UTC)).days
+            sub_label = f' [{days_left}д]' if days_left > 0 else ' [истекла]'
+
+        buttons.append([
+            InlineKeyboardButton(
+                text=f'{html.unescape(name)}{sub_label} ({tid})',
+                callback_data=f'{BlockedUsersCallback.PENALTY_TEST_USER.value}{user_id}',
+            )
+        ])
+        shown += 1
+
+    buttons.append([InlineKeyboardButton(text='⬅️ Назад', callback_data=BlockedUsersCallback.MENU.value)])
+
+    await callback.message.edit_text(
+        f'🧪 <b>Тест штрафного сквада</b>\n\nВыбери одного пользователя для тестового перемещения:\n'
+        f'<i>Показано {shown} из {len(blocked_list)}</i>',
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def penalty_test_user_confirm(
+    callback: types.CallbackQuery,
+    db_user: User,
+    state: FSMContext,
+) -> None:
+    """Запрашивает подтверждение перемещения конкретного пользователя."""
+    user_id = int(callback.data.split('_')[-1])
+    data = await state.get_data()
+    blocked_list: list[dict[str, Any]] = data.get('blocked_users_list', [])
+
+    user_data = next((u for u in blocked_list if u.get('user_id') == user_id), None)
+    if not user_data:
+        await callback.answer('Пользователь не найден в списке.', show_alert=True)
+        return
+
+    name = user_data.get('full_name') or user_data.get('username') or 'Без имени'
+    tid = user_data.get('telegram_id', '?')
+
+    await callback.message.edit_text(
+        f'🧪 <b>Подтверждение теста</b>\n\n'
+        f'Пользователь: <b>{html.escape(name)}</b>\n'
+        f'Telegram ID: <code>{tid}</code>\n\n'
+        f'Штрафной сквад: <code>{settings.PENALTY_SQUAD_UUID}</code>\n\n'
+        f'Переместить этого пользователя в штрафной сквад?',
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text='✅ Переместить',
+                    callback_data=f'{BlockedUsersCallback.PENALTY_TEST_CONFIRM.value}{user_id}',
+                ),
+                InlineKeyboardButton(text='❌ Отмена', callback_data=BlockedUsersCallback.PENALTY_TEST_LIST.value),
+            ]
+        ]),
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def penalty_test_user_execute(
+    callback: types.CallbackQuery,
+    db_user: User,
+    db: AsyncSession,
+    state: FSMContext,
+) -> None:
+    """Выполняет перемещение одного пользователя в штрафной сквад."""
+    user_id = int(callback.data.split('_')[-1])
+
+    target_user = await get_user_by_id(db, user_id)
+    if not target_user:
+        await callback.answer('Пользователь не найден в БД.', show_alert=True)
+        return
+
+    await callback.message.edit_text('⏳ Перемещаю...', parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+    ok = await penalize_user(db, target_user)
+
+    if ok:
+        await callback.message.edit_text(
+            f'✅ <b>Готово!</b>\n\n'
+            f'Пользователь <code>{target_user.telegram_id}</code> перемещён в штрафной сквад.\n'
+            f'Сквад: <code>{settings.PENALTY_SQUAD_UUID}</code>\n\n'
+            f'<i>is_penalized = True</i>',
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text='⬅️ К списку', callback_data=BlockedUsersCallback.PENALTY_TEST_LIST.value)],
+                [InlineKeyboardButton(text='🏠 Меню', callback_data=BlockedUsersCallback.MENU.value)],
+            ]),
+        )
+    else:
+        await callback.message.edit_text(
+            f'❌ <b>Ошибка</b>\n\nНе удалось переместить пользователя. '
+            f'Проверь логи и настройку PENALTY_SQUAD_UUID.',
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text='⬅️ Назад', callback_data=BlockedUsersCallback.MENU.value)],
+            ]),
+        )
+
+
+@admin_required
+@error_handler
+async def penalty_all_confirm(
+    callback: types.CallbackQuery,
+    db_user: User,
+    state: FSMContext,
+) -> None:
+    """Подтверждение массового перемещения в штрафной сквад."""
+    if not settings.PENALTY_SQUAD_ENABLED or not settings.PENALTY_SQUAD_UUID:
+        await callback.answer('Штрафной сквад не настроен.', show_alert=True)
+        return
+
+    data = await state.get_data()
+    blocked_list: list[dict[str, Any]] = data.get('blocked_users_list', [])
+    count = len(blocked_list)
+
+    await callback.message.edit_text(
+        f'⚠️ <b>Массовое перемещение в штрафной сквад</b>\n\n'
+        f'Будет перемещено: <b>{count}</b> пользователей\n'
+        f'Сквад: <code>{settings.PENALTY_SQUAD_UUID}</code>\n\n'
+        f'Подтвердить?',
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text='✅ Переместить всех', callback_data=BlockedUsersCallback.PENALTY_ALL_CONFIRM.value),
+                InlineKeyboardButton(text='❌ Отмена', callback_data=BlockedUsersCallback.MENU.value),
+            ]
+        ]),
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def penalty_all_execute(
+    callback: types.CallbackQuery,
+    db_user: User,
+    db: AsyncSession,
+    state: FSMContext,
+) -> None:
+    """Массовое перемещение в штрафной сквад."""
+    data = await state.get_data()
+    blocked_list: list[dict[str, Any]] = data.get('blocked_users_list', [])
+
+    if not blocked_list:
+        await callback.answer('Список пуст.', show_alert=True)
+        return
+
+    total = len(blocked_list)
+    success = 0
+    failed = 0
+
+    await callback.message.edit_text(f'⏳ Перемещаю 0/{total}...', parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+    last_edit = datetime.now(UTC)
+
+    for i, u in enumerate(blocked_list, 1):
+        user_id = u.get('user_id')
+        if not user_id:
+            failed += 1
+            continue
+
+        target_user = await get_user_by_id(db, user_id)
+        if not target_user:
+            failed += 1
+            continue
+
+        ok = await penalize_user(db, target_user)
+        if ok:
+            success += 1
+        else:
+            failed += 1
+
+        now = datetime.now(UTC)
+        if (now - last_edit).total_seconds() >= 3:
+            last_edit = now
+            try:
+                await callback.message.edit_text(
+                    f'⏳ Перемещаю {i}/{total}... ✅{success} ❌{failed}',
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+    await callback.message.edit_text(
+        f'✅ <b>Готово!</b>\n\n'
+        f'• Перемещено: {success}\n'
+        f'• Ошибок: {failed}\n\n'
+        f'Сквад: <code>{settings.PENALTY_SQUAD_UUID}</code>',
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='🏠 Меню', callback_data=BlockedUsersCallback.MENU.value)],
+        ]),
+    )
+
+
+# =============================================================================
 # Registration
 # =============================================================================
 
@@ -843,4 +1113,26 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(
         handle_cancel,
         F.data == BlockedUsersCallback.CANCEL.value,
+    )
+
+    # Штрафной сквад
+    dp.callback_query.register(
+        show_penalty_test_list,
+        F.data == BlockedUsersCallback.PENALTY_TEST_LIST.value,
+    )
+    dp.callback_query.register(
+        penalty_test_user_confirm,
+        F.data.startswith(BlockedUsersCallback.PENALTY_TEST_USER.value),
+    )
+    dp.callback_query.register(
+        penalty_test_user_execute,
+        F.data.startswith(BlockedUsersCallback.PENALTY_TEST_CONFIRM.value),
+    )
+    dp.callback_query.register(
+        penalty_all_confirm,
+        F.data == BlockedUsersCallback.PENALTY_ALL.value,
+    )
+    dp.callback_query.register(
+        penalty_all_execute,
+        F.data == BlockedUsersCallback.PENALTY_ALL_CONFIRM.value,
     )

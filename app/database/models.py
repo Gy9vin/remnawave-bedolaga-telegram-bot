@@ -1445,6 +1445,7 @@ class User(Base):
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now())
     last_activity = Column(AwareDateTime(), default=func.now())
     remnawave_uuid = Column(String(255), nullable=True, unique=True)
+    is_penalized = Column(Boolean, default=False, nullable=False, server_default='false')
 
     # Cabinet authentication fields
     email = Column(String(255), unique=True, nullable=True, index=True)
