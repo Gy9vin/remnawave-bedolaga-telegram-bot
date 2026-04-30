@@ -5757,7 +5757,7 @@ async def update_subscription_servers_endpoint(
             subscription.end_date,
         )
     else:
-        charged_days = max(1, (subscription.end_date - datetime.now(UTC)).days)
+        charged_days = max(1, math.ceil((subscription.end_date - datetime.now(UTC)).total_seconds() / 86400))
 
     added_server_ids = [catalog[uuid].get('server_id') for uuid in added if catalog[uuid].get('server_id') is not None]
     added_server_prices = [
@@ -5935,7 +5935,7 @@ async def update_subscription_traffic_endpoint(
             },
         )
 
-    days_remaining = max(1, (subscription.end_date - datetime.now(UTC)).days)
+    days_remaining = max(1, math.ceil((subscription.end_date - datetime.now(UTC)).total_seconds() / 86400))
     period_hint_days = days_remaining
 
     # Lock user BEFORE discount computation to prevent TOCTOU on promo group
@@ -6113,7 +6113,7 @@ async def update_subscription_devices_endpoint(
         chargeable_diff = new_chargeable - current_chargeable
 
         price_per_month = chargeable_diff * tariff_device_price
-        days_remaining = max(1, (subscription.end_date - datetime.now(UTC)).days)
+        days_remaining = max(1, math.ceil((subscription.end_date - datetime.now(UTC)).total_seconds() / 86400))
         period_hint_days = days_remaining
 
         # Lock user BEFORE price computation to prevent TOCTOU on promo discount
@@ -6161,7 +6161,7 @@ async def update_subscription_devices_endpoint(
             user_id=user.id,
             type=TransactionType.SUBSCRIPTION_PAYMENT,
             amount_kopeks=price_to_charge,
-            description=f'{description} за {charged_days or max(1, (subscription.end_date - datetime.now(UTC)).days)} дн.',
+            description=f'{description} за {charged_days or max(1, math.ceil((subscription.end_date - datetime.now(UTC)).total_seconds() / 86400))} дн.',
         )
 
     if price_to_charge > 0:
