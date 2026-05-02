@@ -196,6 +196,7 @@ class WheelSpinPaymentType(Enum):
 
     TELEGRAM_STARS = 'telegram_stars'
     SUBSCRIPTION_DAYS = 'subscription_days'
+    FREE = 'free'
 
 
 class YooKassaPayment(Base):
@@ -3148,6 +3149,16 @@ class WheelConfig(Base):
     # Лимиты
     daily_spin_limit = Column(Integer, default=5, nullable=False)  # 0 = без лимита
     min_subscription_days_for_day_payment = Column(Integer, default=3, nullable=False)
+
+    # Бесплатные спины
+    free_spin_enabled = Column(Boolean, default=False, nullable=False)
+    free_spins_per_period = Column(Integer, default=1, nullable=False)  # сколько бесплатных за период
+    free_spin_period_days = Column(Integer, default=2, nullable=False)  # длина периода в днях
+    free_spin_requires_active_subscription = Column(Boolean, default=True, nullable=False)
+
+    # Режим вероятностей: 'manual' = используем manual_probability у каждого приза;
+    # 'rtp' = старый алгоритм с расчётом по RTP
+    probability_mode = Column(String(16), default='manual', nullable=False)
 
     # Генерация промокодов
     promo_prefix = Column(String(20), default='WHEEL', nullable=False)

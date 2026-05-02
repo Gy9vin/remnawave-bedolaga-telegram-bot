@@ -18,6 +18,7 @@ from app.database.crud.user import add_user_balance
 from app.database.crud.wheel import (
     create_wheel_spin,
     get_or_create_wheel_config,
+    get_user_free_spins_in_window,
     get_user_spins_today,
     get_wheel_prizes,
     get_wheel_statistics,
@@ -73,6 +74,9 @@ class SpinAvailability:
     spins_remaining_today: int = 0
     can_pay_stars: bool = False
     can_pay_days: bool = False
+    can_spin_free: bool = False
+    free_spin_next_at: datetime | None = None
+    free_spins_remaining_in_period: int = 0
     min_subscription_days: int = 0
     user_subscription_days: int = 0
     user_balance_kopeks: int = 0
@@ -80,11 +84,97 @@ class SpinAvailability:
     eligible_subscriptions: list[EligibleSubscription] | None = None
 
 
+@dataclass
+class FreeSpinStatus:
+    """Статус бесплатного спина для пользователя."""
+
+    enabled: bool
+    available: bool
+    reason: str | None = None
+    spent_in_period: int = 0
+    per_period: int = 0
+    period_days: int = 0
+    next_at: datetime | None = None
+
+
 class FortuneWheelService:
     """Сервис колеса удачи с RTP механикой."""
 
     def __init__(self):
         pass
+
+    async def _get_user_active_paid_subscription(self, db: AsyncSession, user: User) -> Subscription | None:
+        """Активная платная подписка (триал не считается)."""
+        if settings.is_multi_tariff_enabled():
+            from app.database.crud.subscription import get_active_subscriptions_by_user_id
+
+            subs = await get_active_subscriptions_by_user_id(db, user.id)
+        else:
+            single = await get_subscription_by_user_id(db, user.id)
+            subs = [single] if single else []
+
+        for sub in subs:
+            if not sub or not sub.is_active:
+                continue
+            if getattr(sub, 'is_trial', False):
+                continue
+            return sub
+        return None
+
+    async def get_free_spin_status(
+        self, db: AsyncSession, user: User, *, config: WheelConfig | None = None
+    ) -> FreeSpinStatus:
+        """Доступен ли бесплатный спин и когда следующий."""
+        if config is None:
+            config = await get_or_create_wheel_config(db)
+
+        per_period = max(1, int(config.free_spins_per_period or 1))
+        period_days = max(1, int(config.free_spin_period_days or 1))
+
+        if not config.free_spin_enabled:
+            return FreeSpinStatus(
+                enabled=False,
+                available=False,
+                reason='free_spin_disabled',
+                per_period=per_period,
+                period_days=period_days,
+            )
+
+        if config.free_spin_requires_active_subscription:
+            active_sub = await self._get_user_active_paid_subscription(db, user)
+            if not active_sub:
+                return FreeSpinStatus(
+                    enabled=True,
+                    available=False,
+                    reason='no_active_subscription',
+                    per_period=per_period,
+                    period_days=period_days,
+                )
+
+        window_start = datetime.now(UTC) - timedelta(days=period_days)
+        spent, earliest = await get_user_free_spins_in_window(db, user.id, window_start)
+
+        if spent < per_period:
+            return FreeSpinStatus(
+                enabled=True,
+                available=True,
+                spent_in_period=spent,
+                per_period=per_period,
+                period_days=period_days,
+            )
+
+        # Все бесплатные спины в окне исчерпаны — следующий доступен через
+        # period_days после самого раннего спина в окне.
+        next_at = earliest + timedelta(days=period_days) if earliest else None
+        return FreeSpinStatus(
+            enabled=True,
+            available=False,
+            reason='free_spin_cooldown',
+            spent_in_period=spent,
+            per_period=per_period,
+            period_days=period_days,
+            next_at=next_at,
+        )
 
     async def check_availability(self, db: AsyncSession, user: User) -> SpinAvailability:
         """Проверить доступность спина для пользователя."""
@@ -101,11 +191,17 @@ class FortuneWheelService:
         spins_today = await get_user_spins_today(db, user.id)
         spins_remaining = config.daily_spin_limit - spins_today if config.daily_spin_limit > 0 else 999
 
+        # Проверяем бесплатный спин (не учитывается в daily_spin_limit и не блокируется им)
+        free_status = await self.get_free_spin_status(db, user, config=config)
+
         if config.daily_spin_limit > 0 and spins_today >= config.daily_spin_limit:
             return SpinAvailability(
-                can_spin=False,
-                reason='daily_limit_reached',
+                can_spin=free_status.available,
+                reason='daily_limit_reached' if not free_status.available else None,
                 spins_remaining_today=0,
+                can_spin_free=free_status.available,
+                free_spin_next_at=free_status.next_at,
+                free_spins_remaining_in_period=max(0, free_status.per_period - free_status.spent_in_period),
             )
 
         # Проверяем доступные способы оплаты
@@ -152,7 +248,7 @@ class FortuneWheelService:
                 # For backward compat: use best subscription's days
                 user_subscription_days = max(s.days_left for s in eligible_subs)
 
-        if not can_pay_stars and not can_pay_days:
+        if not can_pay_stars and not can_pay_days and not free_status.available:
             # Определяем причину
             reason = 'no_payment_method_available'
             if config.spin_cost_stars_enabled and user.balance_kopeks < required_balance_kopeks:
@@ -164,6 +260,9 @@ class FortuneWheelService:
                 spins_remaining_today=spins_remaining,
                 can_pay_stars=can_pay_stars,
                 can_pay_days=can_pay_days,
+                can_spin_free=False,
+                free_spin_next_at=free_status.next_at,
+                free_spins_remaining_in_period=max(0, free_status.per_period - free_status.spent_in_period),
                 min_subscription_days=config.min_subscription_days_for_day_payment,
                 user_subscription_days=user_subscription_days,
                 user_balance_kopeks=user.balance_kopeks,
@@ -184,6 +283,9 @@ class FortuneWheelService:
             spins_remaining_today=spins_remaining,
             can_pay_stars=can_pay_stars,
             can_pay_days=can_pay_days,
+            can_spin_free=free_status.available,
+            free_spin_next_at=free_status.next_at,
+            free_spins_remaining_in_period=max(0, free_status.per_period - free_status.spent_in_period),
             min_subscription_days=config.min_subscription_days_for_day_payment,
             user_subscription_days=user_subscription_days,
             user_balance_kopeks=user.balance_kopeks,
@@ -195,16 +297,21 @@ class FortuneWheelService:
         self, config: WheelConfig, prizes: list[WheelPrize], spin_cost_kopeks: int
     ) -> list[tuple[WheelPrize, float]]:
         """
-        Рассчитать вероятности выпадения призов на основе RTP.
+        Рассчитать вероятности выпадения призов.
 
-        Алгоритм:
-        1. Целевая средняя выплата = spin_cost * (RTP / 100)
-        2. Для призов с manual_probability - используем его напрямую
-        3. Для остальных - рассчитываем веса обратно пропорционально стоимости приза
-        4. "Nothing" сектор балансирует систему
+        Режим 'manual' (по умолчанию): используем manual_probability у каждого приза
+        напрямую, нормализуем сумму до 1.0. Призы без manual_probability получают
+        равные доли от остатка (или 0, если сумма уже = 1.0).
+
+        Режим 'rtp': старый алгоритм с расчётом весов из RTP.
         """
         if not prizes:
             return []
+
+        probability_mode = getattr(config, 'probability_mode', 'manual') or 'manual'
+
+        if probability_mode == 'manual':
+            return self._calculate_manual_probabilities(prizes)
 
         target_payout = spin_cost_kopeks * (config.rtp_percent / 100)
 
@@ -254,6 +361,44 @@ class FortuneWheelService:
         if total > 0:
             result = [(p[0], p[1] / total) for p in result]
 
+        return result
+
+    def _calculate_manual_probabilities(
+        self, prizes: list[WheelPrize]
+    ) -> list[tuple[WheelPrize, float]]:
+        """Простой режим: используем manual_probability как есть, нормализуем сумму до 1.0.
+
+        Если у некоторых призов нет manual_probability — они делят равными долями
+        остаток (1.0 - сумма заданных). Если у всех призов сумма уже = 1.0 — призы
+        без manual_probability получают вероятность 0.
+        """
+        manual = []
+        unset = []
+        manual_sum = 0.0
+        for prize in prizes:
+            if prize.manual_probability is not None and prize.manual_probability >= 0:
+                manual.append((prize, float(prize.manual_probability)))
+                manual_sum += float(prize.manual_probability)
+            else:
+                unset.append(prize)
+
+        # Если сумма ручных > 1.0 — нормализуем (поделим), а призы без вероятности → 0.
+        if manual_sum > 1.0:
+            return [(p, prob / manual_sum) for p, prob in manual] + [(p, 0.0) for p in unset]
+
+        # Если сумма ручных < 1.0 — остаток делим поровну между призами без manual_probability.
+        remaining = max(0.0, 1.0 - manual_sum)
+        if unset and remaining > 0:
+            share = remaining / len(unset)
+            unset_pairs = [(p, share) for p in unset]
+        else:
+            unset_pairs = [(p, 0.0) for p in unset]
+
+        result = manual + unset_pairs
+        # Если сумма всё равно меньше 1.0 (нет unset) — нормализуем ручные.
+        total = sum(prob for _, prob in result)
+        if total > 0 and abs(total - 1.0) > 1e-9:
+            result = [(p, prob / total) for p, prob in result]
         return result
 
     def _select_prize(self, prizes_with_probabilities: list[tuple[WheelPrize, float]]) -> WheelPrize:
@@ -646,6 +791,17 @@ class FortuneWheelService:
                     )
                 payment_amount = config.spin_cost_days
                 payment_value_kopeks = await self._process_days_payment(db, user, config, target_subscription)
+            elif payment_type == WheelSpinPaymentType.FREE.value:
+                # Перепроверяем eligibility для free spin перед списанием попытки
+                free_status = await self.get_free_spin_status(db, user, config=config)
+                if not free_status.available:
+                    return SpinResult(
+                        success=False,
+                        error=free_status.reason or 'free_spin_unavailable',
+                        message=self._get_error_message(free_status.reason or 'free_spin_unavailable'),
+                    )
+                payment_amount = 0
+                payment_value_kopeks = 0
             else:
                 return SpinResult(
                     success=False,
@@ -732,6 +888,10 @@ class FortuneWheelService:
             'no_payment_method_available': 'Нет доступных способов оплаты',
             'no_prizes_configured': 'Призы еще не настроены',
             'insufficient_balance': 'Недостаточно средств на балансе. Пополните баланс для оплаты спина.',
+            'free_spin_disabled': 'Бесплатные спины отключены',
+            'free_spin_cooldown': 'Бесплатный спин ещё не доступен — попробуйте позже',
+            'free_spin_unavailable': 'Бесплатный спин сейчас недоступен',
+            'no_active_subscription': 'Бесплатный спин доступен только активным подписчикам',
         }
         return messages.get(reason, 'Произошла ошибка')
 

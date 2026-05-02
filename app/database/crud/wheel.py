@@ -47,6 +47,11 @@ async def get_or_create_wheel_config(db: AsyncSession) -> WheelConfig:
         rtp_percent=80,
         daily_spin_limit=5,
         min_subscription_days_for_day_payment=3,
+        free_spin_enabled=False,
+        free_spins_per_period=1,
+        free_spin_period_days=2,
+        free_spin_requires_active_subscription=True,
+        probability_mode='manual',
         promo_prefix='WHEEL',
         promo_validity_days=7,
     )
@@ -238,6 +243,23 @@ async def get_user_spins_today(db: AsyncSession, user_id: int) -> int:
         )
     )
     return result.scalar() or 0
+
+
+async def get_user_free_spins_in_window(
+    db: AsyncSession, user_id: int, since: datetime
+) -> tuple[int, datetime | None]:
+    """Получить (количество, время самого раннего) бесплатных спинов в окне since..now."""
+    result = await db.execute(
+        select(func.count(WheelSpin.id), func.min(WheelSpin.created_at)).where(
+            and_(
+                WheelSpin.user_id == user_id,
+                WheelSpin.payment_type == 'free',
+                WheelSpin.created_at >= since,
+            )
+        )
+    )
+    row = result.one()
+    return row[0] or 0, row[1]
 
 
 async def get_user_spin_history(

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cabinet.dependencies import get_cabinet_db, get_current_cabinet_user
 from app.cabinet.schemas.wheel import (
+    FreeSpinStatusResponse,
     SpinAvailabilityResponse,
     SpinHistoryItem,
     SpinHistoryResponse,
@@ -86,6 +87,8 @@ async def get_wheel_config(
             for s in availability.eligible_subscriptions
         ]
 
+    free_status = await wheel_service.get_free_spin_status(db, user, config=config)
+
     return WheelConfigResponse(
         is_enabled=config.is_enabled,
         name=config.name,
@@ -104,6 +107,29 @@ async def get_wheel_config(
         required_balance_kopeks=availability.required_balance_kopeks,
         has_subscription=has_subscription,
         eligible_subscriptions=eligible_subs_display,
+        free_spin_enabled=free_status.enabled,
+        free_spin_available=free_status.available,
+        free_spin_next_at=free_status.next_at,
+        free_spins_per_period=free_status.per_period,
+        free_spin_period_days=free_status.period_days,
+    )
+
+
+@router.get('/free-status', response_model=FreeSpinStatusResponse)
+async def get_free_spin_status(
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Статус бесплатного спина пользователя."""
+    status = await wheel_service.get_free_spin_status(db, user)
+    return FreeSpinStatusResponse(
+        enabled=status.enabled,
+        available=status.available,
+        reason=status.reason,
+        spent_in_period=status.spent_in_period,
+        per_period=status.per_period,
+        period_days=status.period_days,
+        next_at=status.next_at,
     )
 
 
@@ -121,6 +147,9 @@ async def check_spin_availability(
         spins_remaining_today=availability.spins_remaining_today,
         can_pay_stars=availability.can_pay_stars,
         can_pay_days=availability.can_pay_days,
+        can_spin_free=availability.can_spin_free,
+        free_spin_next_at=availability.free_spin_next_at,
+        free_spins_remaining_in_period=availability.free_spins_remaining_in_period,
         min_subscription_days=availability.min_subscription_days,
         user_subscription_days=availability.user_subscription_days,
         user_balance_kopeks=availability.user_balance_kopeks,

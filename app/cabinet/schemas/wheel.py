@@ -14,6 +14,7 @@ class WheelPaymentType(StrEnum):
 
     TELEGRAM_STARS = 'telegram_stars'
     SUBSCRIPTION_DAYS = 'subscription_days'
+    FREE = 'free'
 
 
 class WheelPrizeType(StrEnum):
@@ -62,6 +63,11 @@ class WheelConfigResponse(BaseModel):
     required_balance_kopeks: int = 0
     has_subscription: bool = False
     eligible_subscriptions: list[dict] | None = None
+    free_spin_enabled: bool = False
+    free_spin_available: bool = False
+    free_spin_next_at: datetime | None = None
+    free_spins_per_period: int = 0
+    free_spin_period_days: int = 0
 
 
 class SpinAvailabilityResponse(BaseModel):
@@ -72,10 +78,25 @@ class SpinAvailabilityResponse(BaseModel):
     spins_remaining_today: int
     can_pay_stars: bool
     can_pay_days: bool
+    can_spin_free: bool = False
+    free_spin_next_at: datetime | None = None
+    free_spins_remaining_in_period: int = 0
     min_subscription_days: int
     user_subscription_days: int
     user_balance_kopeks: int = 0
     required_balance_kopeks: int = 0
+
+
+class FreeSpinStatusResponse(BaseModel):
+    """Статус бесплатного спина."""
+
+    enabled: bool
+    available: bool
+    reason: str | None = None
+    spent_in_period: int = 0
+    per_period: int = 0
+    period_days: int = 0
+    next_at: datetime | None = None
 
 
 class SpinRequest(BaseModel):
@@ -169,6 +190,11 @@ class AdminWheelConfigResponse(BaseModel):
     rtp_percent: int
     daily_spin_limit: int
     min_subscription_days_for_day_payment: int
+    free_spin_enabled: bool = False
+    free_spins_per_period: int = 1
+    free_spin_period_days: int = 2
+    free_spin_requires_active_subscription: bool = True
+    probability_mode: str = 'manual'
     promo_prefix: str
     promo_validity_days: int
     prizes: list[WheelPrizeAdminResponse]
@@ -191,6 +217,11 @@ class UpdateWheelConfigRequest(BaseModel):
     rtp_percent: int | None = Field(None, ge=0, le=100)
     daily_spin_limit: int | None = Field(None, ge=0, le=100)
     min_subscription_days_for_day_payment: int | None = Field(None, ge=1, le=30)
+    free_spin_enabled: bool | None = None
+    free_spins_per_period: int | None = Field(None, ge=1, le=100)
+    free_spin_period_days: int | None = Field(None, ge=1, le=365)
+    free_spin_requires_active_subscription: bool | None = None
+    probability_mode: str | None = Field(None, pattern=r'^(manual|rtp)$')
     promo_prefix: str | None = Field(None, min_length=1, max_length=20)
     promo_validity_days: int | None = Field(None, ge=1, le=365)
 
