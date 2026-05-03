@@ -19,14 +19,14 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.crud.user import get_user_by_id
+from app.database.crud.user import get_user_by_id, get_user_by_telegram_id
 from app.database.models import User
 from app.services.blocked_users_service import (
     BlockCheckResult,
     BlockedUserAction,
     BlockedUsersService,
 )
-from app.services.penalty_squad_service import penalize_user
+from app.services.penalty_squad_service import penalize_user, restore_user
 from app.utils.decorators import admin_required, error_handler
 
 
@@ -107,6 +107,8 @@ class BlockedUsersText(Enum):
     BUTTON_VIEW_BLOCKED = '👥 Список заблокированных ({count})'
     BUTTON_PENALTY_TEST = '🧪 Тест штрафного сквада (один)'
     BUTTON_PENALTY_ALL = '🚫 Переместить всех в штрафной'
+    BUTTON_PENALTY_BY_ID = '🔢 Загнать в штрафной по ID'
+    BUTTON_RESTORE_BY_ID = '✅ Вернуть из штрафного по ID'
     BUTTON_DELETE_DB = '🗑 Удалить из БД'
     BUTTON_DELETE_REMNAWAVE = '🌐 Удалить из Remnawave'
     BUTTON_DELETE_BOTH = '💀 Удалить везде'
@@ -128,6 +130,10 @@ class BlockedUsersCallback(Enum):
     PENALTY_TEST_CONFIRM = 'admin_blocked_penalty_test_confirm_'
     PENALTY_ALL = 'admin_blocked_penalty_all'
     PENALTY_ALL_CONFIRM = 'admin_blocked_penalty_all_confirm'
+    PENALTY_BY_ID = 'admin_blocked_penalty_by_id'
+    PENALTY_BY_ID_CONFIRM = 'admin_blocked_penalty_by_id_confirm_'
+    RESTORE_BY_ID = 'admin_blocked_restore_by_id'
+    RESTORE_BY_ID_CONFIRM = 'admin_blocked_restore_by_id_confirm_'
     VIEW_LIST = 'admin_blocked_list'
     VIEW_LIST_PAGE = 'admin_blocked_list_page_'
     ACTION_DELETE_DB = 'admin_blocked_action_db'
@@ -150,6 +156,8 @@ class BlockedUsersStates(StatesGroup):
     viewing_results = State()
     confirming_action = State()
     processing_cleanup = State()
+    entering_penalty_id = State()
+    entering_restore_id = State()
 
 
 # =============================================================================
@@ -199,6 +207,25 @@ def get_blocked_users_menu_keyboard(
                 InlineKeyboardButton(
                     text=BlockedUsersText.BUTTON_PENALTY_ALL.value,
                     callback_data=BlockedUsersCallback.PENALTY_ALL.value,
+                )
+            ]
+        )
+
+    # Прямые действия по ID — доступны всегда (без сканирования)
+    if settings.PENALTY_SQUAD_ENABLED:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=BlockedUsersText.BUTTON_PENALTY_BY_ID.value,
+                    callback_data=BlockedUsersCallback.PENALTY_BY_ID.value,
+                )
+            ]
+        )
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=BlockedUsersText.BUTTON_RESTORE_BY_ID.value,
+                    callback_data=BlockedUsersCallback.RESTORE_BY_ID.value,
                 )
             ]
         )
@@ -1050,6 +1077,273 @@ async def penalty_all_execute(
 
 
 # =============================================================================
+# Penalty / Restore by Telegram ID
+# =============================================================================
+
+
+def _id_prompt_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text='❌ Отмена', callback_data=BlockedUsersCallback.MENU.value)],
+        ]
+    )
+
+
+@admin_required
+@error_handler
+async def penalty_by_id_prompt(
+    callback: types.CallbackQuery,
+    db_user: User,
+    state: FSMContext,
+) -> None:
+    """Запрашивает Telegram ID для перемещения в штрафной."""
+    if not settings.PENALTY_SQUAD_ENABLED:
+        await callback.answer('Штрафной сквад отключён в настройках конфига.', show_alert=True)
+        return
+    if not settings.PENALTY_SQUAD_UUID:
+        await callback.answer('Не задан PENALTY_SQUAD_UUID в настройках.', show_alert=True)
+        return
+
+    await state.set_state(BlockedUsersStates.entering_penalty_id)
+    await callback.message.edit_text(
+        '🔢 <b>Загнать в штрафной по ID</b>\n\n'
+        'Пришли Telegram ID пользователя (числом).\n\n'
+        f'Сквад: <code>{settings.PENALTY_SQUAD_UUID}</code>',
+        parse_mode=ParseMode.HTML,
+        reply_markup=_id_prompt_keyboard(),
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def restore_by_id_prompt(
+    callback: types.CallbackQuery,
+    db_user: User,
+    state: FSMContext,
+) -> None:
+    """Запрашивает Telegram ID для возврата из штрафного."""
+    if not settings.PENALTY_SQUAD_ENABLED:
+        await callback.answer('Штрафной сквад отключён в настройках конфига.', show_alert=True)
+        return
+
+    await state.set_state(BlockedUsersStates.entering_restore_id)
+    default_uuid = settings.DEFAULT_SQUAD_UUID or '— (не задан, сквад снимется)'
+    await callback.message.edit_text(
+        '✅ <b>Вернуть из штрафного по ID</b>\n\n'
+        'Пришли Telegram ID пользователя (числом).\n\n'
+        f'Будет назначен сквад: <code>{default_uuid}</code>',
+        parse_mode=ParseMode.HTML,
+        reply_markup=_id_prompt_keyboard(),
+    )
+    await callback.answer()
+
+
+async def _resolve_user_by_input(db: AsyncSession, raw: str) -> User | None:
+    """Парсит ввод как Telegram ID и ищет юзера. Возвращает User или None."""
+    raw = (raw or '').strip().lstrip('@').replace(' ', '')
+    try:
+        telegram_id = int(raw)
+    except ValueError:
+        return None
+    return await get_user_by_telegram_id(db, telegram_id)
+
+
+@admin_required
+@error_handler
+async def handle_penalty_id_input(
+    message: types.Message,
+    db_user: User,
+    db: AsyncSession,
+    state: FSMContext,
+) -> None:
+    """Обрабатывает введённый Telegram ID для перемещения в штрафной."""
+    target = await _resolve_user_by_input(db, message.text or '')
+    if not target:
+        await message.answer(
+            '❌ Не нашёл пользователя по этому Telegram ID.\n'
+            'Пришли валидный числовой ID или нажми «Отмена».',
+            reply_markup=_id_prompt_keyboard(),
+        )
+        return
+
+    name = target.full_name or target.username or 'Без имени'
+    await state.update_data(penalty_target_user_id=target.id)
+
+    confirm_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text='✅ Загнать',
+                    callback_data=f'{BlockedUsersCallback.PENALTY_BY_ID_CONFIRM.value}{target.id}',
+                ),
+                InlineKeyboardButton(
+                    text='❌ Отмена',
+                    callback_data=BlockedUsersCallback.MENU.value,
+                ),
+            ]
+        ]
+    )
+
+    is_penalized_label = '⚠️ уже в штрафном' if target.is_penalized else 'обычный'
+    await state.set_state(BlockedUsersStates.confirming_action)
+    await message.answer(
+        f'🔢 <b>Подтверждение</b>\n\n'
+        f'Пользователь: <b>{html.escape(name)}</b>\n'
+        f'Telegram ID: <code>{target.telegram_id}</code>\n'
+        f'Статус: {is_penalized_label}\n\n'
+        f'Загнать в штрафной сквад <code>{settings.PENALTY_SQUAD_UUID}</code>?',
+        parse_mode=ParseMode.HTML,
+        reply_markup=confirm_kb,
+    )
+
+
+@admin_required
+@error_handler
+async def handle_restore_id_input(
+    message: types.Message,
+    db_user: User,
+    db: AsyncSession,
+    state: FSMContext,
+) -> None:
+    """Обрабатывает введённый Telegram ID для возврата из штрафного."""
+    target = await _resolve_user_by_input(db, message.text or '')
+    if not target:
+        await message.answer(
+            '❌ Не нашёл пользователя по этому Telegram ID.\n'
+            'Пришли валидный числовой ID или нажми «Отмена».',
+            reply_markup=_id_prompt_keyboard(),
+        )
+        return
+
+    name = target.full_name or target.username or 'Без имени'
+    await state.update_data(restore_target_user_id=target.id)
+
+    confirm_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text='✅ Вернуть',
+                    callback_data=f'{BlockedUsersCallback.RESTORE_BY_ID_CONFIRM.value}{target.id}',
+                ),
+                InlineKeyboardButton(
+                    text='❌ Отмена',
+                    callback_data=BlockedUsersCallback.MENU.value,
+                ),
+            ]
+        ]
+    )
+
+    is_penalized_label = 'в штрафном' if target.is_penalized else '⚠️ НЕ в штрафном'
+    default_uuid = settings.DEFAULT_SQUAD_UUID or '— (не задан, сквад снимется)'
+    await state.set_state(BlockedUsersStates.confirming_action)
+    await message.answer(
+        f'✅ <b>Подтверждение возврата</b>\n\n'
+        f'Пользователь: <b>{html.escape(name)}</b>\n'
+        f'Telegram ID: <code>{target.telegram_id}</code>\n'
+        f'Статус: {is_penalized_label}\n\n'
+        f'Назначить сквад <code>{default_uuid}</code> и снять флаг is_penalized?',
+        parse_mode=ParseMode.HTML,
+        reply_markup=confirm_kb,
+    )
+
+
+@admin_required
+@error_handler
+async def penalty_by_id_execute(
+    callback: types.CallbackQuery,
+    db_user: User,
+    db: AsyncSession,
+    state: FSMContext,
+) -> None:
+    """Выполняет перемещение по введённому ID."""
+    try:
+        user_id = int(callback.data.split('_')[-1])
+    except (ValueError, IndexError):
+        await callback.answer('Неверный ID', show_alert=True)
+        return
+
+    target = await get_user_by_id(db, user_id)
+    if not target:
+        await callback.answer('Пользователь не найден.', show_alert=True)
+        return
+
+    await callback.message.edit_text('⏳ Перемещаю...', parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+    ok = await penalize_user(db, target)
+    await state.set_state(None)
+
+    if ok:
+        await callback.message.edit_text(
+            f'✅ <b>Готово!</b>\n\n'
+            f'Пользователь <code>{target.telegram_id}</code> перемещён в штрафной.\n'
+            f'Сквад: <code>{settings.PENALTY_SQUAD_UUID}</code>\n'
+            f'<i>is_penalized = True</i>',
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text='🏠 Меню', callback_data=BlockedUsersCallback.MENU.value)],
+            ]),
+        )
+    else:
+        await callback.message.edit_text(
+            '❌ <b>Ошибка</b>\n\nНе удалось переместить — проверь логи и PENALTY_SQUAD_UUID.',
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text='⬅️ Назад', callback_data=BlockedUsersCallback.MENU.value)],
+            ]),
+        )
+
+
+@admin_required
+@error_handler
+async def restore_by_id_execute(
+    callback: types.CallbackQuery,
+    db_user: User,
+    db: AsyncSession,
+    state: FSMContext,
+) -> None:
+    """Возвращает пользователя по введённому ID из штрафного."""
+    try:
+        user_id = int(callback.data.split('_')[-1])
+    except (ValueError, IndexError):
+        await callback.answer('Неверный ID', show_alert=True)
+        return
+
+    target = await get_user_by_id(db, user_id)
+    if not target:
+        await callback.answer('Пользователь не найден.', show_alert=True)
+        return
+
+    await callback.message.edit_text('⏳ Возвращаю...', parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+    ok = await restore_user(db, target)
+    await state.set_state(None)
+
+    if ok:
+        default_uuid = settings.DEFAULT_SQUAD_UUID or '— (снят)'
+        await callback.message.edit_text(
+            f'✅ <b>Готово!</b>\n\n'
+            f'Пользователь <code>{target.telegram_id}</code> возвращён.\n'
+            f'Сквад: <code>{default_uuid}</code>\n'
+            f'<i>is_penalized = False</i>',
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text='🏠 Меню', callback_data=BlockedUsersCallback.MENU.value)],
+            ]),
+        )
+    else:
+        await callback.message.edit_text(
+            '❌ <b>Ошибка</b>\n\nНе удалось вернуть — проверь логи и DEFAULT_SQUAD_UUID.',
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text='⬅️ Назад', callback_data=BlockedUsersCallback.MENU.value)],
+            ]),
+        )
+
+
+# =============================================================================
 # Registration
 # =============================================================================
 
@@ -1135,4 +1429,30 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(
         penalty_all_execute,
         F.data == BlockedUsersCallback.PENALTY_ALL_CONFIRM.value,
+    )
+
+    # Штраф / возврат по Telegram ID
+    dp.callback_query.register(
+        penalty_by_id_prompt,
+        F.data == BlockedUsersCallback.PENALTY_BY_ID.value,
+    )
+    dp.callback_query.register(
+        restore_by_id_prompt,
+        F.data == BlockedUsersCallback.RESTORE_BY_ID.value,
+    )
+    dp.callback_query.register(
+        penalty_by_id_execute,
+        F.data.startswith(BlockedUsersCallback.PENALTY_BY_ID_CONFIRM.value),
+    )
+    dp.callback_query.register(
+        restore_by_id_execute,
+        F.data.startswith(BlockedUsersCallback.RESTORE_BY_ID_CONFIRM.value),
+    )
+    dp.message.register(
+        handle_penalty_id_input,
+        BlockedUsersStates.entering_penalty_id,
+    )
+    dp.message.register(
+        handle_restore_id_input,
+        BlockedUsersStates.entering_restore_id,
     )
