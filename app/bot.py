@@ -74,6 +74,7 @@ from app.middlewares.display_name_restriction import DisplayNameRestrictionMiddl
 from app.middlewares.global_error import GlobalErrorMiddleware
 from app.middlewares.logging import LoggingMiddleware
 from app.middlewares.maintenance import MaintenanceMiddleware
+from app.middlewares.penalty_auto_restore import PenaltyAutoRestoreMiddleware
 from app.middlewares.subscription_checker import SubscriptionStatusMiddleware
 from app.middlewares.throttling import ThrottlingMiddleware
 from app.services.maintenance_service import maintenance_service
@@ -166,6 +167,12 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     dp.message.middleware(AuthMiddleware())
     dp.callback_query.middleware(AuthMiddleware())
     dp.pre_checkout_query.middleware(AuthMiddleware())
+
+    # Авто-возврат из штрафного сквада (после AuthMiddleware — db_user уже доступен)
+    penalty_auto_restore = PenaltyAutoRestoreMiddleware()
+    dp.message.middleware(penalty_auto_restore)
+    dp.callback_query.middleware(penalty_auto_restore)
+    dp.pre_checkout_query.middleware(penalty_auto_restore)
     display_name_restriction = DisplayNameRestrictionMiddleware()
     dp.message.middleware(display_name_restriction)
     dp.callback_query.middleware(display_name_restriction)
