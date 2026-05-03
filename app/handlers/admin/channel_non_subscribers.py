@@ -12,8 +12,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.crud.channel_report import get_subscribers_not_in_channels
-from app.database.crud.required_channel import get_active_channels
+from app.database.crud.channel_report import (
+    get_active_telegram_subscribers_for_report,
+    get_subscribers_not_in_channels,
+)
+from app.database.crud.required_channel import get_active_channels, upsert_user_channel_sub
 from app.database.models import User
 from app.utils.decorators import admin_required, error_handler
 
@@ -161,7 +164,87 @@ async def refresh_channel_non_subscribers(
     db_user: User,
     db: AsyncSession,
     state: FSMContext,
+    bot: Bot,
 ) -> None:
+    """Живая проверка через Telegram API (getChatMember для каждого юзера × каждый канал).
+
+    После проверки обновляет кэш UserChannelSubscription и пересчитывает список.
+    """
+    from app.database.database import AsyncSessionLocal
+    from app.services.channel_membership_report_service import (
+        channel_membership_report_service,
+    )
+    from app.utils.cache import ChannelSubCache
+
+    channels = await get_active_channels(db)
+    if not channels:
+        await callback.answer('Нет активных обязательных каналов', show_alert=True)
+        return
+
+    subscribers = await get_active_telegram_subscribers_for_report(db)
+    total_checks = len(subscribers) * len(channels)
+
+    if total_checks == 0:
+        await state.update_data(chan_nonsub_list=None, chan_nonsub_fetched_at=None)
+        await _show_list(callback, db, state, page=1)
+        return
+
+    await callback.answer('Запускаю живую проверку…')
+    await callback.message.edit_text(
+        f'🔄 <b>Живая проверка через Telegram API</b>\n\n'
+        f'Подписчиков: {len(subscribers)} × каналов: {len(channels)} = {total_checks} проверок.\n'
+        f'⏱ Это может занять 1–3 минуты.\n\n'
+        f'Прогресс: 0/{total_checks}',
+        parse_mode=ParseMode.HTML,
+    )
+
+    semaphore = asyncio.Semaphore(20)
+    checked = 0
+    last_edit = datetime.now(UTC)
+
+    async def check_pair(subscriber: dict, channel) -> tuple[int, str, bool]:
+        async with semaphore:
+            is_member = await channel_membership_report_service._check_member(
+                bot, subscriber['telegram_id'], channel.channel_id
+            )
+            await asyncio.sleep(_SEND_DELAY)
+        return subscriber['telegram_id'], channel.channel_id, is_member
+
+    tasks = [check_pair(s, c) for s in subscribers for c in channels]
+
+    results: list[tuple[int, str, bool]] = []
+    for coro in asyncio.as_completed(tasks):
+        try:
+            results.append(await coro)
+        except Exception as exc:
+            logger.error('Ошибка живой проверки', error=str(exc))
+        checked += 1
+
+        now = datetime.now(UTC)
+        if (now - last_edit).total_seconds() >= 1.5 or checked == total_checks:
+            last_edit = now
+            try:
+                await callback.message.edit_text(
+                    f'🔄 <b>Живая проверка через Telegram API</b>\n\n'
+                    f'Прогресс: {checked}/{total_checks}',
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+    # Батч-обновление кэша БД и Redis
+    if results:
+        async with AsyncSessionLocal() as db2:
+            for telegram_id, channel_id, is_member in results:
+                await upsert_user_channel_sub(db2, telegram_id, channel_id, is_member)
+            await db2.commit()
+        for telegram_id, channel_id, is_member in results:
+            try:
+                await ChannelSubCache.set_sub_status(telegram_id, channel_id, is_member)
+            except Exception:
+                pass
+
+    # Сбрасываем FSM-кэш и показываем свежий список
     await state.update_data(chan_nonsub_list=None, chan_nonsub_fetched_at=None)
     await _show_list(callback, db, state, page=1)
 
