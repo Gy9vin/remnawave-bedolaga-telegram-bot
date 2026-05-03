@@ -14,11 +14,30 @@ logger = structlog.get_logger(__name__)
 
 
 async def _patch_remnawave_squad(remnawave_uuid: str, squad_uuid: str | None) -> bool:
-    """Меняет externalSquadUuid у пользователя в Remnawave."""
+    """Меняет externalSquadUuid у пользователя в Remnawave.
+
+    Верифицирует результат: после PATCH перечитывает юзера и сверяет externalSquadUuid.
+    Это страховка от глобального retry в API-клиенте, который при A039 (FK violation)
+    делает повтор без externalSquadUuid — успешно, но сквад не применяется.
+    """
     from app.services.remnawave_service import remnawave_service
     try:
         async with remnawave_service.get_api_client() as api:
             await api.update_user(uuid=remnawave_uuid, external_squad_uuid=squad_uuid)
+            # Верификация
+            updated = await api.get_user_by_uuid(remnawave_uuid)
+        if updated is None:
+            logger.error('Не удалось перечитать юзера после смены сквада', remnawave_uuid=remnawave_uuid)
+            return False
+        actual_squad = getattr(updated, 'external_squad_uuid', None)
+        if actual_squad != squad_uuid:
+            logger.error(
+                'Смена сквада не применилась (вероятно UUID не существует в панели)',
+                remnawave_uuid=remnawave_uuid,
+                expected=squad_uuid,
+                actual=actual_squad,
+            )
+            return False
         return True
     except Exception as exc:
         logger.error('Ошибка смены сквада в Remnawave', remnawave_uuid=remnawave_uuid, squad_uuid=squad_uuid, exc=str(exc))
