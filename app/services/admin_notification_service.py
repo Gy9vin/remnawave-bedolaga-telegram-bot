@@ -40,6 +40,7 @@ class NotificationCategory(StrEnum):
     PROMO = 'promo'  # Промокоды, кампании, промогруппы
     PARTNERS = 'partners'  # Партнёрки, выводы, админ-действия
     TICKETS = 'tickets'  # Тикеты (уже существует)
+    WHEEL = 'wheel'  # Колесо удачи: спины, выигрыши
 
 
 logger = structlog.get_logger(__name__)
@@ -65,6 +66,7 @@ class AdminNotificationService:
             NotificationCategory.PROMO: getattr(settings, 'ADMIN_NOTIFICATIONS_PROMO_TOPIC_ID', None),
             NotificationCategory.PARTNERS: getattr(settings, 'ADMIN_NOTIFICATIONS_PARTNERS_TOPIC_ID', None),
             NotificationCategory.TICKETS: self.ticket_topic_id,
+            NotificationCategory.WHEEL: getattr(settings, 'ADMIN_NOTIFICATIONS_WHEEL_TOPIC_ID', None),
         }
 
         # Per-category enabled flags (default True — backwards compatible)
@@ -951,6 +953,71 @@ class AdminNotificationService:
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о продлении', error=e)
+            return False
+
+    async def send_wheel_spin_notification(
+        self,
+        user: User,
+        *,
+        payment_type: str,
+        prize_display_name: str,
+        prize_emoji: str,
+        prize_type: str,
+        prize_value: int,
+        prize_value_kopeks: int,
+        promocode: str | None = None,
+        free_spin_period_days: int | None = None,
+    ) -> bool:
+        """Уведомление об одном спине колеса (по умолчанию используется для бесплатных)."""
+        if not self._is_enabled():
+            return False
+        try:
+            user_display = self._get_user_display(user)
+            user_id_label = self._get_user_identifier_label(user)
+            user_id_display = self._get_user_identifier_display(user)
+            username = getattr(user, 'username', None) or 'отсутствует'
+
+            payment_label_map = {
+                'free': '🎁 Бесплатный',
+                'telegram_stars': '⭐ Telegram Stars',
+                'subscription_days': '📅 Дни подписки',
+            }
+            payment_label = payment_label_map.get(payment_type, payment_type)
+
+            prize_value_line = ''
+            if prize_type == 'balance_bonus':
+                prize_value_line = f'\n💰 Сумма: {settings.format_price(prize_value)}'
+            elif prize_type == 'subscription_days':
+                prize_value_line = f'\n📅 Дней: {prize_value}'
+            elif prize_type == 'traffic_gb':
+                prize_value_line = f'\n📊 GB: {prize_value}'
+            elif prize_type == 'promocode' and promocode:
+                prize_value_line = f'\n🎟️ Промокод: <code>{html.escape(promocode)}</code>'
+            elif prize_type == 'nothing':
+                prize_value_line = '\n🚫 Пусто'
+
+            equiv_line = ''
+            if prize_value_kopeks > 0:
+                equiv_line = f'\n💵 Эквивалент: {settings.format_price(prize_value_kopeks)}'
+
+            cooldown_line = ''
+            if payment_type == 'free' and free_spin_period_days:
+                cooldown_line = f'\n⏱ Следующий бесплатный через {free_spin_period_days} д.'
+
+            message = (
+                f'🎰 <b>СПИН КОЛЕСА УДАЧИ</b>\n\n'
+                f'👤 <b>Пользователь:</b> {user_display}\n'
+                f'🆔 <b>{user_id_label}:</b> {user_id_display}\n'
+                f'📱 <b>Username:</b> @{html.escape(username)}\n\n'
+                f'💳 <b>Способ:</b> {payment_label}\n\n'
+                f'🏆 <b>Выигрыш:</b> {prize_emoji} {html.escape(prize_display_name)}'
+                f'{prize_value_line}{equiv_line}{cooldown_line}\n\n'
+                f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>'
+            )
+
+            return await self._send_message(message, category=NotificationCategory.WHEEL)
+        except Exception as e:
+            logger.error('Ошибка отправки уведомления о спине колеса', error=e)
             return False
 
     async def send_promocode_activation_notification(

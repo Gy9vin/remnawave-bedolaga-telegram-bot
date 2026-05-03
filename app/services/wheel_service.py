@@ -848,6 +848,33 @@ class FortuneWheelService:
 
             await db.commit()
 
+            # 6.5. Уведомление админам (только для бесплатных спинов)
+            if payment_type == WheelSpinPaymentType.FREE.value:
+                try:
+                    from app.services.subscription_renewal_service import (
+                        with_admin_notification_service,
+                    )
+
+                    await with_admin_notification_service(
+                        lambda svc: svc.send_wheel_spin_notification(
+                            user,
+                            payment_type=payment_type,
+                            prize_display_name=selected_prize.display_name,
+                            prize_emoji=selected_prize.emoji,
+                            prize_type=selected_prize.prize_type,
+                            prize_value=selected_prize.prize_value,
+                            prize_value_kopeks=selected_prize.prize_value_kopeks,
+                            promocode=generated_promocode,
+                            free_spin_period_days=getattr(config, 'free_spin_period_days', None),
+                        )
+                    )
+                except Exception as notify_error:
+                    logger.error(
+                        'Ошибка отправки уведомления о бесплатном спине',
+                        user_id=user.id,
+                        error=notify_error,
+                    )
+
             # 7. Формируем результат
             message = self._get_prize_message(selected_prize, generated_promocode)
 
