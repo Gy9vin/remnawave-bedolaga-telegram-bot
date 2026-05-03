@@ -13,41 +13,74 @@ from app.database.models import Subscription, SubscriptionStatus, User, UserStat
 logger = structlog.get_logger(__name__)
 
 
-async def _patch_remnawave_squad(remnawave_uuid: str, squad_uuid: str | None) -> bool:
-    """Меняет externalSquadUuid у пользователя в Remnawave.
+def _extract_squad_uuids(raw) -> list[str]:
+    """Нормализует activeInternalSquads из ответа Remnawave (list[dict] | list[str]) в list[str]."""
+    if not raw:
+        return []
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            uuid_val = item.get('uuid') or item.get('id')
+            if uuid_val:
+                out.append(uuid_val)
+    return out
 
-    Верифицирует результат: после PATCH перечитывает юзера и сверяет externalSquadUuid.
-    Это страховка от глобального retry в API-клиенте, который при A039 (FK violation)
-    делает повтор без externalSquadUuid — успешно, но сквад не применяется.
+
+async def _get_user_squads(remnawave_uuid: str) -> list[str] | None:
+    """Возвращает текущий список UUID activeInternalSquads пользователя из Remnawave."""
+    from app.services.remnawave_service import remnawave_service
+    try:
+        async with remnawave_service.get_api_client() as api:
+            user = await api.get_user_by_uuid(remnawave_uuid)
+        if not user:
+            return None
+        return _extract_squad_uuids(getattr(user, 'active_internal_squads', None))
+    except Exception as exc:
+        logger.error('Ошибка получения сквадов юзера', remnawave_uuid=remnawave_uuid, exc=str(exc))
+        return None
+
+
+async def _set_user_squads(remnawave_uuid: str, squads: list[str]) -> bool:
+    """Заменяет activeInternalSquads у пользователя в Remnawave.
+
+    Верифицирует результат: после PATCH перечитывает юзера и сверяет состав UUID.
     """
     from app.services.remnawave_service import remnawave_service
     try:
         async with remnawave_service.get_api_client() as api:
-            await api.update_user(uuid=remnawave_uuid, external_squad_uuid=squad_uuid)
-            # Верификация
+            await api.update_user(uuid=remnawave_uuid, active_internal_squads=squads)
             updated = await api.get_user_by_uuid(remnawave_uuid)
         if updated is None:
-            logger.error('Не удалось перечитать юзера после смены сквада', remnawave_uuid=remnawave_uuid)
+            logger.error('Не удалось перечитать юзера после смены сквадов', remnawave_uuid=remnawave_uuid)
             return False
-        actual_squad = getattr(updated, 'external_squad_uuid', None)
-        if actual_squad != squad_uuid:
+        actual = set(_extract_squad_uuids(getattr(updated, 'active_internal_squads', None)))
+        expected = set(squads)
+        if actual != expected:
             logger.error(
-                'Смена сквада не применилась (вероятно UUID не существует в панели)',
+                'Смена сквадов не применилась (UUID не существует в панели?)',
                 remnawave_uuid=remnawave_uuid,
-                expected=squad_uuid,
-                actual=actual_squad,
+                expected=sorted(expected),
+                actual=sorted(actual),
             )
             return False
         return True
     except Exception as exc:
-        logger.error('Ошибка смены сквада в Remnawave', remnawave_uuid=remnawave_uuid, squad_uuid=squad_uuid, exc=str(exc))
+        logger.error(
+            'Ошибка смены сквадов в Remnawave',
+            remnawave_uuid=remnawave_uuid,
+            squads=squads,
+            exc=str(exc),
+        )
         return False
 
 
 async def penalize_user(db: AsyncSession, user: User) -> bool:
-    """Перемещает пользователя в штрафной сквад и помечает is_penalized=True.
+    """Перемещает пользователя в штрафной internal-сквад и помечает is_penalized=True.
 
-    Возвращает True при успехе.
+    Сохраняет текущий список activeInternalSquads в users.pre_penalty_squads
+    чтобы корректно восстановить при разблокировке.
     """
     if not settings.PENALTY_SQUAD_ENABLED:
         logger.warning('Штрафной сквад отключён в настройках')
@@ -66,43 +99,76 @@ async def penalize_user(db: AsyncSession, user: User) -> bool:
         logger.debug('Пользователь уже в штрафном скваде', user_id=user.id)
         return True
 
-    ok = await _patch_remnawave_squad(user.remnawave_uuid, penalty_uuid)
+    # Сохраняем текущий список сквадов перед заменой
+    current_squads = await _get_user_squads(user.remnawave_uuid)
+    if current_squads is None:
+        logger.error('Не удалось получить текущие сквады юзера', user_id=user.id)
+        return False
+
+    ok = await _set_user_squads(user.remnawave_uuid, [penalty_uuid])
     if not ok:
         return False
 
     await db.execute(
-        update(User).where(User.id == user.id).values(is_penalized=True)
+        update(User)
+        .where(User.id == user.id)
+        .values(is_penalized=True, pre_penalty_squads=current_squads)
     )
     await db.commit()
 
-    logger.info('Пользователь перемещён в штрафной сквад', user_id=user.id, telegram_id=user.telegram_id, penalty_squad=penalty_uuid)
+    logger.info(
+        'Пользователь перемещён в штрафной сквад',
+        user_id=user.id,
+        telegram_id=user.telegram_id,
+        penalty_squad=penalty_uuid,
+        saved_squads=current_squads,
+    )
     return True
 
 
 async def restore_user(db: AsyncSession, user: User) -> bool:
-    """Возвращает пользователя из штрафного сквада в обычный и снимает is_penalized.
+    """Возвращает пользователя из штрафного сквада в исходный.
 
-    Возвращает True при успехе.
+    Использует users.pre_penalty_squads (сохранённый при penalize_user).
+    Если поле пустое — фолбэк на [DEFAULT_SQUAD_UUID] или [].
     """
     if not user.is_penalized:
         return True
 
     if not user.remnawave_uuid:
-        await db.execute(update(User).where(User.id == user.id).values(is_penalized=False))
+        await db.execute(
+            update(User)
+            .where(User.id == user.id)
+            .values(is_penalized=False, pre_penalty_squads=None)
+        )
         await db.commit()
         return True
 
-    default_uuid = settings.DEFAULT_SQUAD_UUID or None
-    ok = await _patch_remnawave_squad(user.remnawave_uuid, default_uuid)
+    saved = list(getattr(user, 'pre_penalty_squads', None) or [])
+    if not saved:
+        # Фолбэк на дефолтный сквад
+        if settings.DEFAULT_SQUAD_UUID:
+            saved = [settings.DEFAULT_SQUAD_UUID]
+        else:
+            saved = []
+
+    ok = await _set_user_squads(user.remnawave_uuid, saved)
     if not ok:
         return False
 
     await db.execute(
-        update(User).where(User.id == user.id).values(is_penalized=False)
+        update(User)
+        .where(User.id == user.id)
+        .values(is_penalized=False, pre_penalty_squads=None)
     )
     await db.commit()
 
-    logger.info('Пользователь возвращён из штрафного сквада', user_id=user.id, telegram_id=user.telegram_id, default_squad=default_uuid)
+    logger.info(
+        'Пользователь возвращён из штрафного сквада',
+        user_id=user.id,
+        telegram_id=user.telegram_id,
+        restored_squads=saved,
+    )
     return True
 
 

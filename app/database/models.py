@@ -1447,6 +1447,7 @@ class User(Base):
     last_activity = Column(AwareDateTime(), default=func.now())
     remnawave_uuid = Column(String(255), nullable=True, unique=True)
     is_penalized = Column(Boolean, default=False, nullable=False, server_default='false')
+    pre_penalty_squads = Column(JSON, nullable=True)  # сохранённый список internal squads до штрафа
 
     # Cabinet authentication fields
     email = Column(String(255), unique=True, nullable=True, index=True)
