@@ -265,29 +265,36 @@ async def purchase_devices_legacy(
             action='create' if _should_create else 'update',
         )
 
-    # Отправляем уведомление админам
+    # Отправляем уведомление админам (в фоне)
     try:
-        from aiogram import Bot
+        from app.utils.background_admin_notify import dispatch_generic_admin_notification_bg
 
-        from app.services.admin_notification_service import AdminNotificationService
+        captured_user_id = user.id
+        captured_sub_id = subscription.id
+        captured_old = current_devices
+        captured_new = actual_new
+        captured_price = total_price
 
-        if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = Bot(token=settings.BOT_TOKEN)
-            try:
-                notification_service = AdminNotificationService(bot)
-                await notification_service.send_subscription_update_notification(
-                    db=db,
-                    user=user,
-                    subscription=subscription,
+        async def _devices_notify(svc, bg_db):
+            from app.database.crud.subscription import get_subscription_by_id
+            from app.database.crud.user import get_user_by_id
+
+            u = await get_user_by_id(bg_db, captured_user_id)
+            s = await get_subscription_by_id(bg_db, captured_sub_id)
+            if u and s:
+                await svc.send_subscription_update_notification(
+                    db=bg_db,
+                    user=u,
+                    subscription=s,
                     update_type='devices',
-                    old_value=current_devices,
-                    new_value=actual_new,
-                    price_paid=total_price,
+                    old_value=captured_old,
+                    new_value=captured_new,
+                    price_paid=captured_price,
                 )
-            finally:
-                await bot.session.close()
+
+        dispatch_generic_admin_notification_bg(_devices_notify)
     except Exception as e:
-        logger.error('Failed to send admin notification for device purchase', error=e)
+        logger.error('Failed to schedule admin notification for device purchase', error=e)
 
     response: dict[str, Any] = {
         'message': 'Devices added successfully',
@@ -551,29 +558,36 @@ async def purchase_devices(
                 'User purchased devices for kopeks', user_id=user.id, devices=request.devices, price_kopeks=price_kopeks
             )
 
-        # Отправляем уведомление админам
+        # Отправляем уведомление админам (в фоне)
         try:
-            from aiogram import Bot
+            from app.utils.background_admin_notify import dispatch_generic_admin_notification_bg
 
-            from app.services.admin_notification_service import AdminNotificationService
+            captured_user_id = user.id
+            captured_sub_id = subscription.id
+            captured_old = current_devices
+            captured_new = subscription.device_limit
+            captured_price = price_kopeks
 
-            if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-                bot = Bot(token=settings.BOT_TOKEN)
-                try:
-                    notification_service = AdminNotificationService(bot)
-                    await notification_service.send_subscription_update_notification(
-                        db=db,
-                        user=user,
-                        subscription=subscription,
+            async def _devices_notify(svc, bg_db):
+                from app.database.crud.subscription import get_subscription_by_id
+                from app.database.crud.user import get_user_by_id
+
+                u = await get_user_by_id(bg_db, captured_user_id)
+                s = await get_subscription_by_id(bg_db, captured_sub_id)
+                if u and s:
+                    await svc.send_subscription_update_notification(
+                        db=bg_db,
+                        user=u,
+                        subscription=s,
                         update_type='devices',
-                        old_value=current_devices,
-                        new_value=subscription.device_limit,
-                        price_paid=price_kopeks,
+                        old_value=captured_old,
+                        new_value=captured_new,
+                        price_paid=captured_price,
                     )
-                finally:
-                    await bot.session.close()
+
+            dispatch_generic_admin_notification_bg(_devices_notify)
         except Exception as e:
-            logger.error('Failed to send admin notification for device purchase', error=e)
+            logger.error('Failed to schedule admin notification for device purchase', error=e)
 
         response: dict[str, Any] = {
             'success': True,

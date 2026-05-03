@@ -470,30 +470,23 @@ async def switch_tariff(
     await db.refresh(user)
     await db.refresh(subscription)
 
-    # Отправляем уведомление админам о смене тарифа
+    # Отправляем уведомление админам о смене тарифа (в фоне)
     try:
-        from aiogram import Bot
+        from app.utils.background_admin_notify import (
+            dispatch_subscription_purchase_notification_bg,
+        )
 
-        from app.services.admin_notification_service import AdminNotificationService
-
-        if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = Bot(token=settings.BOT_TOKEN)
-            try:
-                notification_service = AdminNotificationService(bot)
-                await notification_service.send_subscription_purchase_notification(
-                    db=db,
-                    user=user,
-                    subscription=subscription,
-                    transaction=switch_transaction if upgrade_cost > 0 else None,
-                    period_days=remaining_days if remaining_days > 0 else new_period_days,
-                    was_trial_conversion=False,
-                    amount_kopeks=upgrade_cost,
-                    purchase_type='tariff_switch',
-                )
-            finally:
-                await bot.session.close()
+        dispatch_subscription_purchase_notification_bg(
+            user_id=user.id,
+            subscription_id=subscription.id,
+            transaction_id=switch_transaction.id if upgrade_cost > 0 and switch_transaction else None,
+            period_days=remaining_days if remaining_days > 0 else new_period_days,
+            was_trial_conversion=False,
+            amount_kopeks=upgrade_cost,
+            purchase_type='tariff_switch',
+        )
     except Exception as e:
-        logger.error('Failed to send admin notification for tariff switch', error=e)
+        logger.error('Failed to schedule admin notification for tariff switch', error=e)
 
     # Refresh expired objects after db.commit() in _record_subscription_event
     await db.refresh(subscription)

@@ -68,28 +68,28 @@ async def activate_promocode(
         balance_before_rubles = result.get('balance_before_kopeks', 0) / 100
         balance_after_rubles = result.get('balance_after_kopeks', 0) / 100
 
-        # Send admin notification (same as bot handler)
-        if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            try:
-                from aiogram import Bot
+        # Send admin notification (background)
+        try:
+            from app.utils.background_admin_notify import dispatch_generic_admin_notification_bg
 
-                from app.services.admin_notification_service import AdminNotificationService
+            captured_user_id = user.id
+            captured_promo = result.get('promocode', {'code': request.code.strip()})
+            captured_desc = result.get('description', '')
+            captured_bb = result.get('balance_before_kopeks')
+            captured_ba = result.get('balance_after_kopeks')
 
-                bot = Bot(token=settings.BOT_TOKEN)
-                try:
-                    notification_service = AdminNotificationService(bot)
-                    await notification_service.send_promocode_activation_notification(
-                        db,
-                        user,
-                        result.get('promocode', {'code': request.code.strip()}),
-                        result.get('description', ''),
-                        result.get('balance_before_kopeks'),
-                        result.get('balance_after_kopeks'),
+            async def _promo_notify(svc, bg_db):
+                from app.database.crud.user import get_user_by_id
+
+                u = await get_user_by_id(bg_db, captured_user_id)
+                if u:
+                    await svc.send_promocode_activation_notification(
+                        bg_db, u, captured_promo, captured_desc, captured_bb, captured_ba,
                     )
-                finally:
-                    await bot.session.close()
-            except Exception:
-                pass
+
+            dispatch_generic_admin_notification_bg(_promo_notify)
+        except Exception:
+            pass
 
         return PromocodeActivateResponse(
             success=True,

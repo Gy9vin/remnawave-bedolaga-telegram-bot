@@ -510,31 +510,25 @@ async def submit_purchase(
             except Exception as notif_error:
                 logger.warning('Failed to send subscription notification to', email=user.email, notif_error=notif_error)
 
-        # Отправляем уведомление админам о покупке подписки
+        # Отправляем уведомление админам о покупке подписки (в фоне)
         try:
-            from aiogram import Bot
+            from app.utils.background_admin_notify import (
+                dispatch_subscription_purchase_notification_bg,
+            )
 
-            from app.services.admin_notification_service import AdminNotificationService
-
-            if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-                bot = Bot(token=settings.BOT_TOKEN)
-                try:
-                    notification_service = AdminNotificationService(bot)
-                    is_new_subscription = result.get('was_trial_conversion') or not context.subscription
-                    await notification_service.send_subscription_purchase_notification(
-                        db=db,
-                        user=user,
-                        subscription=subscription,
-                        transaction=result.get('transaction'),
-                        period_days=selection.period.days,
-                        was_trial_conversion=result.get('was_trial_conversion', False),
-                        amount_kopeks=pricing.final_total,
-                        purchase_type='renewal' if not is_new_subscription else 'first_purchase',
-                    )
-                finally:
-                    await bot.session.close()
+            is_new_subscription = result.get('was_trial_conversion') or not context.subscription
+            transaction = result.get('transaction')
+            dispatch_subscription_purchase_notification_bg(
+                user_id=user.id,
+                subscription_id=subscription.id,
+                transaction_id=transaction.id if transaction else None,
+                period_days=selection.period.days,
+                was_trial_conversion=result.get('was_trial_conversion', False),
+                amount_kopeks=pricing.final_total,
+                purchase_type='renewal' if not is_new_subscription else 'first_purchase',
+            )
         except Exception as e:
-            logger.error('Failed to send admin notification for subscription purchase', error=e)
+            logger.error('Failed to schedule admin notification for subscription purchase', error=e)
 
         # Refresh expired objects after db.commit() in _record_subscription_event
         await db.refresh(subscription)
@@ -1049,32 +1043,24 @@ async def purchase_tariff(
 
         # Отправляем уведомление админам о покупке/продлении тарифа
         try:
-            from aiogram import Bot
+            from app.utils.background_admin_notify import (
+                dispatch_subscription_purchase_notification_bg,
+            )
 
-            from app.services.admin_notification_service import AdminNotificationService
-
-            if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-                bot = Bot(token=settings.BOT_TOKEN)
-                try:
-                    notification_service = AdminNotificationService(bot)
-                    # Определяем тип покупки: новая подписка или продление
-                    was_new_subscription = (
-                        subscription.start_date and (datetime.now(UTC) - subscription.start_date).total_seconds() < 60
-                    )
-                    await notification_service.send_subscription_purchase_notification(
-                        db=db,
-                        user=user,
-                        subscription=subscription,
-                        transaction=transaction,
-                        period_days=period_days,
-                        was_trial_conversion=False,
-                        amount_kopeks=price_kopeks,
-                        purchase_type='renewal' if not was_new_subscription else 'first_purchase',
-                    )
-                finally:
-                    await bot.session.close()
+            was_new_subscription = (
+                subscription.start_date and (datetime.now(UTC) - subscription.start_date).total_seconds() < 60
+            )
+            dispatch_subscription_purchase_notification_bg(
+                user_id=user.id,
+                subscription_id=subscription.id,
+                transaction_id=transaction.id if transaction else None,
+                period_days=period_days,
+                was_trial_conversion=False,
+                amount_kopeks=price_kopeks,
+                purchase_type='renewal' if not was_new_subscription else 'first_purchase',
+            )
         except Exception as e:
-            logger.error('Failed to send admin notification for tariff purchase', error=e)
+            logger.error('Failed to schedule admin notification for tariff purchase', error=e)
 
         return response
 
@@ -1325,23 +1311,27 @@ async def activate_trial(
             action='create',
         )
 
-    # Send admin notification about trial activation
+    # Send admin notification about trial activation (background)
     try:
-        from aiogram import Bot
+        from app.utils.background_admin_notify import dispatch_generic_admin_notification_bg
 
-        from app.services.admin_notification_service import AdminNotificationService
+        captured_user_id = user.id
+        captured_sub_id = subscription.id
+        captured_amount = settings.TRIAL_ACTIVATION_PRICE if requires_payment else None
 
-        if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
-            bot = Bot(token=settings.BOT_TOKEN)
-            try:
-                notification_service = AdminNotificationService(bot)
-                charged_amount = settings.TRIAL_ACTIVATION_PRICE if requires_payment else None
-                await notification_service.send_trial_activation_notification(
-                    db, user, subscription, charged_amount_kopeks=charged_amount
+        async def _trial_notify(svc, bg_db):
+            from app.database.crud.subscription import get_subscription_by_id
+            from app.database.crud.user import get_user_by_id
+
+            u = await get_user_by_id(bg_db, captured_user_id)
+            s = await get_subscription_by_id(bg_db, captured_sub_id)
+            if u and s:
+                await svc.send_trial_activation_notification(
+                    bg_db, u, s, charged_amount_kopeks=captured_amount
                 )
-            finally:
-                await bot.session.close()
+
+        dispatch_generic_admin_notification_bg(_trial_notify)
     except Exception as e:
-        logger.error('Failed to send trial activation notification', error=e)
+        logger.error('Failed to schedule trial activation notification', error=e)
 
     return _subscription_to_response(subscription, user=user)
