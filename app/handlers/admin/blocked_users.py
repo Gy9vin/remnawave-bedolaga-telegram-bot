@@ -109,6 +109,7 @@ class BlockedUsersText(Enum):
     BUTTON_PENALTY_ALL = '🚫 Переместить всех в штрафной'
     BUTTON_PENALTY_BY_ID = '🔢 Загнать в штрафной по ID'
     BUTTON_RESTORE_BY_ID = '✅ Вернуть из штрафного по ID'
+    BUTTON_RESTORE_ALL = '♻️ Вернуть всех из штрафного'
     BUTTON_DELETE_DB = '🗑 Удалить из БД'
     BUTTON_DELETE_REMNAWAVE = '🌐 Удалить из Remnawave'
     BUTTON_DELETE_BOTH = '💀 Удалить везде'
@@ -134,6 +135,8 @@ class BlockedUsersCallback(Enum):
     PENALTY_BY_ID_CONFIRM = 'admin_blocked_penalty_by_id_confirm_'
     RESTORE_BY_ID = 'admin_blocked_restore_by_id'
     RESTORE_BY_ID_CONFIRM = 'admin_blocked_restore_by_id_confirm_'
+    RESTORE_ALL = 'admin_blocked_restore_all'
+    RESTORE_ALL_CONFIRM = 'admin_blocked_restore_all_confirm'
     VIEW_LIST = 'admin_blocked_list'
     VIEW_LIST_PAGE = 'admin_blocked_list_page_'
     ACTION_DELETE_DB = 'admin_blocked_action_db'
@@ -226,6 +229,14 @@ def get_blocked_users_menu_keyboard(
                 InlineKeyboardButton(
                     text=BlockedUsersText.BUTTON_RESTORE_BY_ID.value,
                     callback_data=BlockedUsersCallback.RESTORE_BY_ID.value,
+                )
+            ]
+        )
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=BlockedUsersText.BUTTON_RESTORE_ALL.value,
+                    callback_data=BlockedUsersCallback.RESTORE_ALL.value,
                 )
             ]
         )
@@ -1344,6 +1355,116 @@ async def restore_by_id_execute(
 
 
 # =============================================================================
+# Restore ALL from penalty squad
+# =============================================================================
+
+
+@admin_required
+@error_handler
+async def restore_all_confirm(
+    callback: types.CallbackQuery,
+    db_user: User,
+    db: AsyncSession,
+    state: FSMContext,
+) -> None:
+    """Подтверждение массового возврата всех is_penalized=True."""
+    if not settings.PENALTY_SQUAD_ENABLED:
+        await callback.answer('Штрафной сквад отключён в настройках.', show_alert=True)
+        return
+
+    from sqlalchemy import select, func
+
+    result = await db.execute(
+        select(func.count(User.id)).where(User.is_penalized.is_(True))
+    )
+    total = result.scalar() or 0
+
+    if total == 0:
+        await callback.answer('Сейчас никого нет в штрафном.', show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f'♻️ <b>Вернуть всех из штрафного</b>\n\n'
+        f'Сейчас в штрафном: <b>{total}</b> чел.\n'
+        f'Каждому будет восстановлен исходный список сквадов '
+        f'(из <code>users.pre_penalty_squads</code>), либо '
+        f'<code>{settings.DEFAULT_SQUAD_UUID or "—"}</code> если ничего не сохранено.\n\n'
+        f'Подтвердить?',
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text='✅ Вернуть всех',
+                    callback_data=BlockedUsersCallback.RESTORE_ALL_CONFIRM.value,
+                ),
+                InlineKeyboardButton(
+                    text='❌ Отмена',
+                    callback_data=BlockedUsersCallback.MENU.value,
+                ),
+            ],
+        ]),
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def restore_all_execute(
+    callback: types.CallbackQuery,
+    db_user: User,
+    db: AsyncSession,
+    state: FSMContext,
+) -> None:
+    """Массовый возврат всех is_penalized=True."""
+    from sqlalchemy import select
+
+    from app.services.penalty_squad_service import restore_user
+
+    result = await db.execute(select(User).where(User.is_penalized.is_(True)))
+    users = list(result.scalars().all())
+
+    if not users:
+        await callback.answer('Никого нет в штрафном.', show_alert=True)
+        return
+
+    total = len(users)
+    success = 0
+    failed = 0
+
+    await callback.message.edit_text(f'⏳ Возвращаю 0/{total}...', parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+    last_edit = datetime.now(UTC)
+    for i, target in enumerate(users, 1):
+        ok = await restore_user(db, target)
+        if ok:
+            success += 1
+        else:
+            failed += 1
+
+        now = datetime.now(UTC)
+        if (now - last_edit).total_seconds() >= 3:
+            last_edit = now
+            try:
+                await callback.message.edit_text(
+                    f'⏳ Возвращаю {i}/{total}... ✅{success} ❌{failed}',
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+    await callback.message.edit_text(
+        f'✅ <b>Готово!</b>\n\n'
+        f'• Возвращено: {success}\n'
+        f'• Ошибок: {failed}',
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='🏠 Меню', callback_data=BlockedUsersCallback.MENU.value)],
+        ]),
+    )
+
+
+# =============================================================================
 # Registration
 # =============================================================================
 
@@ -1455,4 +1576,14 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.message.register(
         handle_restore_id_input,
         BlockedUsersStates.entering_restore_id,
+    )
+
+    # Массовый возврат
+    dp.callback_query.register(
+        restore_all_confirm,
+        F.data == BlockedUsersCallback.RESTORE_ALL.value,
+    )
+    dp.callback_query.register(
+        restore_all_execute,
+        F.data == BlockedUsersCallback.RESTORE_ALL_CONFIRM.value,
     )
