@@ -60,6 +60,10 @@ class SubscriptionData(BaseModel):
     # Modem
     modem_enabled: bool = False
     traffic_reset_mode: str | None = None
+    # Fallback-сквад (истечение/трафик): юзер сейчас в спец-скваде с ограниченным VPN
+    expiry_fallback_active: bool = False
+    traffic_fallback_active: bool = False
+    fallback_reason: str | None = None  # 'expired' | 'traffic' | None
 
     class Config:
         from_attributes = True

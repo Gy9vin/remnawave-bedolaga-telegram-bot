@@ -232,4 +232,11 @@ def _subscription_to_response(
         tariff_id=tariff_id,
         tariff_name=tariff_name,
         traffic_reset_mode=traffic_reset_mode,
+        expiry_fallback_active=getattr(subscription, 'expiry_fallback_active', False) or False,
+        traffic_fallback_active=getattr(subscription, 'traffic_fallback_active', False) or False,
+        fallback_reason=(
+            'expired' if getattr(subscription, 'expiry_fallback_active', False)
+            else 'traffic' if getattr(subscription, 'traffic_fallback_active', False)
+            else None
+        ),
     )
