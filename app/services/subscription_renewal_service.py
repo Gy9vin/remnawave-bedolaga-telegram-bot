@@ -620,6 +620,26 @@ class SubscriptionRenewalService:
         await db.refresh(user)
         await db.refresh(subscription_after)
 
+        # Если подписка была в fallback (истекла → переехала в спец-сквад) — возвращаем
+        if (
+            subscription_after.expiry_fallback_active
+            or subscription_after.traffic_fallback_active
+        ):
+            try:
+                from app.services.expiry_fallback_service import restore_from_fallback
+
+                await restore_from_fallback(
+                    db,
+                    subscription_after,
+                    new_expire_at=subscription_after.end_date,
+                )
+            except Exception as restore_error:
+                logger.error(
+                    'Ошибка возврата из fallback при продлении',
+                    subscription_id=subscription_after.id,
+                    error=restore_error,
+                )
+
         if transaction and old_end_date and subscription_after.end_date:
             await with_admin_notification_service(
                 lambda service: service.send_subscription_extension_notification(

@@ -726,6 +726,26 @@ async def extend_subscription(
     logger.info('✅ Подписка продлена до', end_date=subscription.end_date)
     logger.info('📊 Новые параметры: статус=, окончание', status=subscription.status, end_date=subscription.end_date)
 
+    # Авто-возврат из fallback-сквада при продлении (если подписка туда переехала)
+    if days > 0 and (
+        getattr(subscription, 'expiry_fallback_active', False)
+        or getattr(subscription, 'traffic_fallback_active', False)
+    ):
+        try:
+            from app.services.expiry_fallback_service import restore_from_fallback
+
+            await restore_from_fallback(
+                db,
+                subscription,
+                new_expire_at=subscription.end_date,
+            )
+        except Exception as fallback_err:
+            logger.error(
+                'Ошибка авто-возврата из fallback при extend_subscription',
+                subscription_id=subscription.id,
+                error=fallback_err,
+            )
+
     return subscription
 
 
@@ -772,6 +792,20 @@ async def add_subscription_traffic(db: AsyncSession, subscription: Subscription,
         gb=gb,
         new_expires_at=new_expires_at.strftime('%d.%m.%Y'),
     )
+
+    # Авто-возврат из traffic-fallback при докупке трафика
+    if getattr(subscription, 'traffic_fallback_active', False):
+        try:
+            from app.services.expiry_fallback_service import restore_from_fallback
+
+            await restore_from_fallback(db, subscription)
+        except Exception as fallback_err:
+            logger.error(
+                'Ошибка авто-возврата из fallback при докупке трафика',
+                subscription_id=subscription.id,
+                error=fallback_err,
+            )
+
     return subscription
 
 

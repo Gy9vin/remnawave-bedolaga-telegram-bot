@@ -443,6 +443,19 @@ class MonitoringService:
 
                 await expire_subscription(db, subscription)
 
+                # Fallback-сквад: вместо disable_user — переезд в спец-сквад с минимальным VPN
+                if settings.EXPIRY_FALLBACK_ENABLED and settings.EXPIRY_FALLBACK_SQUAD_UUID:
+                    try:
+                        from app.services.expiry_fallback_service import move_to_fallback
+
+                        await move_to_fallback(db, subscription, reason='expired')
+                    except Exception as fallback_error:
+                        logger.error(
+                            'Ошибка перевода в fallback при истечении',
+                            subscription_id=subscription.id,
+                            error=fallback_error,
+                        )
+
                 user = await get_user_by_id(db, subscription.user_id)
                 if user and self.bot:
                     # Skip notification if user has another ACTIVE subscription (multi-tariff)

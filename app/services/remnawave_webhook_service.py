@@ -863,6 +863,23 @@ class RemnaWaveWebhookService:
             logger.info(
                 'Webhook: subscription limited (traffic) for user', subscription_id=subscription.id, user_id=user.id
             )
+
+            # Fallback при исчерпании трафика — переезд в спец-сквад
+            if (
+                settings.TRAFFIC_FALLBACK_ENABLED
+                and settings.EXPIRY_FALLBACK_SQUAD_UUID
+                and not subscription.traffic_fallback_active
+            ):
+                try:
+                    from app.services.expiry_fallback_service import move_to_fallback
+
+                    await move_to_fallback(db, subscription, reason='traffic')
+                except Exception as fallback_err:
+                    logger.error(
+                        'Ошибка перевода в fallback при превышении трафика',
+                        subscription_id=subscription.id,
+                        error=fallback_err,
+                    )
         else:
             await db.commit()
 
@@ -883,6 +900,19 @@ class RemnaWaveWebhookService:
         if subscription.status in (SubscriptionStatus.DISABLED.value, SubscriptionStatus.LIMITED.value):
             await reactivate_subscription(db, subscription)
         logger.info('Webhook: traffic reset for subscription , user', subscription_id=subscription.id, user_id=user.id)
+
+        # Если был в traffic-fallback — возвращаем
+        if subscription.traffic_fallback_active:
+            try:
+                from app.services.expiry_fallback_service import restore_from_fallback
+
+                await restore_from_fallback(db, subscription)
+            except Exception as fallback_err:
+                logger.error(
+                    'Ошибка возврата из fallback при сбросе трафика',
+                    subscription_id=subscription.id,
+                    error=fallback_err,
+                )
 
         await self._notify_user(
             user,
