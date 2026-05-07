@@ -13,6 +13,7 @@ from .admin_campaigns import router as admin_campaigns_router
 from .admin_channel_reports import router as admin_channel_reports_router
 from .admin_channels import router as admin_channels_router
 from .admin_email_templates import router as admin_email_templates_router
+from .admin_expiry_fallback import router as admin_expiry_fallback_router
 from .admin_happ_management import router as admin_happ_management_router
 from .admin_info_pages import router as admin_info_pages_router
 from .admin_landings import router as admin_landings_router
@@ -134,6 +135,7 @@ router.include_router(admin_payments_router)
 router.include_router(admin_promo_offers_router)
 router.include_router(admin_remnawave_router)
 router.include_router(admin_email_templates_router)
+router.include_router(admin_expiry_fallback_router)
 router.include_router(admin_updates_router)
 router.include_router(admin_traffic_router)
 router.include_router(admin_pinned_messages_router)
