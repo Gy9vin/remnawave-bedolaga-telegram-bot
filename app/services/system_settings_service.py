@@ -300,6 +300,13 @@ class BotConfigurationService:
         'DEFAULT_SQUAD_UUID': 'SQUAD_PENALTY',
         'PENALTY_AUTO_SCAN_ENABLED': 'SQUAD_PENALTY',
         'PENALTY_AUTO_SCAN_INTERVAL_HOURS': 'SQUAD_PENALTY',
+        'EXPIRY_FALLBACK_ENABLED': 'EXPIRY_FALLBACK',
+        'EXPIRY_FALLBACK_SQUAD_UUID': 'EXPIRY_FALLBACK',
+        'EXPIRY_FALLBACK_DAYS': 'EXPIRY_FALLBACK',
+        'TRAFFIC_FALLBACK_ENABLED': 'EXPIRY_FALLBACK',
+        'EXPIRED_CLEANUP_ENABLED': 'EXPIRY_FALLBACK',
+        'EXPIRED_CLEANUP_REQUIRE_ZERO_BALANCE': 'EXPIRY_FALLBACK',
+        'EXPIRED_CLEANUP_INTERVAL_HOURS': 'EXPIRY_FALLBACK',
         'SUPPORT_TOPUP_ENABLED': 'PAYMENT',
         'ENABLE_NOTIFICATIONS': 'NOTIFICATIONS',
         'NOTIFICATION_RETRY_ATTEMPTS': 'NOTIFICATIONS',
@@ -608,6 +615,57 @@ class BotConfigurationService:
             'description': 'Интервал автоматического сканирования в часах.',
             'format': 'Целое число часов.',
             'example': '1',
+        },
+        'EXPIRY_FALLBACK_ENABLED': {
+            'description': (
+                'При истечении подписки переводить пользователя в специальный «fallback» сквад '
+                '(только Telegram + банки + кабинет) вместо полного отключения. '
+                'Пользователь сохраняет минимальный VPN, чтобы суметь продлить подписку.'
+            ),
+            'format': 'Булево значение.',
+            'example': 'true',
+            'warning': 'Требует EXPIRY_FALLBACK_SQUAD_UUID.',
+        },
+        'EXPIRY_FALLBACK_SQUAD_UUID': {
+            'description': 'UUID fallback-сквада в Remnawave (Telegram-only / банки).',
+            'format': 'UUID сквада.',
+            'example': 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+            'warning': 'Сквад должен существовать в Remnawave и быть настроен на пропуск только нужных доменов.',
+        },
+        'EXPIRY_FALLBACK_DAYS': {
+            'description': (
+                'Сколько дней держать пользователя в fallback после истечения подписки. '
+                'По истечению — полностью отключается.'
+            ),
+            'format': 'Целое число дней.',
+            'example': '90',
+        },
+        'TRAFFIC_FALLBACK_ENABLED': {
+            'description': (
+                'При исчерпании трафика переводить пользователя в fallback-сквад вместо отключения. '
+                'Возврат — при сбросе трафика по периоду или докупке.'
+            ),
+            'format': 'Булево значение.',
+            'example': 'true',
+            'dependencies': 'EXPIRY_FALLBACK_SQUAD_UUID',
+        },
+        'EXPIRED_CLEANUP_ENABLED': {
+            'description': (
+                'Автоматически удалять старых EXPIRED-пользователей, у которых истёк '
+                'и срок fallback (EXPIRY_FALLBACK_DAYS).'
+            ),
+            'format': 'Булево значение.',
+            'example': 'false',
+        },
+        'EXPIRED_CLEANUP_REQUIRE_ZERO_BALANCE': {
+            'description': 'Удалять только пользователей с нулевым балансом.',
+            'format': 'Булево значение.',
+            'example': 'true',
+        },
+        'EXPIRED_CLEANUP_INTERVAL_HOURS': {
+            'description': 'Интервал автоматической очистки в часах.',
+            'format': 'Целое число часов.',
+            'example': '24',
         },
         'MULTI_TARIFF_ENABLED': {
             'description': (

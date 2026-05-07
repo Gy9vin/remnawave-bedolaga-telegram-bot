@@ -331,6 +331,15 @@ class Settings(BaseSettings):
     PENALTY_AUTO_SCAN_ENABLED: bool = False
     PENALTY_AUTO_SCAN_INTERVAL_HOURS: int = 1
 
+    # Fallback-сквад при истечении подписки / лимита трафика
+    EXPIRY_FALLBACK_ENABLED: bool = False
+    EXPIRY_FALLBACK_SQUAD_UUID: str | None = None
+    EXPIRY_FALLBACK_DAYS: int = 90  # сколько дней держим в fallback до полного отключения
+    TRAFFIC_FALLBACK_ENABLED: bool = False
+    EXPIRED_CLEANUP_ENABLED: bool = False
+    EXPIRED_CLEANUP_REQUIRE_ZERO_BALANCE: bool = True
+    EXPIRED_CLEANUP_INTERVAL_HOURS: int = 24
+
     # Настройки конструктора меню (API)
     MENU_LAYOUT_ENABLED: bool = False  # Включить управление меню через API
 

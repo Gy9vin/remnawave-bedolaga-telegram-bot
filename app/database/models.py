@@ -1642,6 +1642,16 @@ class Subscription(Base):
     # Флаг для защиты от повторного автопродления перед истечением
     auto_renewed_before_expiry = Column(Boolean, default=False, nullable=False)
 
+    # Fallback при истечении подписки/исчерпании трафика
+    # При активном fallback в Remnawave подменяются externalSquadUuid, expireAt, trafficLimitBytes;
+    # оригинальные значения сохраняются в pre_expiry_* для восстановления при продлении.
+    expiry_fallback_active = Column(Boolean, default=False, nullable=False, server_default='false')
+    expiry_fallback_started_at = Column(AwareDateTime(), nullable=True)
+    traffic_fallback_active = Column(Boolean, default=False, nullable=False, server_default='false')
+    pre_expiry_squads = Column(JSONB, nullable=True)
+    pre_expiry_traffic_limit_bytes = Column(BigInteger, nullable=True)
+    pre_expiry_expire_at = Column(AwareDateTime(), nullable=True)
+
     created_at = Column(AwareDateTime(), default=func.now())
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now())
 
