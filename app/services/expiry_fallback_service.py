@@ -271,6 +271,16 @@ async def move_to_fallback(
         fallback_squad=fallback_uuid,
         grace_days=_grace_days(),
     )
+
+    # Уведомления в фоне (админам + юзеру)
+    _dispatch_fallback_notifications(
+        user_id=subscription.user_id,
+        subscription_id=subscription.id,
+        action='moved',
+        reason=reason,
+        original_squads=original_squads,
+        fallback_squad=fallback_uuid,
+    )
     return True
 
 
@@ -314,16 +324,120 @@ async def restore_from_fallback(
     if not ok:
         return False
 
+    captured_user_id = subscription.user_id
+    captured_sub_id = subscription.id
+    captured_squads = list(saved_squads)
+
     _clear_fallback_state(subscription)
     await db.commit()
 
     logger.info(
         '✅ Подписка возвращена из fallback',
-        subscription_id=subscription.id,
-        user_id=subscription.user_id,
-        restored_squads=saved_squads,
+        subscription_id=captured_sub_id,
+        user_id=captured_user_id,
+        restored_squads=captured_squads,
+    )
+
+    # Уведомления в фоне
+    _dispatch_fallback_notifications(
+        user_id=captured_user_id,
+        subscription_id=captured_sub_id,
+        action='restored',
+        reason='extension',
+        original_squads=captured_squads,
+        fallback_squad=None,
     )
     return True
+
+
+def _dispatch_fallback_notifications(
+    *,
+    user_id: int,
+    subscription_id: int,
+    action: str,
+    reason: str | None,
+    original_squads: list[str] | None,
+    fallback_squad: str | None,
+) -> None:
+    """Отправляет админу + юзеру уведомление о переезде в фоне (не блокирует основной поток)."""
+    try:
+        from app.utils.background_admin_notify import dispatch_generic_admin_notification_bg
+
+        async def _admin_notify(svc, bg_db):
+            from app.database.crud.user import get_user_by_id
+
+            u = await get_user_by_id(bg_db, user_id)
+            if u:
+                await svc.send_subscription_fallback_notification(
+                    u,
+                    subscription_id,
+                    action=action,
+                    reason=reason,
+                    original_squads=original_squads,
+                    fallback_squad=fallback_squad,
+                )
+
+        dispatch_generic_admin_notification_bg(_admin_notify)
+    except Exception as e:
+        logger.error('Не удалось запланировать админ-уведомление о fallback', error=str(e))
+
+    # Уведомление пользователю в TG (если бот не заблокирован)
+    try:
+        import asyncio
+
+        async def _user_notify():
+            from aiogram import Bot
+
+            from app.config import settings as app_settings
+            from app.database.crud.user import get_user_by_id
+            from app.database.database import AsyncSessionLocal
+
+            if not app_settings.BOT_TOKEN:
+                return
+
+            async with AsyncSessionLocal() as bg_db:
+                u = await get_user_by_id(bg_db, user_id)
+                if not u or not u.telegram_id:
+                    return
+
+                if action == 'moved':
+                    if reason == 'expired':
+                        text = (
+                            '⚠️ <b>Подписка истекла</b>\n\n'
+                            'VPN сейчас работает <b>только для Telegram, банков и кабинета</b>, '
+                            'чтобы ты мог продлить.\n\n'
+                            'Чтобы вернуть полный доступ — продли подписку.'
+                        )
+                    else:  # traffic
+                        text = (
+                            '⚠️ <b>Трафик закончился</b>\n\n'
+                            'VPN сейчас работает <b>только для Telegram, банков и кабинета</b>, '
+                            'чтобы ты мог докупить трафик.\n\n'
+                            'Чтобы вернуть полный доступ — докупи трафик или дождись сброса по периоду.'
+                        )
+                else:
+                    text = '✅ <b>Полный доступ восстановлен</b>\n\nVPN работает в обычном режиме. Спасибо!'
+
+                bot = Bot(token=app_settings.BOT_TOKEN)
+                try:
+                    await bot.send_message(u.telegram_id, text, parse_mode='HTML')
+                except Exception as send_err:
+                    logger.debug(
+                        'Не удалось отправить TG-уведомление о fallback (вероятно бот заблокирован)',
+                        user_id=user_id,
+                        error=str(send_err),
+                    )
+                finally:
+                    try:
+                        await bot.session.close()
+                    except Exception:
+                        pass
+
+        asyncio.create_task(_user_notify())
+    except RuntimeError:
+        pass
+    except Exception as e:
+        logger.error('Не удалось запланировать TG-уведомление о fallback', error=str(e))
 
 
 def _clear_fallback_state(subscription: Subscription) -> None:

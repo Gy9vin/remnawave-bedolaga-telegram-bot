@@ -41,6 +41,7 @@ class NotificationCategory(StrEnum):
     PARTNERS = 'partners'  # Партнёрки, выводы, админ-действия
     TICKETS = 'tickets'  # Тикеты (уже существует)
     WHEEL = 'wheel'  # Колесо удачи: спины, выигрыши
+    FALLBACK = 'fallback'  # Переезды в fallback-сквад при истечении/трафике
 
 
 logger = structlog.get_logger(__name__)
@@ -67,6 +68,7 @@ class AdminNotificationService:
             NotificationCategory.PARTNERS: getattr(settings, 'ADMIN_NOTIFICATIONS_PARTNERS_TOPIC_ID', None),
             NotificationCategory.TICKETS: self.ticket_topic_id,
             NotificationCategory.WHEEL: getattr(settings, 'ADMIN_NOTIFICATIONS_WHEEL_TOPIC_ID', None),
+            NotificationCategory.FALLBACK: getattr(settings, 'ADMIN_NOTIFICATIONS_FALLBACK_TOPIC_ID', None),
         }
 
         # Per-category enabled flags (default True — backwards compatible)
@@ -1018,6 +1020,69 @@ class AdminNotificationService:
             return await self._send_message(message, category=NotificationCategory.WHEEL)
         except Exception as e:
             logger.error('Ошибка отправки уведомления о спине колеса', error=e)
+            return False
+
+    async def send_subscription_fallback_notification(
+        self,
+        user: User,
+        subscription_id: int,
+        *,
+        action: str,
+        reason: str | None = None,
+        original_squads: list[str] | None = None,
+        fallback_squad: str | None = None,
+    ) -> bool:
+        """Уведомление о переезде в/из fallback-сквада.
+
+        action: 'moved' | 'restored'
+        reason: 'expired' | 'traffic' | 'extension' | 'topup' | 'reconcile_external'
+        """
+        if not self._is_enabled():
+            return False
+        try:
+            user_display = self._get_user_display(user)
+            user_id_label = self._get_user_identifier_label(user)
+            user_id_display = self._get_user_identifier_display(user)
+            username = getattr(user, 'username', None) or 'отсутствует'
+
+            reason_label_map = {
+                'expired': 'Подписка истекла',
+                'traffic': 'Исчерпан трафик',
+                'extension': 'Продление подписки',
+                'topup': 'Докупка трафика',
+                'reconcile_external': 'Внешнее продление через панель',
+                'reconcile_squad_changed': 'Сквад вручную изменён в панели',
+                'traffic_reset': 'Сброс трафика',
+            }
+            reason_text = reason_label_map.get(reason or '', reason or '—')
+
+            if action == 'moved':
+                title = '🔄 <b>ПЕРЕЕЗД В FALLBACK-СКВАД</b>'
+                action_label = '↓ Куда:'
+                target = f'<code>{html.escape(fallback_squad or "—")}</code>'
+            else:
+                title = '✅ <b>ВОЗВРАТ ИЗ FALLBACK-СКВАДА</b>'
+                action_label = '↑ Куда:'
+                squads_str = (
+                    ', '.join(f'<code>{html.escape(s)}</code>' for s in (original_squads or []))
+                    or '—'
+                )
+                target = squads_str
+
+            message = (
+                f'{title}\n\n'
+                f'👤 <b>Пользователь:</b> {user_display}\n'
+                f'🆔 <b>{user_id_label}:</b> {user_id_display}\n'
+                f'📱 <b>Username:</b> @{html.escape(username)}\n'
+                f'📋 <b>Subscription ID:</b> <code>{subscription_id}</code>\n\n'
+                f'📌 <b>Причина:</b> {reason_text}\n'
+                f'{action_label} {target}\n\n'
+                f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>'
+            )
+
+            return await self._send_message(message, category=NotificationCategory.FALLBACK)
+        except Exception as e:
+            logger.error('Ошибка отправки уведомления о fallback', error=e)
             return False
 
     async def send_promocode_activation_notification(
