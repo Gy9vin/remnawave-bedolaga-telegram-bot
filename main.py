@@ -666,6 +666,16 @@ async def main():
             success_message='Aiogram polling запущен',
         ) as stage:
             if polling_enabled:
+                # Удаляем зарегистрированный webhook перед стартом polling, иначе
+                # Telegram отвечает 409 Conflict на getUpdates ("can't use getUpdates
+                # method while webhook is active"). drop_pending_updates=False —
+                # сохраняем накопившиеся апдейты для обработки.
+                try:
+                    await bot.delete_webhook(drop_pending_updates=False)
+                    stage.log('Webhook удалён перед стартом polling')
+                except Exception as wh_error:
+                    stage.log(f'⚠️ Ошибка delete_webhook (продолжаем): {wh_error}')
+
                 polling_task = asyncio.create_task(dp.start_polling(bot, skip_updates=False))
                 stage.log('skip_updates=False — накопившиеся обновления будут обработаны')
             else:
