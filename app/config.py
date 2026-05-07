@@ -335,7 +335,12 @@ class Settings(BaseSettings):
     EXPIRY_FALLBACK_ENABLED: bool = False
     EXPIRY_FALLBACK_SQUAD_UUID: str | None = None
     EXPIRY_FALLBACK_DAYS: int = 90  # сколько дней держим в fallback до полного отключения
+    EXPIRY_FALLBACK_GRACE_DAYS: int = 3  # grace-период expireAt в Remnawave (продлевается reconcile'ом)
     TRAFFIC_FALLBACK_ENABLED: bool = False
+    TRAFFIC_FALLBACK_GRACE_GB: int = 10  # сколько ГБ доп. лимита для traffic-fallback
+    EXPIRY_FALLBACK_RECONCILE_INTERVAL_MINUTES: int = 15  # интервал periodic reconcile
+    EXPIRY_FALLBACK_DEV_MODE: bool = False
+    EXPIRY_FALLBACK_DEV_USER_IDS: str = ''  # CSV user_id для DEV_MODE
     EXPIRED_CLEANUP_ENABLED: bool = False
     EXPIRED_CLEANUP_REQUIRE_ZERO_BALANCE: bool = True
     EXPIRED_CLEANUP_INTERVAL_HOURS: int = 24

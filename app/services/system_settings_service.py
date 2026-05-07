@@ -303,7 +303,12 @@ class BotConfigurationService:
         'EXPIRY_FALLBACK_ENABLED': 'EXPIRY_FALLBACK',
         'EXPIRY_FALLBACK_SQUAD_UUID': 'EXPIRY_FALLBACK',
         'EXPIRY_FALLBACK_DAYS': 'EXPIRY_FALLBACK',
+        'EXPIRY_FALLBACK_GRACE_DAYS': 'EXPIRY_FALLBACK',
         'TRAFFIC_FALLBACK_ENABLED': 'EXPIRY_FALLBACK',
+        'TRAFFIC_FALLBACK_GRACE_GB': 'EXPIRY_FALLBACK',
+        'EXPIRY_FALLBACK_RECONCILE_INTERVAL_MINUTES': 'EXPIRY_FALLBACK',
+        'EXPIRY_FALLBACK_DEV_MODE': 'EXPIRY_FALLBACK',
+        'EXPIRY_FALLBACK_DEV_USER_IDS': 'EXPIRY_FALLBACK',
         'EXPIRED_CLEANUP_ENABLED': 'EXPIRY_FALLBACK',
         'EXPIRED_CLEANUP_REQUIRE_ZERO_BALANCE': 'EXPIRY_FALLBACK',
         'EXPIRED_CLEANUP_INTERVAL_HOURS': 'EXPIRY_FALLBACK',
@@ -634,11 +639,53 @@ class BotConfigurationService:
         },
         'EXPIRY_FALLBACK_DAYS': {
             'description': (
-                'Сколько дней держать пользователя в fallback после истечения подписки. '
-                'По истечению — полностью отключается.'
+                'Сколько суммарно дней держать пользователя в fallback после истечения подписки. '
+                'По истечении — полностью отключается (если EXPIRED_CLEANUP_ENABLED=true).'
             ),
             'format': 'Целое число дней.',
             'example': '90',
+        },
+        'EXPIRY_FALLBACK_GRACE_DAYS': {
+            'description': (
+                'Grace-период expireAt в Remnawave. Когда юзер уезжает в fallback, его '
+                'expireAt в Remnawave ставится на now+grace_days (а не на +10 лет). '
+                'Reconcile периодически продлевает grace, пока юзер сидит в fallback. '
+                'Так дата в панели остаётся реалистичной.'
+            ),
+            'format': 'Целое число дней (рекомендуется 3-7).',
+            'example': '3',
+        },
+        'TRAFFIC_FALLBACK_GRACE_GB': {
+            'description': (
+                'Сколько ГБ дополнительного лимита трафика добавляем в Remnawave при '
+                'переезде в traffic-fallback. Нужен чтобы юзер мог пользоваться fallback '
+                'после исчерпания основного лимита.'
+            ),
+            'format': 'Целое число ГБ.',
+            'example': '10',
+        },
+        'EXPIRY_FALLBACK_RECONCILE_INTERVAL_MINUTES': {
+            'description': (
+                'Интервал periodic reconcile fallback-подписок: сверка с Remnawave, '
+                'обнаружение внешних продлений через панель, восстановление потерянных '
+                'вебхуков, продление grace-периода.'
+            ),
+            'format': 'Целое число минут.',
+            'example': '15',
+        },
+        'EXPIRY_FALLBACK_DEV_MODE': {
+            'description': (
+                'Тестовый режим: fallback применяется ТОЛЬКО к юзерам из '
+                'EXPIRY_FALLBACK_DEV_USER_IDS. Удобно для проверки на одном аккаунте '
+                'перед массовым применением.'
+            ),
+            'format': 'Булево значение.',
+            'example': 'true',
+        },
+        'EXPIRY_FALLBACK_DEV_USER_IDS': {
+            'description': 'CSV список user_id (внутренний ID в нашей БД), для которых работает DEV_MODE.',
+            'format': 'Строка через запятую.',
+            'example': '9095,12345',
         },
         'TRAFFIC_FALLBACK_ENABLED': {
             'description': (

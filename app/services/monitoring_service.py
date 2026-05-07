@@ -89,6 +89,7 @@ class MonitoringService:
         self._notified_users: set[str] = set()
         self._last_cleanup = datetime.now(UTC)
         self._last_inactive_cleanup_date: date | None = None
+        self._last_fallback_reconcile_at: datetime | None = None
         self._sla_task = None
         # In-memory fallback для cooldown автоплатежей (на случай недоступности Redis)
         self._autopay_fail_notified_at: dict[int, datetime] = {}
@@ -283,6 +284,9 @@ class MonitoringService:
             await self._run_monitoring_task(db, self._retry_stuck_guest_purchases(db), '_retry_stuck_guest_purchases')
             await self._run_monitoring_task(db, self._cleanup_inactive_users(db), '_cleanup_inactive_users')
             await self._run_monitoring_task(db, self._sync_with_remnawave(db), '_sync_with_remnawave')
+            await self._run_monitoring_task(
+                db, self._reconcile_expiry_fallback(db), '_reconcile_expiry_fallback'
+            )
 
             try:
                 await self._cleanup_notification_cache()
@@ -422,6 +426,33 @@ class MonitoringService:
                 user_identifier=user_identifier,
                 redis_err=redis_err,
             )
+
+    async def _reconcile_expiry_fallback(self, db: AsyncSession):
+        """Periodic reconcile fallback-подписок (раз в EXPIRY_FALLBACK_RECONCILE_INTERVAL_MINUTES)."""
+        if not getattr(settings, 'EXPIRY_FALLBACK_ENABLED', False):
+            return
+        if not getattr(settings, 'EXPIRY_FALLBACK_SQUAD_UUID', None):
+            return
+
+        interval_minutes = max(
+            5, int(getattr(settings, 'EXPIRY_FALLBACK_RECONCILE_INTERVAL_MINUTES', 15) or 15)
+        )
+        now = datetime.now(UTC)
+        if (
+            self._last_fallback_reconcile_at
+            and (now - self._last_fallback_reconcile_at).total_seconds() < interval_minutes * 60
+        ):
+            return
+        self._last_fallback_reconcile_at = now
+
+        try:
+            from app.services.expiry_fallback_service import reconcile_fallback_subscriptions
+
+            stats = await reconcile_fallback_subscriptions(db)
+            if stats and any(v > 0 for v in stats.values() if isinstance(v, int)):
+                logger.info('🔁 Fallback reconcile отработал', **stats)
+        except Exception as e:
+            logger.error('Ошибка reconcile fallback', error=e)
 
     async def _check_expired_subscriptions(self, db: AsyncSession):
         try:
