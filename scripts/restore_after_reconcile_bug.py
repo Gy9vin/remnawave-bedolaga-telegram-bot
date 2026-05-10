@@ -116,6 +116,8 @@ async def run_rollback(
     apply_changes: bool,
     limit: int | None,
     grace_tolerance_days: int,
+    throttle_ms: int = 150,
+    retry_on_false: bool = True,
 ) -> None:
     from sqlalchemy import and_, func, select
 
@@ -196,11 +198,55 @@ async def run_rollback(
                 await db.commit()
                 await db.refresh(sub)
 
+                # Диагностика «почему False» — повторяем проверки move_to_fallback.
+                from app.config import settings as _settings
+                from app.services.expiry_fallback_service import (
+                    _is_dev_user_allowed,  # noqa: F401  (доступ к приватной — для диагностики)
+                    _is_fallback_enabled,
+                )
+
+                if not _is_fallback_enabled():
+                    stats['rollback_skip_fallback_disabled'] += 1
+                    if stats['rollback_skip_fallback_disabled'] <= 3:
+                        print(f'[diag] sub#{sid}: fallback DISABLED in settings')
+                    continue
+                if not _is_dev_user_allowed(sub):
+                    stats['rollback_skip_dev_mode'] += 1
+                    if stats['rollback_skip_dev_mode'] <= 3:
+                        print(
+                            f'[diag] sub#{sid} (user#{sub.user_id}): blocked by '
+                            f'DEV_MODE whitelist'
+                        )
+                    continue
+                if not sub.remnawave_uuid:
+                    stats['rollback_skip_no_uuid'] += 1
+                    continue
+                if sub.expiry_fallback_active or sub.traffic_fallback_active:
+                    # move_to_fallback это короткий путь — вернёт True. Не наш кейс
+                    # для счётчика «failed», но обработаем.
+                    stats['rollback_already_marked'] += 1
+                    continue
+
                 ok = await move_to_fallback(db, sub, reason='expired', notify=False)
+                if not ok and retry_on_false:
+                    await asyncio.sleep(1.0)
+                    ok = await move_to_fallback(db, sub, reason='expired', notify=False)
+                    if ok:
+                        stats['rolled_back_after_retry'] += 1
                 if ok:
                     stats['rolled_back'] += 1
                 else:
-                    stats['rollback_move_failed'] += 1
+                    stats['rollback_move_returned_false'] += 1
+                    if stats['rollback_move_returned_false'] <= 5:
+                        print(
+                            f'[diag] sub#{sid} (user#{sub.user_id}, '
+                            f'uuid={sub.remnawave_uuid}): move_to_fallback returned False '
+                            f'— check Remnawave API connectivity / panel logs'
+                        )
+
+                # Throttle между подписками (не утопить Remnawave API)
+                if throttle_ms > 0:
+                    await asyncio.sleep(throttle_ms / 1000.0)
             except Exception as exc:
                 await db.rollback()
                 stats['rollback_error'] += 1
@@ -236,6 +282,17 @@ def main() -> None:
         default=14,
         help='Skip rollback if subscription.end_date is more than N days ahead (default 14).',
     )
+    p.add_argument(
+        '--throttle-ms',
+        type=int,
+        default=150,
+        help='Pause N ms between subscriptions (default 150) — avoids overloading Remnawave API.',
+    )
+    p.add_argument(
+        '--no-retry',
+        action='store_true',
+        help='Disable retry on False from move_to_fallback (default: retry once after 1s).',
+    )
     args = p.parse_args()
 
     if not args.log.exists():
@@ -256,6 +313,8 @@ def main() -> None:
             apply_changes=args.apply,
             limit=args.limit,
             grace_tolerance_days=args.grace_tolerance,
+            throttle_ms=args.throttle_ms,
+            retry_on_false=not args.no_retry,
         )
     )
 
