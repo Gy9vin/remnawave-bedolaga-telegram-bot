@@ -8,6 +8,7 @@ from . import (
     campaigns,
     contests,
     daily_contests,
+    expiry_fallback,
     faq,
     main,
     maintenance,

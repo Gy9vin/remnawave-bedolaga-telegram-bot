@@ -54,12 +54,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.database.models import Subscription, SubscriptionStatus, User
+from app.database.models import Subscription, SubscriptionStatus, Tariff, User
 
 
 logger = structlog.get_logger(__name__)
@@ -282,6 +282,122 @@ async def move_to_fallback(
         fallback_squad=fallback_uuid,
     )
     return True
+
+
+async def scan_and_move_expired(db: AsyncSession) -> dict:
+    """Сканирует БД и переводит просроченные подписки в fallback-сквад.
+
+    DEV_MODE=true: переводит ТОЛЬКО юзеров из EXPIRY_FALLBACK_DEV_USER_IDS.
+    DEV_MODE=false: переводит ВСЕХ с истёкшей подпиской.
+
+    Возвращает словарь со счётчиками. Если fallback выключен или нет SQUAD_UUID —
+    в ответе будет 'success': False и описание в 'error'.
+
+    Используется и в кабинетном API, и в админ-боте.
+    """
+    if not bool(getattr(settings, 'EXPIRY_FALLBACK_ENABLED', False)):
+        return {
+            'success': False,
+            'error': 'EXPIRY_FALLBACK_ENABLED=false',
+            'scanned': 0,
+            'moved': 0,
+            'skipped_dev_mode': 0,
+            'skipped_no_remnawave_uuid': 0,
+            'failed': 0,
+            'dev_mode_active': False,
+            'dev_mode_user_count': 0,
+        }
+
+    if not getattr(settings, 'EXPIRY_FALLBACK_SQUAD_UUID', None):
+        return {
+            'success': False,
+            'error': 'EXPIRY_FALLBACK_SQUAD_UUID не задан',
+            'scanned': 0,
+            'moved': 0,
+            'skipped_dev_mode': 0,
+            'skipped_no_remnawave_uuid': 0,
+            'failed': 0,
+            'dev_mode_active': False,
+            'dev_mode_user_count': 0,
+        }
+
+    dev_mode = bool(getattr(settings, 'EXPIRY_FALLBACK_DEV_MODE', False))
+    raw_ids = getattr(settings, 'EXPIRY_FALLBACK_DEV_USER_IDS', None) or ''
+    if isinstance(raw_ids, str):
+        dev_ids = {x.strip() for x in raw_ids.split(',') if x.strip()}
+    else:
+        dev_ids = {str(x).strip() for x in (raw_ids or [])}
+
+    result = await db.execute(
+        select(Subscription)
+        .outerjoin(Tariff, Subscription.tariff_id == Tariff.id)
+        .options(selectinload(Subscription.user))
+        .where(
+            and_(
+                Subscription.end_date <= func.now(),
+                Subscription.status.in_(
+                    [SubscriptionStatus.ACTIVE.value, SubscriptionStatus.EXPIRED.value]
+                ),
+                Subscription.expiry_fallback_active.is_not(True),
+                Subscription.traffic_fallback_active.is_not(True),
+                ~and_(
+                    Tariff.is_daily.is_(True),
+                    Subscription.is_daily_paused.is_(False),
+                ),
+            )
+        )
+    )
+    candidates = list(result.scalars().all())
+
+    scanned = 0
+    moved = 0
+    skipped_dev = 0
+    skipped_no_uuid = 0
+    failed = 0
+
+    for sub in candidates:
+        scanned += 1
+        if not sub.remnawave_uuid:
+            skipped_no_uuid += 1
+            continue
+        if not _is_dev_user_allowed(sub):
+            skipped_dev += 1
+            continue
+        try:
+            ok = await move_to_fallback(db, sub, reason='expired')
+            if ok:
+                moved += 1
+            else:
+                failed += 1
+        except Exception as exc:
+            failed += 1
+            logger.error(
+                'scan_and_move_expired: ошибка для подписки',
+                subscription_id=sub.id,
+                error=str(exc),
+            )
+
+    logger.info(
+        'scan_and_move_expired завершён',
+        scanned=scanned,
+        moved=moved,
+        skipped_dev_mode=skipped_dev,
+        skipped_no_remnawave_uuid=skipped_no_uuid,
+        failed=failed,
+        dev_mode=dev_mode,
+        dev_user_count=len(dev_ids),
+    )
+    return {
+        'success': True,
+        'error': None,
+        'scanned': scanned,
+        'moved': moved,
+        'skipped_dev_mode': skipped_dev,
+        'skipped_no_remnawave_uuid': skipped_no_uuid,
+        'failed': failed,
+        'dev_mode_active': dev_mode,
+        'dev_mode_user_count': len(dev_ids),
+    }
 
 
 async def restore_from_fallback(

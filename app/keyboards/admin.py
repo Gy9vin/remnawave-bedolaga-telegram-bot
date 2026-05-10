@@ -365,6 +365,12 @@ def get_admin_users_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
                     callback_data='admin_chan_nonsub',
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text=_t(texts, 'ADMIN_USERS_EXPIRY_FALLBACK', '🛟 Fallback при истечении'),
+                    callback_data='admin_expiry_fallback_menu',
+                )
+            ],
             [InlineKeyboardButton(text=texts.BACK, callback_data='admin_submenu_users')],
         ]
     )
