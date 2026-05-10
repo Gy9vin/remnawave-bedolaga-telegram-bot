@@ -169,6 +169,15 @@ async def _ensure_critical_columns() -> None:
         ('guest_purchases', 'retry_count', 'INTEGER NOT NULL DEFAULT 0'),
         ('guest_purchases', 'receipt_uuid', 'VARCHAR(255)'),
         ('guest_purchases', 'receipt_created_at', 'TIMESTAMPTZ'),
+        # 0039 — auto-renewal флаг (часто пропускается при orphan-stamp head)
+        ('subscriptions', 'auto_renewed_before_expiry', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        # 9012 — expiry/traffic fallback (если orphan-stamp обошёл миграцию)
+        ('subscriptions', 'expiry_fallback_active', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('subscriptions', 'expiry_fallback_started_at', 'TIMESTAMPTZ'),
+        ('subscriptions', 'traffic_fallback_active', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('subscriptions', 'pre_expiry_squads', 'JSONB'),
+        ('subscriptions', 'pre_expiry_traffic_limit_bytes', 'BIGINT'),
+        ('subscriptions', 'pre_expiry_expire_at', 'TIMESTAMPTZ'),
     ]
 
     try:
