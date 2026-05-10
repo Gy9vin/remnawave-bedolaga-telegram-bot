@@ -7,14 +7,18 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import structlog
 from aiogram import Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from sqlalchemy import or_, select
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database.database import AsyncSessionLocal
-from app.database.models import User
+from app.database.models import Subscription, SubscriptionStatus, Tariff, User
 from app.utils.decorators import admin_required, error_handler
 
 
@@ -52,15 +56,125 @@ def _confirm_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def _build_status_text() -> str:
+def _parse_dev_ids() -> list[str]:
+    raw_ids = getattr(settings, 'EXPIRY_FALLBACK_DEV_USER_IDS', None) or ''
+    if isinstance(raw_ids, str):
+        return [x.strip() for x in raw_ids.split(',') if x.strip()]
+    return [str(x).strip() for x in (raw_ids or [])]
+
+
+async def _diagnose_whitelist(dev_ids: list[str]) -> list[str]:
+    """Для каждого ID из whitelist показать, попадёт ли он в fallback при scan.
+
+    Возвращает список форматированных строк (по одной на проверенный ID).
+    """
+    if not dev_ids:
+        return []
+
+    int_ids: list[int] = []
+    for raw in dev_ids:
+        try:
+            int_ids.append(int(raw))
+        except ValueError:
+            continue
+
+    if not int_ids:
+        return ['• <i>Не удалось распарсить ни один ID как число</i>']
+
+    lines: list[str] = []
+    async with AsyncSessionLocal() as db:
+        for raw_id in int_ids:
+            result = await db.execute(
+                select(User).where(or_(User.id == raw_id, User.telegram_id == raw_id))
+            )
+            users = list(result.scalars().all())
+
+            if not users:
+                lines.append(
+                    f'❌ <code>{raw_id}</code> — не найден ни как DB ID, ни как TG ID'
+                )
+                continue
+
+            for user in users:
+                match_kind = 'DB id' if user.id == raw_id else 'TG id'
+                if match_kind == 'TG id':
+                    lines.append(
+                        f'⚠️ <code>{raw_id}</code> — это <b>TG id</b> юзера <b>{user.id}</b>! '
+                        f'В whitelist нужно класть DB id (<code>{user.id}</code>).'
+                    )
+
+                subs_q = await db.execute(
+                    select(Subscription)
+                    .options(selectinload(Subscription.tariff))
+                    .where(Subscription.user_id == user.id)
+                    .order_by(Subscription.id.desc())
+                )
+                subs = list(subs_q.scalars().all())
+
+                if not subs:
+                    lines.append(f'   └ Подписок нет — нечего переводить.')
+                    continue
+
+                for sub in subs[:3]:
+                    status_emoji = {'active': '🟢', 'expired': '⚪', 'trial': '🎁'}.get(
+                        sub.status, '⚫'
+                    )
+                    end_local = (
+                        sub.end_date.astimezone(UTC).strftime('%d.%m %H:%M')
+                        if sub.end_date
+                        else '—'
+                    )
+
+                    flags = []
+                    if sub.expiry_fallback_active:
+                        flags.append('уже в EXPIRY-fallback')
+                    if sub.traffic_fallback_active:
+                        flags.append('уже в TRAFFIC-fallback')
+                    if not sub.remnawave_uuid:
+                        flags.append('БЕЗ remnawave_uuid')
+                    is_daily = bool(getattr(sub.tariff, 'is_daily', False))
+                    if is_daily and not getattr(sub, 'is_daily_paused', False):
+                        flags.append('daily-тариф')
+
+                    now = datetime.now(UTC)
+                    end_dt = sub.end_date
+                    if end_dt is not None and end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=UTC)
+                    expired_by_date = bool(end_dt and end_dt <= now)
+
+                    will_be_picked = (
+                        sub.status in (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.EXPIRED.value)
+                        and expired_by_date
+                        and not sub.expiry_fallback_active
+                        and not sub.traffic_fallback_active
+                        and bool(sub.remnawave_uuid)
+                        and not (is_daily and not getattr(sub, 'is_daily_paused', False))
+                    )
+
+                    pick = '✅ попадёт в fallback' if will_be_picked else '❌ НЕ попадёт'
+                    if not will_be_picked:
+                        if not expired_by_date:
+                            pick += ' (end_date в будущем)'
+                        elif sub.status not in (
+                            SubscriptionStatus.ACTIVE.value,
+                            SubscriptionStatus.EXPIRED.value,
+                        ):
+                            pick += f' (status={sub.status})'
+                        elif flags:
+                            pick += f' ({", ".join(flags)})'
+
+                    lines.append(
+                        f'   └ Sub #{sub.id} {status_emoji} {sub.status}, '
+                        f'end {end_local} → {pick}'
+                    )
+    return lines
+
+
+async def _build_status_text() -> str:
     enabled = bool(getattr(settings, 'EXPIRY_FALLBACK_ENABLED', False))
     uuid = getattr(settings, 'EXPIRY_FALLBACK_SQUAD_UUID', None)
     dev_mode = bool(getattr(settings, 'EXPIRY_FALLBACK_DEV_MODE', False))
-    raw_ids = getattr(settings, 'EXPIRY_FALLBACK_DEV_USER_IDS', None) or ''
-    if isinstance(raw_ids, str):
-        dev_ids = [x.strip() for x in raw_ids.split(',') if x.strip()]
-    else:
-        dev_ids = [str(x).strip() for x in (raw_ids or [])]
+    dev_ids = _parse_dev_ids()
 
     lines = [
         '🛟 <b>Fallback-сквад при истечении</b>',
@@ -77,6 +191,13 @@ def _build_status_text() -> str:
             lines.append(f'• Whitelist user_id: <code>{preview}</code>')
         else:
             lines.append('• Whitelist user_id: <i>пусто</i>')
+
+        diag = await _diagnose_whitelist(dev_ids)
+        if diag:
+            lines.append('')
+            lines.append('<b>Диагностика whitelist:</b>')
+            lines.extend(diag)
+
     lines.append('')
     lines.append(
         'Кнопка ниже сканирует БД и переводит в fallback все подписки '
@@ -90,8 +211,9 @@ def _build_status_text() -> str:
 async def show_menu(callback: types.CallbackQuery, db_user: User) -> None:  # noqa: ARG001
     enabled = bool(getattr(settings, 'EXPIRY_FALLBACK_ENABLED', False))
     has_uuid = bool(getattr(settings, 'EXPIRY_FALLBACK_SQUAD_UUID', None))
+    text = await _build_status_text()
     await callback.message.edit_text(
-        _build_status_text(),
+        text,
         parse_mode=ParseMode.HTML,
         reply_markup=_menu_keyboard(enabled, has_uuid),
     )
