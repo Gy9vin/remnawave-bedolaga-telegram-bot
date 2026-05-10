@@ -1963,6 +1963,72 @@ def _build_connect_button_rows(user: User, texts) -> list[list[InlineKeyboardBut
     return rows
 
 
+async def _send_offer_email(
+    *,
+    user: User,
+    template: PromoOfferTemplate,
+    offer_record_id: int,
+    squad_name: str | None,
+    language: str,
+) -> bool:
+    """Шлёт промо-предложение email-юзеру со ссылкой на кабинет.
+
+    Запись discount_offer уже создана — кабинет покажет её через
+    /cabinet/promo/active-discount, юзеру достаточно открыть кабинет.
+    """
+    from app.cabinet.services.email_service import email_service
+
+    if not email_service.is_configured() or not user.email:
+        return False
+
+    cabinet_url = (getattr(settings, 'CABINET_URL', None) or '').rstrip('/')
+    link = f'{cabinet_url}/promo/{offer_record_id}' if cabinet_url else cabinet_url
+
+    body_text_raw = _render_template_text(
+        template, language, server_name=squad_name
+    )
+    safe_body = html.escape(body_text_raw).replace('\n', '<br>')
+    safe_button = html.escape(template.button_text or 'Открыть предложение')
+    safe_name = html.escape(template.name or 'Специальное предложение')
+
+    body_html = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;
+                padding: 24px; background: #f7f7f9; border-radius: 12px;">
+      <h2 style="margin: 0 0 16px 0; color: #1f2937;">🎁 {safe_name}</h2>
+      <div style="background: #fff; padding: 16px; border-radius: 8px; color: #374151;
+                  line-height: 1.5; margin-bottom: 20px;">
+        {safe_body}
+      </div>
+      {f'<p style="text-align: center; margin: 24px 0;"><a href="{html.escape(link)}" style="display: inline-block; background: #6366f1; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600;">{safe_button}</a></p>' if link else ''}
+      <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 16px 0 0;">
+        Срок действия: {template.valid_hours} ч.
+      </p>
+    </div>
+    """.strip()
+
+    try:
+        ok = await asyncio.to_thread(
+            email_service.send_email,
+            user.email,
+            template.name or 'Специальное предложение',
+            body_html,
+        )
+        if ok:
+            logger.info('Промо-оффер отправлен по email', user_id=user.id, email=user.email)
+        else:
+            logger.warning(
+                'Email с промо-оффером не отправлен (SMTP fail)',
+                user_id=user.id,
+                email=user.email,
+            )
+        return bool(ok)
+    except Exception as exc:
+        logger.error(
+            'Ошибка отправки промо-оффера на email', user_id=user.id, exc=exc
+        )
+        return False
+
+
 async def _send_offer_to_users(
     bot,
     template: PromoOfferTemplate,
@@ -1982,10 +2048,21 @@ async def _send_offer_to_users(
     semaphore = asyncio.Semaphore(20)
 
     async def send_single_offer(user):
-        """Отправляет одно предложение с семафором ограничения"""
-        # Skip email-only users (no telegram_id)
-        if not user.telegram_id:
-            logger.debug('Пропуск email-пользователя при рассылке промо', user_id=user.id)
+        """Отправляет одно предложение с семафором ограничения.
+
+        TG-юзеру → message в бота с inline-кнопкой claim_discount_<id>.
+        Email-юзеру → создаём offer_record (его подхватит /cabinet/promo/active-discount)
+        и шлём письмо со ссылкой на кабинет.
+        Юзеру без TG и без verified email → пропускаем.
+        """
+        is_telegram_user = bool(user.telegram_id)
+        is_email_user = bool(user.email and getattr(user, 'email_verified', False))
+
+        if not is_telegram_user and not is_email_user:
+            logger.debug(
+                'Пропуск юзера без TG и без verified email при рассылке промо',
+                user_id=user.id,
+            )
             return False
 
         async with semaphore:
@@ -2025,39 +2102,49 @@ async def _send_offer_to_users(
                         },
                     )
 
-                    user_texts = get_texts(user.language or db_user.language)
-                    keyboard_rows: list[list[InlineKeyboardButton]] = [
-                        [
-                            build_miniapp_or_callback_button(
-                                text=template.button_text,
-                                callback_data=f'claim_discount_{offer_record.id}',
-                            )
+                    if is_telegram_user:
+                        user_texts = get_texts(user.language or db_user.language)
+                        keyboard_rows: list[list[InlineKeyboardButton]] = [
+                            [
+                                build_miniapp_or_callback_button(
+                                    text=template.button_text,
+                                    callback_data=f'claim_discount_{offer_record.id}',
+                                )
+                            ]
                         ]
-                    ]
 
-                    keyboard_rows.append(
-                        [
-                            InlineKeyboardButton(
-                                text=user_texts.t('PROMO_OFFER_CLOSE', '❌ Закрыть'),
-                                callback_data='promo_offer_close',
-                            )
-                        ]
-                    )
+                        keyboard_rows.append(
+                            [
+                                InlineKeyboardButton(
+                                    text=user_texts.t('PROMO_OFFER_CLOSE', '❌ Закрыть'),
+                                    callback_data='promo_offer_close',
+                                )
+                            ]
+                        )
 
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+                        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
-                    message_text = _render_template_text(
-                        template,
-                        user.language or db_user.language,
-                        server_name=squad_name,
+                        message_text = _render_template_text(
+                            template,
+                            user.language or db_user.language,
+                            server_name=squad_name,
+                        )
+                        await bot.send_message(
+                            chat_id=user.telegram_id,
+                            text=message_text,
+                            reply_markup=keyboard,
+                            parse_mode='HTML',
+                        )
+                        return True
+
+                    # Email-only user: шлём письмо со ссылкой на кабинет
+                    return await _send_offer_email(
+                        user=user,
+                        template=template,
+                        offer_record_id=offer_record.id,
+                        squad_name=squad_name,
+                        language=user.language or db_user.language,
                     )
-                    await bot.send_message(
-                        chat_id=user.telegram_id,
-                        text=message_text,
-                        reply_markup=keyboard,
-                        parse_mode='HTML',
-                    )
-                    return True
             except (TelegramForbiddenError, TelegramBadRequest) as exc:
                 logger.warning(
                     'Не удалось отправить предложение пользователю', telegram_id=user.telegram_id or user.id, exc=exc
