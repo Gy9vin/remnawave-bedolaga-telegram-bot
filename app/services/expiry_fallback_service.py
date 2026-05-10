@@ -51,6 +51,7 @@ DEV_MODE
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import structlog
@@ -188,10 +189,14 @@ async def move_to_fallback(
     subscription: Subscription,
     *,
     reason: str,
+    notify: bool = True,
 ) -> bool:
     """Переводит подписку в fallback-сквад с grace-периодом.
 
     reason: 'expired' | 'traffic'
+    notify: если False — не отправлять TG/admin уведомления (bulk-операции).
+            При массовом scan-and-move уведомления спавнят сотни bg-tasks
+            и каждая берёт DB-соединение — пул выжимается → весь сервис ляжет.
 
     Возвращает True если перевод успешен (или уже был в fallback).
     """
@@ -273,15 +278,22 @@ async def move_to_fallback(
     )
 
     # Уведомления в фоне (админам + юзеру)
-    _dispatch_fallback_notifications(
-        user_id=subscription.user_id,
-        subscription_id=subscription.id,
-        action='moved',
-        reason=reason,
-        original_squads=original_squads,
-        fallback_squad=fallback_uuid,
-    )
+    if notify:
+        _dispatch_fallback_notifications(
+            user_id=subscription.user_id,
+            subscription_id=subscription.id,
+            action='moved',
+            reason=reason,
+            original_squads=original_squads,
+            fallback_squad=fallback_uuid,
+        )
     return True
+
+
+# Ограничивает параллельность bg-нотификаций (их open AsyncSession + Bot).
+# Без лимита массовый move_to_fallback (например, monitoring при старте после
+# даунтайма) выжимает DB connection pool → весь сервис ложится.
+_NOTIFY_SEMAPHORE = asyncio.Semaphore(5)
 
 
 async def scan_and_move_expired(db: AsyncSession) -> dict:
@@ -364,7 +376,7 @@ async def scan_and_move_expired(db: AsyncSession) -> dict:
             skipped_dev += 1
             continue
         try:
-            ok = await move_to_fallback(db, sub, reason='expired')
+            ok = await move_to_fallback(db, sub, reason='expired', notify=False)
             if ok:
                 moved += 1
             else:
@@ -499,7 +511,6 @@ def _dispatch_fallback_notifications(
 
     # Уведомление пользователю в TG (если бот не заблокирован)
     try:
-        import asyncio
 
         async def _user_notify():
             from aiogram import Bot
@@ -511,10 +522,14 @@ def _dispatch_fallback_notifications(
             if not app_settings.BOT_TOKEN:
                 return
 
-            async with AsyncSessionLocal() as bg_db:
-                u = await get_user_by_id(bg_db, user_id)
-                if not u or not u.telegram_id:
-                    return
+            # Семафор: ограничиваем параллельность bg-нотификаций, иначе
+            # массовая операция (monitoring при старте, ручной scan) спавнит
+            # сотни tasks и каждая берёт DB connection — пул выжимается.
+            async with _NOTIFY_SEMAPHORE:
+                async with AsyncSessionLocal() as bg_db:
+                    u = await get_user_by_id(bg_db, user_id)
+                    if not u or not u.telegram_id:
+                        return
 
                 if action == 'moved':
                     if reason == 'expired':
