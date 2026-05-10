@@ -179,6 +179,30 @@ async def _patch_user_full(
         return False
 
 
+async def _reset_remnawave_traffic(remnawave_uuid: str) -> bool:
+    """Сбрасывает счётчик used_traffic_bytes юзера в Remnawave в 0.
+
+    Используется при move_to_fallback(reason='expired') — после сброса
+    видно реальное потребление в fallback-скваде (Telegram + банки),
+    обычно доли GB. Резкий рост = squad настроен неправильно.
+
+    Не критичен: если не получилось, продолжаем (move уже прошёл).
+    """
+    from app.services.remnawave_service import remnawave_service
+    try:
+        async with remnawave_service.get_api_client() as api:
+            await api.reset_user_traffic(remnawave_uuid)
+        logger.info('🔄 Сброшен трафик в Remnawave (move to fallback)', remnawave_uuid=remnawave_uuid)
+        return True
+    except Exception as exc:
+        logger.warning(
+            'Не удалось сбросить трафик в Remnawave (move to fallback)',
+            remnawave_uuid=remnawave_uuid,
+            exc=str(exc),
+        )
+        return False
+
+
 # ============================================================================
 # Move / Restore — основные операции
 # ============================================================================
@@ -255,6 +279,15 @@ async def move_to_fallback(
     )
     if not ok:
         return False
+
+    # Сброс трафика — только для expired (для traffic-fallback нельзя:
+    # юзер уже превысил лимит, +10GB grace потеряет смысл при сбросе).
+    # Сброс нужен чтобы по счётчику было видно реальный fallback-трафик
+    # (Telegram + банки) — должно быть ~доли GB, аномалия = утечка в squad'е.
+    if reason == 'expired':
+        await _reset_remnawave_traffic(subscription.remnawave_uuid)
+        subscription.traffic_used_gb = 0.0
+        subscription.traffic_reset_at = datetime.now(UTC)
 
     # Сохраняем оригиналы в БД
     subscription.pre_expiry_squads = original_squads
