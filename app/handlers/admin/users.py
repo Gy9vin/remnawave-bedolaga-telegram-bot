@@ -120,6 +120,21 @@ USER_FILTER_CONFIGS: dict[UserFilterType, UserFilterConfig] = {
 }
 
 
+def _format_user_ids_inline(user: User) -> str:
+    """Inline-блок с TG/email и внутренним DB id (в одну строку, в скобках).
+
+    Внутренний user.id нужен админам — например, для EXPIRY_FALLBACK_DEV_USER_IDS
+    или ручных SQL-запросов. Поэтому показываем его рядом с TG ID.
+    """
+    parts: list[str] = []
+    if user.telegram_id:
+        parts.append(f'TG: <code>{user.telegram_id}</code>')
+    if user.email:
+        parts.append(f'Email: <code>{html.escape(user.email)}</code>')
+    parts.append(f'DB: <code>{user.id}</code>')
+    return ' | '.join(parts)
+
+
 def _get_user_status_emoji(user: User) -> str:
     """Возвращает эмодзи статуса пользователя."""
     if user.status == UserStatus.ACTIVE.value:
@@ -855,9 +870,8 @@ async def _render_user_subscription_overview(
 
         if len(subs_list) > 1:
             user_link = user_html_link(user)
-            user_id_display = user.telegram_id or user.email or f'#{user.id}'
             text = '📱 <b>Выберите подписку для управления</b>\n\n'
-            text += f'👤 {user_link} (ID: <code>{user_id_display}</code>)\n\n'
+            text += f'👤 {user_link} ({_format_user_ids_inline(user)})\n\n'
             text += f'У пользователя <b>{len(subs_list)}</b> подписок:\n\n'
 
             picker_keyboard = []
@@ -902,8 +916,7 @@ async def _render_user_subscription_overview(
 
     text = '📱 <b>Подписка и настройки пользователя</b>\n\n'
     user_link = user_html_link(user)
-    user_id_display = user.telegram_id or user.email or f'#{user.id}'
-    text += f'👤 {user_link} (ID: <code>{user_id_display}</code>)\n\n'
+    text += f'👤 {user_link} ({_format_user_ids_inline(user)})\n\n'
 
     keyboard = []
 
@@ -1082,8 +1095,7 @@ async def show_user_transactions(callback: types.CallbackQuery, db_user: User, d
 
     text = '💳 <b>Транзакции пользователя</b>\n\n'
     user_link = user_html_link(user)
-    user_id_display = user.telegram_id or user.email or f'#{user.id}'
-    text += f'👤 {user_link} (ID: <code>{user_id_display}</code>)\n'
+    text += f'👤 {user_link} ({_format_user_ids_inline(user)})\n'
     text += f'💰 Текущий баланс: {settings.format_price(user.balance_kopeks)}\n\n'
 
     if transactions:
@@ -3179,8 +3191,7 @@ async def show_user_statistics(callback: types.CallbackQuery, db_user: User, db:
 
     text = '📊 <b>Статистика пользователя</b>\n\n'
     user_link = user_html_link(user)
-    user_id_display = user.telegram_id or user.email or f'#{user.id}'
-    text += f'👤 {user_link} (ID: <code>{user_id_display}</code>)\n\n'
+    text += f'👤 {user_link} ({_format_user_ids_inline(user)})\n\n'
 
     text += '<b>Основная информация:</b>\n'
     text += f'• Дней с регистрации: {profile["registration_days"]}\n'
