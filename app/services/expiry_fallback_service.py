@@ -764,15 +764,17 @@ async def _reconcile_single_active_fallback(
         )
         return
 
-    # 2) Внешнее продление через панель Remnawave (admin вручную увеличил expireAt)
-    baseline_expire_at = sub.pre_expiry_expire_at
-    if baseline_expire_at and current_expire_at:
-        # Грейс который мы поставили = now + grace_days в момент move_to_fallback.
-        # Если current_expire_at заметно больше — внешнее продление.
-        # Допустим buffer = grace_days * 1.5 (т.е. админ продлил минимум на ~5 дней)
-        buffer = timedelta(days=int(grace_days * 1.5))
-        external_renewal_threshold = baseline_expire_at + buffer
-        if current_expire_at > external_renewal_threshold:
+    # 2) Внешнее продление через панель Remnawave (admin вручную увеличил expireAt).
+    # ВАЖНО: сравниваем НЕ с baseline_expire_at (старая дата ДО перевода в fallback),
+    # а с тем, что мы САМИ поставили в Remnawave при move_to_fallback (now + grace).
+    # Иначе для подписок, истёкших давно, наш собственный grace (now+5d) автоматически
+    # превышал baseline+buffer и reconcile ошибочно считал это «внешним продлением» →
+    # массово вытаскивал юзеров из fallback с end_date = now+grace_days.
+    if current_expire_at:
+        # Внешнее продление = expire_at в Remnawave заметно больше наших grace+buffer
+        # (т.е. admin продлил юзера в панели минимум на ~7 дней вперёд от наших grace).
+        our_grace_ceiling = now + timedelta(days=int(grace_days) + int(grace_days * 1.5))
+        if current_expire_at > our_grace_ceiling:
             ok = await restore_from_fallback(
                 db, sub, new_expire_at=current_expire_at, notify=False
             )
@@ -781,8 +783,9 @@ async def _reconcile_single_active_fallback(
                 logger.info(
                     'Reconcile: обнаружено внешнее продление через панель — restore',
                     subscription_id=sub.id,
-                    baseline_expire=baseline_expire_at,
+                    baseline_expire=sub.pre_expiry_expire_at,
                     current_expire=current_expire_at,
+                    threshold=our_grace_ceiling,
                 )
             return
 
