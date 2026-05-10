@@ -3,6 +3,7 @@
 GET  /cabinet/admin/expiry-fallback/stats — счётчики «сейчас в fallback»
 POST /cabinet/admin/expiry-fallback/restore-all — массовый возврат всех
 POST /cabinet/admin/expiry-fallback/reconcile — принудительный запуск reconcile
+POST /cabinet/admin/expiry-fallback/scan-and-move — массовый перевод expired в fallback
 """
 
 from __future__ import annotations
@@ -53,6 +54,18 @@ class CleanupOldExpiredResponse(BaseModel):
     skipped_pending_purchase: int
     total_candidates: int
     months_threshold: int
+
+
+class FallbackScanMoveResponse(BaseModel):
+    success: bool
+    scanned: int
+    moved: int
+    skipped_dev_mode: int
+    skipped_no_remnawave_uuid: int
+    failed: int
+    dev_mode_active: bool
+    dev_mode_user_count: int
+    error: str | None = None
 
 
 @router.get('/stats', response_model=FallbackStatsResponse)
@@ -260,4 +273,131 @@ async def cleanup_old_expired(
         skipped_pending_purchase=skipped_pending,
         total_candidates=len(candidates),
         months_threshold=months,
+    )
+
+
+@router.post('/scan-and-move', response_model=FallbackScanMoveResponse)
+async def scan_and_move_to_fallback(
+    admin: User = Depends(require_permission('users:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> FallbackScanMoveResponse:
+    """Сканирует БД и переводит просроченные подписки в fallback-сквад.
+
+    DEV_MODE=true: переводит ТОЛЬКО юзеров из EXPIRY_FALLBACK_DEV_USER_IDS.
+    DEV_MODE=false: переводит ВСЕХ с истёкшей подпиской.
+
+    Кандидаты — подписки, у которых:
+    - end_date <= NOW()
+    - status в (ACTIVE, EXPIRED)
+    - не в fallback (expiry_fallback_active != true И traffic_fallback_active != true)
+    - не daily-тариф
+    - есть remnawave_uuid
+    """
+    from datetime import UTC, datetime
+
+    from app.database.models import SubscriptionStatus, Tariff
+    from app.services.expiry_fallback_service import _is_dev_user_allowed, move_to_fallback
+
+    if not bool(getattr(settings, 'EXPIRY_FALLBACK_ENABLED', False)):
+        return FallbackScanMoveResponse(
+            success=False,
+            scanned=0,
+            moved=0,
+            skipped_dev_mode=0,
+            skipped_no_remnawave_uuid=0,
+            failed=0,
+            dev_mode_active=False,
+            dev_mode_user_count=0,
+            error='EXPIRY_FALLBACK_ENABLED=false',
+        )
+
+    if not getattr(settings, 'EXPIRY_FALLBACK_SQUAD_UUID', None):
+        return FallbackScanMoveResponse(
+            success=False,
+            scanned=0,
+            moved=0,
+            skipped_dev_mode=0,
+            skipped_no_remnawave_uuid=0,
+            failed=0,
+            dev_mode_active=False,
+            dev_mode_user_count=0,
+            error='EXPIRY_FALLBACK_SQUAD_UUID не задан',
+        )
+
+    dev_mode = bool(getattr(settings, 'EXPIRY_FALLBACK_DEV_MODE', False))
+    raw_ids = getattr(settings, 'EXPIRY_FALLBACK_DEV_USER_IDS', None) or ''
+    if isinstance(raw_ids, str):
+        dev_ids = {x.strip() for x in raw_ids.split(',') if x.strip()}
+    else:
+        dev_ids = {str(x).strip() for x in (raw_ids or [])}
+
+    result = await db.execute(
+        select(Subscription)
+        .outerjoin(Tariff, Subscription.tariff_id == Tariff.id)
+        .options(selectinload(Subscription.user))
+        .where(
+            and_(
+                Subscription.end_date <= func.now(),
+                Subscription.status.in_(
+                    [SubscriptionStatus.ACTIVE.value, SubscriptionStatus.EXPIRED.value]
+                ),
+                Subscription.expiry_fallback_active.is_not(True),
+                Subscription.traffic_fallback_active.is_not(True),
+                ~and_(
+                    Tariff.is_daily.is_(True),
+                    Subscription.is_daily_paused.is_(False),
+                ),
+            )
+        )
+    )
+    candidates = list(result.scalars().all())
+
+    scanned = 0
+    moved = 0
+    skipped_dev = 0
+    skipped_no_uuid = 0
+    failed = 0
+
+    for sub in candidates:
+        scanned += 1
+        if not sub.remnawave_uuid:
+            skipped_no_uuid += 1
+            continue
+        if not _is_dev_user_allowed(sub):
+            skipped_dev += 1
+            continue
+        try:
+            ok = await move_to_fallback(db, sub, reason='expired')
+            if ok:
+                moved += 1
+            else:
+                failed += 1
+        except Exception as exc:
+            failed += 1
+            logger.error(
+                'scan_and_move_to_fallback: ошибка для подписки',
+                subscription_id=sub.id,
+                error=str(exc),
+            )
+
+    logger.info(
+        'scan_and_move_to_fallback завершён',
+        admin_id=admin.id,
+        scanned=scanned,
+        moved=moved,
+        skipped_dev_mode=skipped_dev,
+        skipped_no_remnawave_uuid=skipped_no_uuid,
+        failed=failed,
+        dev_mode=dev_mode,
+        dev_user_count=len(dev_ids),
+    )
+    return FallbackScanMoveResponse(
+        success=True,
+        scanned=scanned,
+        moved=moved,
+        skipped_dev_mode=skipped_dev,
+        skipped_no_remnawave_uuid=skipped_no_uuid,
+        failed=failed,
+        dev_mode_active=dev_mode,
+        dev_mode_user_count=len(dev_ids),
     )
