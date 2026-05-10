@@ -218,7 +218,7 @@ class BotConfigurationService:
         'DEBUG': 'Отладочные функции и безопасный режим.',
         'MODERATION': 'Настройки фильтров отображаемых имен и защиты от фишинга.',
         'BAN_NOTIFICATIONS': 'Тексты уведомлений о блокировках, которые отправляются пользователям.',
-        'OAUTH': 'Вход в кабинет через сторонние сервисы (Google, Yandex, Discord, VK). Для каждого нужно создать OAuth-приложение в личном кабинете провайдера и указать redirect URI вида https://<домен-кабинета>/cabinet/oauth/<provider>/callback.',
+        'OAUTH': 'Вход в кабинет через сторонние сервисы (Google, Yandex, Discord, VK). Один redirect URI на все провайдеры: <CABINET_URL>/auth/oauth/callback (т.е. если CABINET_URL=https://example.com/cabinet, то redirect URI = https://example.com/cabinet/auth/oauth/callback). Этот же URI пропиши в каждом OAuth-приложении.',
         'EXPIRY_FALLBACK': 'Fallback-сквад при истечении подписки и исчерпании трафика: вместо полного отключения юзер получает урезанный VPN (только Telegram, банки, кабинет) на N дней, чтобы успеть продлить.',
     }
 
@@ -1202,7 +1202,7 @@ class BotConfigurationService:
             'description': 'OAuth Client ID из Google Cloud Console.',
             'format': 'Строка вида xxxxxxxx.apps.googleusercontent.com.',
             'example': '123456789-abc.apps.googleusercontent.com',
-            'warning': 'Authorized redirect URI в Google Console: https://<домен-кабинета>/cabinet/oauth/google/callback',
+            'warning': 'Authorized redirect URI в Google Console: <CABINET_URL>/auth/oauth/callback (один общий для всех провайдеров).',
         },
         'OAUTH_GOOGLE_CLIENT_SECRET': {
             'description': 'OAuth Client Secret из Google Cloud Console.',
@@ -1219,7 +1219,7 @@ class BotConfigurationService:
             'description': 'ID приложения из oauth.yandex.ru.',
             'format': 'Строка-идентификатор.',
             'example': '7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d',
-            'warning': 'Callback URL в настройках Yandex: https://<домен-кабинета>/cabinet/oauth/yandex/callback. Запрашиваемые права: login:email, login:info, login:avatar.',
+            'warning': 'Callback URL в настройках Yandex: <CABINET_URL>/auth/oauth/callback (один общий для всех провайдеров). Запрашиваемые права: login:email, login:info, login:avatar.',
         },
         'OAUTH_YANDEX_CLIENT_SECRET': {
             'description': 'Пароль приложения (Client Secret) из oauth.yandex.ru.',
@@ -1236,7 +1236,7 @@ class BotConfigurationService:
             'description': 'OAuth2 Client ID из Discord Developer Portal.',
             'format': 'Числовая строка-идентификатор.',
             'example': '1234567890123456789',
-            'warning': 'OAuth2 Redirect URL в настройках Discord: https://<домен-кабинета>/cabinet/oauth/discord/callback. Scopes: identify, email.',
+            'warning': 'OAuth2 Redirect URL в настройках Discord: <CABINET_URL>/auth/oauth/callback (один общий для всех провайдеров). Scopes: identify, email.',
         },
         'OAUTH_DISCORD_CLIENT_SECRET': {
             'description': 'OAuth2 Client Secret из Discord Developer Portal.',
@@ -1253,7 +1253,7 @@ class BotConfigurationService:
             'description': 'ID приложения VK ID.',
             'format': 'Числовая строка-идентификатор.',
             'example': '12345678',
-            'warning': 'Доверенный redirect URL в настройках VK ID: https://<домен-кабинета>/cabinet/oauth/vk/callback.',
+            'warning': 'Доверенный redirect URL в настройках VK ID: <CABINET_URL>/auth/oauth/callback (один общий для всех провайдеров).',
         },
         'OAUTH_VK_CLIENT_SECRET': {
             'description': 'Защищённый ключ (Client Secret) приложения VK ID.',
