@@ -145,6 +145,8 @@ class BotConfigurationService:
         'MODERATION': '🛡️ Модерация и фильтры',
         'BAN_NOTIFICATIONS': '🚫 Тексты уведомлений о блокировках',
         'MODEM': '📡 Модем',
+        'OAUTH': '🔐 OAuth провайдеры',
+        'EXPIRY_FALLBACK': '🛟 Fallback при истечении',
     }
 
     CATEGORY_DESCRIPTIONS: dict[str, str] = {
@@ -216,6 +218,8 @@ class BotConfigurationService:
         'DEBUG': 'Отладочные функции и безопасный режим.',
         'MODERATION': 'Настройки фильтров отображаемых имен и защиты от фишинга.',
         'BAN_NOTIFICATIONS': 'Тексты уведомлений о блокировках, которые отправляются пользователям.',
+        'OAUTH': 'Вход в кабинет через сторонние сервисы (Google, Yandex, Discord, VK). Для каждого нужно создать OAuth-приложение в личном кабинете провайдера и указать redirect URI вида https://<домен-кабинета>/cabinet/oauth/<provider>/callback.',
+        'EXPIRY_FALLBACK': 'Fallback-сквад при истечении подписки и исчерпании трафика: вместо полного отключения юзер получает урезанный VPN (только Telegram, банки, кабинет) на N дней, чтобы успеть продлить.',
     }
 
     @staticmethod
@@ -322,6 +326,18 @@ class BotConfigurationService:
         'EXPIRED_CLEANUP_ENABLED': 'EXPIRY_FALLBACK',
         'EXPIRED_CLEANUP_REQUIRE_ZERO_BALANCE': 'EXPIRY_FALLBACK',
         'EXPIRED_CLEANUP_INTERVAL_HOURS': 'EXPIRY_FALLBACK',
+        'OAUTH_GOOGLE_ENABLED': 'OAUTH',
+        'OAUTH_GOOGLE_CLIENT_ID': 'OAUTH',
+        'OAUTH_GOOGLE_CLIENT_SECRET': 'OAUTH',
+        'OAUTH_YANDEX_ENABLED': 'OAUTH',
+        'OAUTH_YANDEX_CLIENT_ID': 'OAUTH',
+        'OAUTH_YANDEX_CLIENT_SECRET': 'OAUTH',
+        'OAUTH_DISCORD_ENABLED': 'OAUTH',
+        'OAUTH_DISCORD_CLIENT_ID': 'OAUTH',
+        'OAUTH_DISCORD_CLIENT_SECRET': 'OAUTH',
+        'OAUTH_VK_ENABLED': 'OAUTH',
+        'OAUTH_VK_CLIENT_ID': 'OAUTH',
+        'OAUTH_VK_CLIENT_SECRET': 'OAUTH',
         'SUPPORT_TOPUP_ENABLED': 'PAYMENT',
         'ENABLE_NOTIFICATIONS': 'NOTIFICATIONS',
         'NOTIFICATION_RETRY_ATTEMPTS': 'NOTIFICATIONS',
@@ -1175,6 +1191,74 @@ class BotConfigurationService:
             'format': 'Строка-секрет.',
             'example': 'xxxxxxxxxxxxxxxxxxxxxxxx',
             'warning': 'НЕ совпадает с BOT_TOKEN. Получается отдельно в BotFather.',
+        },
+        'OAUTH_GOOGLE_ENABLED': {
+            'description': 'Включить вход через Google. На странице логина появится кнопка «Войти через Google».',
+            'format': 'Булево значение.',
+            'example': 'true',
+            'warning': 'Требует CLIENT_ID и CLIENT_SECRET. Создаётся в Google Cloud Console → APIs & Services → Credentials → OAuth client ID (Web application).',
+        },
+        'OAUTH_GOOGLE_CLIENT_ID': {
+            'description': 'OAuth Client ID из Google Cloud Console.',
+            'format': 'Строка вида xxxxxxxx.apps.googleusercontent.com.',
+            'example': '123456789-abc.apps.googleusercontent.com',
+            'warning': 'Authorized redirect URI в Google Console: https://<домен-кабинета>/cabinet/oauth/google/callback',
+        },
+        'OAUTH_GOOGLE_CLIENT_SECRET': {
+            'description': 'OAuth Client Secret из Google Cloud Console.',
+            'format': 'Строка-секрет.',
+            'example': 'GOCSPX-xxxxxxxxxxxxxxxxxxxxx',
+        },
+        'OAUTH_YANDEX_ENABLED': {
+            'description': 'Включить вход через Яндекс ID. На странице логина появится кнопка «Войти через Yandex».',
+            'format': 'Булево значение.',
+            'example': 'true',
+            'warning': 'Требует CLIENT_ID и CLIENT_SECRET. Создаётся в https://oauth.yandex.ru/ → Создать приложение → Платформа: Веб-сервисы.',
+        },
+        'OAUTH_YANDEX_CLIENT_ID': {
+            'description': 'ID приложения из oauth.yandex.ru.',
+            'format': 'Строка-идентификатор.',
+            'example': '7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d',
+            'warning': 'Callback URL в настройках Yandex: https://<домен-кабинета>/cabinet/oauth/yandex/callback. Запрашиваемые права: login:email, login:info, login:avatar.',
+        },
+        'OAUTH_YANDEX_CLIENT_SECRET': {
+            'description': 'Пароль приложения (Client Secret) из oauth.yandex.ru.',
+            'format': 'Строка-секрет.',
+            'example': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        },
+        'OAUTH_DISCORD_ENABLED': {
+            'description': 'Включить вход через Discord.',
+            'format': 'Булево значение.',
+            'example': 'true',
+            'warning': 'Требует CLIENT_ID и CLIENT_SECRET. Создаётся в https://discord.com/developers/applications → New Application → OAuth2.',
+        },
+        'OAUTH_DISCORD_CLIENT_ID': {
+            'description': 'OAuth2 Client ID из Discord Developer Portal.',
+            'format': 'Числовая строка-идентификатор.',
+            'example': '1234567890123456789',
+            'warning': 'OAuth2 Redirect URL в настройках Discord: https://<домен-кабинета>/cabinet/oauth/discord/callback. Scopes: identify, email.',
+        },
+        'OAUTH_DISCORD_CLIENT_SECRET': {
+            'description': 'OAuth2 Client Secret из Discord Developer Portal.',
+            'format': 'Строка-секрет.',
+            'example': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        },
+        'OAUTH_VK_ENABLED': {
+            'description': 'Включить вход через VK ID.',
+            'format': 'Булево значение.',
+            'example': 'true',
+            'warning': 'Требует CLIENT_ID и CLIENT_SECRET. Создаётся в https://id.vk.com/business/go → Создать приложение.',
+        },
+        'OAUTH_VK_CLIENT_ID': {
+            'description': 'ID приложения VK ID.',
+            'format': 'Числовая строка-идентификатор.',
+            'example': '12345678',
+            'warning': 'Доверенный redirect URL в настройках VK ID: https://<домен-кабинета>/cabinet/oauth/vk/callback.',
+        },
+        'OAUTH_VK_CLIENT_SECRET': {
+            'description': 'Защищённый ключ (Client Secret) приложения VK ID.',
+            'format': 'Строка-секрет.',
+            'example': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
         },
     }
 
