@@ -2,6 +2,8 @@
 
 import html
 import smtplib
+import threading
+import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
@@ -12,6 +14,29 @@ from app.config import settings
 
 
 logger = structlog.get_logger(__name__)
+
+
+# Throttle: Yandex 360 и большинство SMTP-провайдеров ограничивают
+# исходящий поток (для Yandex это ~30 писем/мин). Без throttle при
+# массовой рассылке (notification_delivery_service в цикле мониторинга)
+# получаем 450 4.2.1 Too many messages и письма теряются.
+_THROTTLE_LOCK = threading.Lock()
+_LAST_SEND_AT = 0.0
+
+
+def _throttle_send() -> None:
+    """Блокирует поток до момента, когда можно отправить следующее письмо."""
+    interval_ms = int(getattr(settings, 'SMTP_MIN_SEND_INTERVAL_MS', 2200) or 2200)
+    if interval_ms <= 0:
+        return
+    interval = interval_ms / 1000.0
+    with _THROTTLE_LOCK:
+        global _LAST_SEND_AT
+        now = time.monotonic()
+        elapsed = now - _LAST_SEND_AT
+        if elapsed < interval:
+            time.sleep(interval - elapsed)
+        _LAST_SEND_AT = time.monotonic()
 
 
 class EmailService:
@@ -126,11 +151,31 @@ class EmailService:
             msg.attach(part1)
             msg.attach(part2)
 
-            with self._get_smtp_connection() as smtp:
-                smtp.sendmail(safe_from_email, to_email, msg.as_string())
+            payload = msg.as_string()
 
-            logger.info('Email sent successfully to', to_email=to_email)
-            return True
+            # Throttle + retry на rate-limit (4.2.1 Too many messages у Yandex 360)
+            max_attempts = 2
+            for attempt in range(1, max_attempts + 1):
+                _throttle_send()
+                try:
+                    with self._get_smtp_connection() as smtp:
+                        smtp.sendmail(safe_from_email, to_email, payload)
+                    logger.info('Email sent successfully to', to_email=to_email)
+                    return True
+                except smtplib.SMTPSenderRefused as e:
+                    is_rate_limit = e.smtp_code == 450 and b'4.2.1' in (e.smtp_error or b'')
+                    if is_rate_limit and attempt < max_attempts:
+                        backoff = int(getattr(settings, 'SMTP_RATE_LIMIT_RETRY_DELAY_S', 30) or 30)
+                        logger.warning(
+                            'SMTP rate limit, retry after backoff',
+                            to_email=to_email,
+                            attempt=attempt,
+                            backoff_s=backoff,
+                        )
+                        time.sleep(backoff)
+                        continue
+                    raise
+            return False
 
         except Exception as e:
             logger.error('Failed to send email to', to_email=to_email, error=e)

@@ -1072,6 +1072,11 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str | None = None
     SMTP_FROM_NAME: str = 'VPN Service'
     SMTP_USE_TLS: bool = True
+    # Yandex 360 ограничивает ~30 писем/мин на ящик. 2200 мс ≈ 27/мин с запасом.
+    # Без throttle при массовой рассылке получаем 450 4.2.1 Too many messages.
+    SMTP_MIN_SEND_INTERVAL_MS: int = 2200
+    # Сколько секунд ждать перед повторной попыткой при 450 4.2.1.
+    SMTP_RATE_LIMIT_RETRY_DELAY_S: int = 30
 
     # Ban System Integration (BedolagaBan monitoring)
     BAN_SYSTEM_ENABLED: bool = False
