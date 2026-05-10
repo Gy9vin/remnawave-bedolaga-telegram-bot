@@ -73,6 +73,13 @@ from .wheel import router as wheel_router
 from .withdrawal import router as withdrawal_router
 
 
+# Conditional imports
+try:
+    from .apple_iap import router as apple_iap_router
+except ImportError:
+    apple_iap_router = None
+
+
 # Main cabinet router
 router = APIRouter(prefix='/cabinet', tags=['Cabinet'], redirect_slashes=False)
 
@@ -86,6 +93,11 @@ router.include_router(modem_router)
 router.include_router(multi_tariff_subscription_router)
 router.include_router(balance_router)
 router.include_router(referral_router)
+
+# Apple IAP routes
+if apple_iap_router is not None:
+    router.include_router(apple_iap_router)
+
 router.include_router(partner_application_router)
 router.include_router(withdrawal_router)
 # Notifications router MUST be before tickets router to avoid route conflict
