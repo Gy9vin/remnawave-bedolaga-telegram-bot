@@ -418,11 +418,13 @@ async def restore_from_fallback(
     *,
     new_expire_at: datetime | None = None,
     new_traffic_limit_bytes: int | None = None,
+    notify: bool = True,
 ) -> bool:
     """Возвращает подписку из fallback в исходные сквады/лимиты.
 
     new_expire_at, new_traffic_limit_bytes — если переданы, используются вместо
     сохранённых оригиналов (при продлении: подписка получила новый end_date).
+    notify: False для batch-операций (reconcile), чтобы не выжать DB pool.
     """
     if not subscription.expiry_fallback_active and not subscription.traffic_fallback_active:
         return True
@@ -467,14 +469,15 @@ async def restore_from_fallback(
     )
 
     # Уведомления в фоне
-    _dispatch_fallback_notifications(
-        user_id=captured_user_id,
-        subscription_id=captured_sub_id,
-        action='restored',
-        reason='extension',
-        original_squads=captured_squads,
-        fallback_squad=None,
-    )
+    if notify:
+        _dispatch_fallback_notifications(
+            user_id=captured_user_id,
+            subscription_id=captured_sub_id,
+            action='restored',
+            reason='extension',
+            original_squads=captured_squads,
+            fallback_squad=None,
+        )
     return True
 
 
@@ -675,7 +678,9 @@ async def reconcile_fallback_subscriptions(db: AsyncSession) -> dict:
     for sub in lost_subs:
         try:
             reason = 'expired' if sub.status == SubscriptionStatus.EXPIRED.value else 'traffic'
-            ok = await move_to_fallback(db, sub, reason=reason)
+            # notify=False: reconcile подбирает до 50 подписок за цикл,
+            # массовые bg notify съедают DB pool (см. fallback_service docs выше).
+            ok = await move_to_fallback(db, sub, reason=reason, notify=False)
             if ok:
                 stats['moved_lost_webhook'] += 1
                 logger.info(
@@ -768,7 +773,9 @@ async def _reconcile_single_active_fallback(
         buffer = timedelta(days=int(grace_days * 1.5))
         external_renewal_threshold = baseline_expire_at + buffer
         if current_expire_at > external_renewal_threshold:
-            ok = await restore_from_fallback(db, sub, new_expire_at=current_expire_at)
+            ok = await restore_from_fallback(
+                db, sub, new_expire_at=current_expire_at, notify=False
+            )
             if ok:
                 stats['restored_external'] += 1
                 logger.info(
@@ -789,7 +796,9 @@ async def _reconcile_single_active_fallback(
         # Мы поставили baseline + grace_gb. Если admin увеличил больше — restore.
         expected_limit = int(baseline_traffic) + grace_gb * (1024 ** 3)
         if current_traffic_limit > expected_limit + (1024 ** 3):  # buffer 1GB
-            ok = await restore_from_fallback(db, sub, new_traffic_limit_bytes=current_traffic_limit)
+            ok = await restore_from_fallback(
+                db, sub, new_traffic_limit_bytes=current_traffic_limit, notify=False
+            )
             if ok:
                 stats['restored_external'] += 1
                 logger.info(
