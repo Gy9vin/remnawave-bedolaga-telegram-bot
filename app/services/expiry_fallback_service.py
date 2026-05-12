@@ -446,16 +446,20 @@ async def scan_and_move_expired(db: AsyncSession) -> dict:
 
 
 async def scan_and_restore_active(db: AsyncSession) -> dict:
-    """Сканирует БД и возвращает из fallback всех с реально активной подпиской.
+    """Сканирует БД и вытаскивает из fallback тех, у кого ЕСТЬ активная подписка.
 
-    Юзер ошибочно «застрял» в fallback если:
-      - флаг expiry_fallback_active или traffic_fallback_active = true,
-      - НО status = ACTIVE и end_date > now + (grace * 2.5).
+    Логика на уровне ЮЗЕРА (не подписки), потому что в single-tariff режиме
+    несколько подписок одного юзера делят user.remnawave_uuid. Старая
+    expired-сабка в fallback блокирует Remnawave доступ для свежей active.
 
-    Так бывает когда продление прошло (cabinet/бот/админ), но PATCH в
-    Remnawave не дошёл или флаг fallback не снялся.
+    Алгоритм:
+      1. Собираем юзеров у которых ХОТЯ БЫ ОДНА подписка в fallback.
+      2. Для каждого такого юзера смотрим ВСЕ его подписки.
+      3. Если есть ACTIVE с end_date > now+grace*2.5 → PATCH Remnawave
+         в её состояние (squads + expire) + снимаем fallback-флаги
+         со ВСЕХ его подписок.
 
-    Возвращает {'scanned', 'restored', 'skipped_genuine_fallback', 'failed'}.
+    Возвращает {'scanned_users', 'restored_users', 'skipped_genuine', 'failed'}.
     """
     if not bool(getattr(settings, 'EXPIRY_FALLBACK_ENABLED', False)):
         return {
@@ -468,68 +472,110 @@ async def scan_and_restore_active(db: AsyncSession) -> dict:
     now = datetime.now(UTC)
     threshold = now + timedelta(days=int(grace_days) + int(grace_days * 1.5))
 
-    result = await db.execute(
-        select(Subscription).where(
+    # Уникальные user_id у кого есть хотя бы одна подписка в fallback
+    affected_users_q = await db.execute(
+        select(Subscription.user_id).where(
             or_(
                 Subscription.expiry_fallback_active.is_(True),
                 Subscription.traffic_fallback_active.is_(True),
             )
-        )
+        ).distinct()
     )
-    candidates = list(result.scalars().all())
+    affected_user_ids = [row[0] for row in affected_users_q.all()]
 
-    scanned = 0
-    restored = 0
+    scanned_users = 0
+    restored_users = 0
     skipped_genuine = 0
     failed = 0
 
-    for sub in candidates:
-        scanned += 1
-        sub_end = sub.end_date
-        if sub_end is not None and sub_end.tzinfo is None:
-            sub_end = sub_end.replace(tzinfo=UTC)
+    for user_id in affected_user_ids:
+        scanned_users += 1
 
-        is_genuine_fallback = (
-            sub.status != SubscriptionStatus.ACTIVE.value
-            or sub_end is None
-            or sub_end <= threshold
+        # Все подписки юзера
+        all_subs_q = await db.execute(
+            select(Subscription).where(Subscription.user_id == user_id)
         )
-        if is_genuine_fallback:
+        all_subs = list(all_subs_q.scalars().all())
+
+        # Ищем активную с end_date в будущем
+        active_sub = None
+        for s in all_subs:
+            end_dt = s.end_date
+            if end_dt is not None and end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=UTC)
+            if (
+                s.status == SubscriptionStatus.ACTIVE.value
+                and end_dt is not None
+                and end_dt > threshold
+                and not s.expiry_fallback_active
+                and not s.traffic_fallback_active
+            ):
+                if active_sub is None or (active_sub.end_date and end_dt > active_sub.end_date.replace(tzinfo=UTC)):
+                    active_sub = s
+
+        if not active_sub:
             skipped_genuine += 1
             continue
 
+        # PATCH Remnawave в состояние active_sub
+        if not active_sub.remnawave_uuid:
+            skipped_genuine += 1
+            continue
+
+        active_end = active_sub.end_date
+        if active_end is not None and active_end.tzinfo is None:
+            active_end = active_end.replace(tzinfo=UTC)
+
         try:
-            ok = await restore_from_fallback(db, sub, new_expire_at=sub_end, notify=False)
-            if ok:
-                restored += 1
-                logger.info(
-                    'scan_and_restore_active: restore',
-                    subscription_id=sub.id,
-                    user_id=sub.user_id,
-                    db_end_date=sub_end,
-                )
-            else:
+            ok = await _patch_user_full(
+                active_sub.remnawave_uuid,
+                squads=active_sub.connected_squads or [],
+                expire_at=active_end,
+                verify_squad_in=active_sub.connected_squads if active_sub.connected_squads else None,
+            )
+            if not ok:
                 failed += 1
+                logger.warning(
+                    'scan_and_restore_active: PATCH failed',
+                    user_id=user_id,
+                    active_sub_id=active_sub.id,
+                )
+                continue
+
+            # Снимаем fallback-флаги со всех подписок юзера
+            for s in all_subs:
+                if s.expiry_fallback_active or s.traffic_fallback_active:
+                    _clear_fallback_state(s)
+            await db.commit()
+
+            restored_users += 1
+            logger.info(
+                'scan_and_restore_active: восстановлен юзер',
+                user_id=user_id,
+                active_sub_id=active_sub.id,
+                end_date=active_end,
+                squads=active_sub.connected_squads,
+            )
         except Exception as exc:
             failed += 1
             logger.error(
-                'scan_and_restore_active: ошибка для подписки',
-                subscription_id=sub.id,
+                'scan_and_restore_active: ошибка для юзера',
+                user_id=user_id,
                 error=str(exc),
             )
 
     logger.info(
         'scan_and_restore_active завершён',
-        scanned=scanned,
-        restored=restored,
+        scanned_users=scanned_users,
+        restored_users=restored_users,
         skipped_genuine_fallback=skipped_genuine,
         failed=failed,
     )
     return {
         'success': True,
         'error': None,
-        'scanned': scanned,
-        'restored': restored,
+        'scanned': scanned_users,
+        'restored': restored_users,
         'skipped_genuine_fallback': skipped_genuine,
         'failed': failed,
     }
