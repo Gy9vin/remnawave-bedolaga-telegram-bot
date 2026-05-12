@@ -776,6 +776,31 @@ async def _reconcile_single_active_fallback(
     if not sub.remnawave_uuid:
         return
 
+    # 0) Подписка в БД реально активна (admin/cabinet/бот продлили) — restore немедленно.
+    # Это страховка от случая когда PATCH в Remnawave при продлении не дошёл или
+    # флаг fallback не снялся: доверяем нашему end_date, а не панели.
+    # Условие: статус ACTIVE и end_date достаточно вперёд (больше нашего grace ceiling),
+    # чтобы исключить случайные совпадения.
+    sub_end = sub.end_date
+    if sub_end is not None and sub_end.tzinfo is None:
+        sub_end = sub_end.replace(tzinfo=UTC)
+    if (
+        sub.status == SubscriptionStatus.ACTIVE.value
+        and sub_end is not None
+        and sub_end > now + timedelta(days=int(grace_days) + int(grace_days * 1.5))
+    ):
+        ok = await restore_from_fallback(db, sub, new_expire_at=sub_end, notify=False)
+        if ok:
+            stats['restored_external'] += 1
+            logger.info(
+                'Reconcile: подписка в БД активна (продлена) — restore из fallback',
+                subscription_id=sub.id,
+                user_id=sub.user_id,
+                db_end_date=sub_end,
+                fallback_started_at=sub.expiry_fallback_started_at,
+            )
+        return
+
     rw_user = await _get_remnawave_user(sub.remnawave_uuid)
     if not rw_user:
         return
