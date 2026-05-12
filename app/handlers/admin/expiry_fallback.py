@@ -28,6 +28,8 @@ logger = structlog.get_logger(__name__)
 CALLBACK_MENU = 'admin_expiry_fallback_menu'
 CALLBACK_CONFIRM = 'admin_expiry_fallback_confirm'
 CALLBACK_RUN = 'admin_expiry_fallback_run'
+CALLBACK_RESTORE_CONFIRM = 'admin_expiry_fallback_restore_confirm'
+CALLBACK_RESTORE_RUN = 'admin_expiry_fallback_restore_run'
 
 
 def _menu_keyboard(enabled: bool, has_uuid: bool) -> InlineKeyboardMarkup:
@@ -38,6 +40,14 @@ def _menu_keyboard(enabled: bool, has_uuid: bool) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text='🚀 Прогнать expired в fallback',
                     callback_data=CALLBACK_CONFIRM,
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text='🔧 Вернуть ошибочно загнанных',
+                    callback_data=CALLBACK_RESTORE_CONFIRM,
                 )
             ]
         )
@@ -292,7 +302,82 @@ async def run_scan(callback: types.CallbackQuery, db_user: User) -> None:
     )
 
 
+@admin_required
+@error_handler
+async def confirm_restore(callback: types.CallbackQuery, db_user: User) -> None:  # noqa: ARG001
+    text = (
+        '⚠️ <b>Вернуть ошибочно загнанных из fallback</b>\n\n'
+        'Просканирует подписки в fallback-скваде. Если в БД '
+        '<code>status=ACTIVE</code> и <code>end_date</code> в будущем (юзер '
+        'реально продлился), вернёт его в исходный сквад.\n\n'
+        'Безопасно — настоящих просроченных не трогает. Продолжить?'
+    )
+    await callback.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text='✅ Запустить', callback_data=CALLBACK_RESTORE_RUN),
+                    InlineKeyboardButton(text='⬅️ Отмена', callback_data=CALLBACK_MENU),
+                ]
+            ]
+        ),
+    )
+
+
+@admin_required
+@error_handler
+async def run_restore(callback: types.CallbackQuery, db_user: User) -> None:
+    from app.services.expiry_fallback_service import scan_and_restore_active
+
+    await callback.message.edit_text(
+        '🔄 <b>Сканирую fallback на ошибочные…</b>\n\nОперация может занять до минуты.',
+        parse_mode=ParseMode.HTML,
+    )
+
+    async with AsyncSessionLocal() as db:
+        stats = await scan_and_restore_active(db)
+
+    if not stats.get('success'):
+        await callback.message.edit_text(
+            f'❌ <b>Не удалось запустить</b>\n\n{stats.get("error", "Неизвестная ошибка")}',
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text='⬅️ Назад', callback_data=CALLBACK_MENU)]
+                ]
+            ),
+        )
+        return
+
+    text = (
+        '✅ <b>Готово</b>\n\n'
+        f'• Просканировано: <b>{stats["scanned"]}</b>\n'
+        f'• Возвращено в исходный сквад: <b>{stats["restored"]}</b>\n'
+        f'• Пропущено (реально в fallback): <b>{stats["skipped_genuine_fallback"]}</b>\n'
+        f'• Ошибок: <b>{stats["failed"]}</b>\n'
+    )
+    logger.info(
+        'Бот: scan_and_restore_active',
+        admin_telegram_id=db_user.telegram_id,
+        admin_user_id=db_user.id,
+        stats=stats,
+    )
+    await callback.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text='⬅️ Назад', callback_data=CALLBACK_MENU)]
+            ]
+        ),
+    )
+
+
 def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(show_menu, F.data == CALLBACK_MENU)
     dp.callback_query.register(confirm_scan, F.data == CALLBACK_CONFIRM)
     dp.callback_query.register(run_scan, F.data == CALLBACK_RUN)
+    dp.callback_query.register(confirm_restore, F.data == CALLBACK_RESTORE_CONFIRM)
+    dp.callback_query.register(run_restore, F.data == CALLBACK_RESTORE_RUN)

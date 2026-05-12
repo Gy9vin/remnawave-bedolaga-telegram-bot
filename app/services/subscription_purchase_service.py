@@ -1369,6 +1369,13 @@ class MiniAppSubscriptionPurchaseService:
                     reset_reason='miniapp purchase',
                     sync_squads=True,
                 )
+
+            # Снимаем fallback-флаги если подписка была в fallback (после покупки уже в нормальных сквадах).
+            try:
+                from app.services.expiry_fallback_service import clear_fallback_after_purchase
+                await clear_fallback_after_purchase(db, subscription)
+            except Exception as clear_err:
+                logger.warning('Failed to clear fallback flags after purchase', error=str(clear_err))
         except Exception as remnawave_error:  # pragma: no cover - defensive logging
             logger.error('Failed to sync subscription with RemnaWave', remnawave_error=remnawave_error)
             from app.services.remnawave_retry_queue import remnawave_retry_queue

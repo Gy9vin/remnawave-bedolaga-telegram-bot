@@ -2690,6 +2690,13 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                     action='create',
                 )
 
+        # Снимаем fallback-флаги если подписка была в fallback (покупка уже синхронизирована).
+        try:
+            from app.services.expiry_fallback_service import clear_fallback_after_purchase
+            await clear_fallback_after_purchase(db, subscription)
+        except Exception as clear_err:
+            logger.warning('Failed to clear fallback flags after bot purchase', error=str(clear_err))
+
         transaction = await create_transaction(
             db=db,
             user_id=db_user.id,

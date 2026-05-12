@@ -445,6 +445,96 @@ async def scan_and_move_expired(db: AsyncSession) -> dict:
     }
 
 
+async def scan_and_restore_active(db: AsyncSession) -> dict:
+    """Сканирует БД и возвращает из fallback всех с реально активной подпиской.
+
+    Юзер ошибочно «застрял» в fallback если:
+      - флаг expiry_fallback_active или traffic_fallback_active = true,
+      - НО status = ACTIVE и end_date > now + (grace * 2.5).
+
+    Так бывает когда продление прошло (cabinet/бот/админ), но PATCH в
+    Remnawave не дошёл или флаг fallback не снялся.
+
+    Возвращает {'scanned', 'restored', 'skipped_genuine_fallback', 'failed'}.
+    """
+    if not bool(getattr(settings, 'EXPIRY_FALLBACK_ENABLED', False)):
+        return {
+            'success': False,
+            'error': 'EXPIRY_FALLBACK_ENABLED=false',
+            'scanned': 0, 'restored': 0, 'skipped_genuine_fallback': 0, 'failed': 0,
+        }
+
+    grace_days = _grace_days()
+    now = datetime.now(UTC)
+    threshold = now + timedelta(days=int(grace_days) + int(grace_days * 1.5))
+
+    result = await db.execute(
+        select(Subscription).where(
+            or_(
+                Subscription.expiry_fallback_active.is_(True),
+                Subscription.traffic_fallback_active.is_(True),
+            )
+        )
+    )
+    candidates = list(result.scalars().all())
+
+    scanned = 0
+    restored = 0
+    skipped_genuine = 0
+    failed = 0
+
+    for sub in candidates:
+        scanned += 1
+        sub_end = sub.end_date
+        if sub_end is not None and sub_end.tzinfo is None:
+            sub_end = sub_end.replace(tzinfo=UTC)
+
+        is_genuine_fallback = (
+            sub.status != SubscriptionStatus.ACTIVE.value
+            or sub_end is None
+            or sub_end <= threshold
+        )
+        if is_genuine_fallback:
+            skipped_genuine += 1
+            continue
+
+        try:
+            ok = await restore_from_fallback(db, sub, new_expire_at=sub_end, notify=False)
+            if ok:
+                restored += 1
+                logger.info(
+                    'scan_and_restore_active: restore',
+                    subscription_id=sub.id,
+                    user_id=sub.user_id,
+                    db_end_date=sub_end,
+                )
+            else:
+                failed += 1
+        except Exception as exc:
+            failed += 1
+            logger.error(
+                'scan_and_restore_active: ошибка для подписки',
+                subscription_id=sub.id,
+                error=str(exc),
+            )
+
+    logger.info(
+        'scan_and_restore_active завершён',
+        scanned=scanned,
+        restored=restored,
+        skipped_genuine_fallback=skipped_genuine,
+        failed=failed,
+    )
+    return {
+        'success': True,
+        'error': None,
+        'scanned': scanned,
+        'restored': restored,
+        'skipped_genuine_fallback': skipped_genuine,
+        'failed': failed,
+    }
+
+
 async def restore_from_fallback(
     db: AsyncSession,
     subscription: Subscription,
@@ -615,6 +705,25 @@ def _clear_fallback_state(subscription: Subscription) -> None:
     subscription.pre_expiry_expire_at = None
     subscription.pre_expiry_traffic_limit_bytes = None
     subscription.expiry_fallback_started_at = None
+
+
+async def clear_fallback_after_purchase(db: AsyncSession, subscription: Subscription) -> bool:
+    """Снимает fallback-флаги после успешной покупки/продления.
+
+    Сама покупка уже синхронизировала Remnawave (sync_squads=True/create_user)
+    с правильными сквадами, поэтому достаточно просто очистить флаги в БД.
+    Идемпотентно: если флаги не стоят — no-op.
+    """
+    if not subscription.expiry_fallback_active and not subscription.traffic_fallback_active:
+        return False
+    _clear_fallback_state(subscription)
+    await db.commit()
+    logger.info(
+        '✅ Сняты fallback-флаги после покупки/продления',
+        subscription_id=subscription.id,
+        user_id=subscription.user_id,
+    )
+    return True
 
 
 # ============================================================================
