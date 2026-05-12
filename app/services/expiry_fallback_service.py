@@ -819,6 +819,36 @@ async def reconcile_fallback_subscriptions(db: AsyncSession) -> dict:
 
     for sub in lost_subs:
         try:
+            # Защита от повторного загона: если админ уже вытащил юзера в панели
+            # (or дал ему доступ через продление), пропускаем — не отменяем admin action.
+            rw_user = await _get_remnawave_user(sub.remnawave_uuid)
+            if rw_user is not None:
+                current_squads = set(
+                    _extract_squad_uuids(getattr(rw_user, 'active_internal_squads', None))
+                )
+                current_expire_at = getattr(rw_user, 'expire_at', None)
+
+                # 1) Юзер уже в НЕ-fallback скваде → админ вручную перевёл → не трогаем
+                non_fallback_squads = current_squads - {fallback_uuid}
+                if non_fallback_squads and fallback_uuid not in current_squads:
+                    logger.info(
+                        'Reconcile path2 skip: юзер уже в обычном скваде (admin action)',
+                        subscription_id=sub.id,
+                        user_id=sub.user_id,
+                        current_squads=sorted(current_squads),
+                    )
+                    continue
+
+                # 2) expire_at в Remnawave далеко в будущем → админ продлил в панели
+                if current_expire_at and current_expire_at > now + timedelta(days=int(grace_days) + int(grace_days * 1.5)):
+                    logger.info(
+                        'Reconcile path2 skip: expire_at в панели в будущем (admin extension)',
+                        subscription_id=sub.id,
+                        user_id=sub.user_id,
+                        panel_expire_at=current_expire_at,
+                    )
+                    continue
+
             reason = 'expired' if sub.status == SubscriptionStatus.EXPIRED.value else 'traffic'
             # notify=False: reconcile подбирает до 50 подписок за цикл,
             # массовые bg notify съедают DB pool (см. fallback_service docs выше).
