@@ -1184,6 +1184,16 @@ def get_user_management_keyboard(
         ]
     )
 
+    # Кнопка вытаскивания юзера из fallback-сквада
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text='🛟 Вытащить из fallback',
+                callback_data=f'admin_user_fallback_restore_{user_id}',
+            )
+        ]
+    )
+
     if user_status == 'active':
         keyboard.append(
             [

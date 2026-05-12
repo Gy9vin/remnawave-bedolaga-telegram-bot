@@ -3069,6 +3069,142 @@ async def process_user_price_multiplier(message: types.Message, db_user: User, d
 
 @admin_required
 @error_handler
+async def admin_user_fallback_restore(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Принудительно вытаскивает юзера из fallback-сквада в Remnawave.
+
+    Логика:
+    - Находит самую свежую активную подписку юзера (status=ACTIVE, end_date>now)
+    - PATCH Remnawave к её состоянию (connected_squads + end_date)
+    - Снимает fallback-флаги со ВСЕХ подписок этого юзера
+    - Если активной нет — берёт самую свежую, восстанавливает в её pre_expiry_squads
+    """
+    user_id = int(callback.data.split('_')[-1])
+    user = await get_user_by_id(db, user_id)
+
+    if not user:
+        await callback.answer('Пользователь не найден', show_alert=True)
+        return
+
+    from sqlalchemy import or_, select
+    from datetime import UTC, datetime
+
+    from app.database.models import Subscription, SubscriptionStatus
+    from app.services.expiry_fallback_service import (
+        _clear_fallback_state,
+        _patch_user_full,
+    )
+
+    now = datetime.now(UTC)
+
+    # Все подписки юзера
+    all_subs_q = await db.execute(
+        select(Subscription).where(Subscription.user_id == user.id).order_by(Subscription.end_date.desc().nullslast())
+    )
+    all_subs = list(all_subs_q.scalars().all())
+
+    if not all_subs:
+        await callback.message.edit_text(
+            f'ℹ️ <b>У пользователя нет подписок</b>\n👤 {user.full_name} (ID {user.id})',
+            parse_mode='HTML',
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [types.InlineKeyboardButton(text='👤 К пользователю', callback_data=f'admin_user_manage_{user_id}')]
+                ]
+            ),
+        )
+        return
+
+    # Ищем активную сабку
+    active_sub = None
+    for s in all_subs:
+        end_dt = s.end_date
+        if end_dt is not None and end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=UTC)
+        if s.status == SubscriptionStatus.ACTIVE.value and end_dt and end_dt > now:
+            active_sub = s
+            break
+
+    fallback_subs = [s for s in all_subs if s.expiry_fallback_active or s.traffic_fallback_active]
+
+    info_lines: list[str] = []
+    info_lines.append(f'Активных подписок: <b>{"да, sub #" + str(active_sub.id) if active_sub else "нет"}</b>')
+    info_lines.append(f'В fallback флагах: <b>{len(fallback_subs)}</b>')
+
+    patched = False
+    patch_target_squads = None
+    patch_target_expire = None
+
+    if active_sub and active_sub.remnawave_uuid:
+        patch_target_squads = active_sub.connected_squads or []
+        end_dt = active_sub.end_date
+        if end_dt is not None and end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=UTC)
+        patch_target_expire = end_dt
+
+        ok = await _patch_user_full(
+            active_sub.remnawave_uuid,
+            squads=patch_target_squads,
+            expire_at=patch_target_expire,
+            verify_squad_in=patch_target_squads if patch_target_squads else None,
+        )
+        patched = bool(ok)
+        info_lines.append(
+            f'Remnawave PATCH: <b>{"✅" if ok else "❌"}</b> squads={patch_target_squads}, expire={patch_target_expire}'
+        )
+    elif fallback_subs:
+        # Активной нет — пробуем по самой свежей fallback-сабке
+        latest_fb = fallback_subs[0]
+        if latest_fb.remnawave_uuid and latest_fb.pre_expiry_squads:
+            patch_target_squads = list(latest_fb.pre_expiry_squads)
+            patch_target_expire = latest_fb.pre_expiry_expire_at
+            ok = await _patch_user_full(
+                latest_fb.remnawave_uuid,
+                squads=patch_target_squads,
+                expire_at=patch_target_expire,
+                verify_squad_in=patch_target_squads,
+            )
+            patched = bool(ok)
+            info_lines.append(
+                f'Remnawave PATCH (из pre_expiry sub #{latest_fb.id}): <b>{"✅" if ok else "❌"}</b>'
+            )
+
+    # В любом случае снимаем флаги в БД со всех fallback-сабок
+    cleared = 0
+    for s in fallback_subs:
+        _clear_fallback_state(s)
+        cleared += 1
+    await db.commit()
+    info_lines.append(f'Сняты fallback-флаги в БД: <b>{cleared}</b>')
+
+    text = (
+        f'🛟 <b>Вытаскивание из fallback</b>\n'
+        f'👤 {user.full_name} (ID {user.id})\n\n'
+        + '\n'.join(info_lines)
+    )
+    if not patched and not cleared:
+        text += '\n\n<i>Юзер уже не в fallback ни по флагам ни по панели.</i>'
+
+    logger.info(
+        'Админ: ручное вытаскивание из fallback',
+        admin_telegram_id=db_user.telegram_id,
+        target_user_id=user.id,
+        patched=patched,
+        cleared=cleared,
+        active_sub_id=active_sub.id if active_sub else None,
+    )
+    await callback.message.edit_text(
+        text,
+        parse_mode='HTML',
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text='👤 К пользователю', callback_data=f'admin_user_manage_{user_id}')]
+            ]
+        ),
+    )
+
+
+@admin_required
+@error_handler
 async def show_inactive_users(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     UserService()
 
@@ -6399,6 +6535,12 @@ def register_handlers(dp: Dispatcher):
     # Персональный множитель цены
     dp.callback_query.register(show_user_price_multiplier, F.data.startswith('admin_user_price_multiplier_'))
     dp.message.register(process_user_price_multiplier, AdminStates.editing_user_price_multiplier)
+
+    # Ручное вытаскивание юзера из fallback-сквада
+    dp.callback_query.register(
+        admin_user_fallback_restore,
+        F.data.startswith('admin_user_fallback_restore_'),
+    )
 
     dp.callback_query.register(show_inactive_users, F.data == 'admin_users_inactive')
 
