@@ -2803,40 +2803,35 @@ async def disable_user(
     panel_deactivated = False
     panel_error: str | None = None
 
-    # Deactivate subscriptions in panel (skip if active paid subscription)
     from app.database.crud.subscription import deactivate_subscription, is_active_paid_subscription
 
     subs = getattr(user, 'subscriptions', None) or []
     has_active_paid = any(is_active_paid_subscription(s) for s in subs)
 
-    if has_active_paid:
-        logger.info(
-            '⏭️ Пропуск отключения RemnaWave: у пользователя активная оплаченная подписка',
-            user_id=user_id,
-            remnawave_uuid=user.remnawave_uuid,
-        )
-    else:
-        try:
-            from app.services.subscription_service import SubscriptionService
+    # Отключение в Remnawave делаем ВСЕГДА — даже при наличии оплаченной подписки.
+    # Иначе кнопка «отключить» в кабинете не убирает доступ к VPN.
+    # disable_user не деструктивен — при разблокировке всё восстановится.
+    try:
+        from app.services.subscription_service import SubscriptionService
 
-            subscription_service = SubscriptionService()
-            if settings.is_multi_tariff_enabled():
-                for sub in subs:
-                    if sub.remnawave_uuid:
-                        try:
-                            await subscription_service.disable_remnawave_user(sub.remnawave_uuid)
-                        except Exception:
-                            pass
-                panel_deactivated = True
-            elif user.remnawave_uuid:
-                panel_deactivated = await subscription_service.disable_remnawave_user(user.remnawave_uuid)
-            if panel_deactivated:
-                logger.info('Disabled Remnawave user(s)', user_id=user_id)
-        except Exception as e:
-            panel_error = 'Ошибка обработки пользователя в Remnawave'
-            logger.warning('Failed to disable Remnawave user', error=e)
+        subscription_service = SubscriptionService()
+        if settings.is_multi_tariff_enabled():
+            for sub in subs:
+                if sub.remnawave_uuid:
+                    try:
+                        await subscription_service.disable_remnawave_user(sub.remnawave_uuid)
+                    except Exception:
+                        pass
+            panel_deactivated = True
+        elif user.remnawave_uuid:
+            panel_deactivated = await subscription_service.disable_remnawave_user(user.remnawave_uuid)
+        if panel_deactivated:
+            logger.info('Disabled Remnawave user(s)', user_id=user_id)
+    except Exception as e:
+        panel_error = 'Ошибка обработки пользователя в Remnawave'
+        logger.warning('Failed to disable Remnawave user', error=e)
 
-    # Deactivate all subscriptions in bot database (skip active paid ones)
+    # Подписки в БД: оплаченные оставляем (для восстановления при разблокировке).
     for sub in subs:
         if is_active_paid_subscription(sub):
             continue

@@ -684,45 +684,47 @@ class UserService:
             subs = getattr(user, 'subscriptions', None) or []
             has_active_paid = any(is_active_paid_subscription(sub) for sub in subs)
 
+            # Доступ в Remnawave отключаем ВСЕГДА — иначе блок в кабинете не блокирует VPN.
+            # disable_remnawave_user не деструктивен, при разблокировке вернём update_remnawave_user'ом.
+            from app.services.subscription_service import SubscriptionService
+
+            subscription_service = SubscriptionService()
+
+            if settings.is_multi_tariff_enabled():
+                for sub in subs:
+                    panel_uuid = sub.remnawave_uuid
+                    if panel_uuid:
+                        try:
+                            await subscription_service.disable_remnawave_user(panel_uuid)
+                            logger.info(
+                                '✅ RemnaWave пользователь деактивирован при блокировке',
+                                remnawave_uuid=panel_uuid,
+                                subscription_id=sub.id,
+                            )
+                        except Exception as e:
+                            logger.error(
+                                '❌ Ошибка деактивации RemnaWave при блокировке',
+                                error=e,
+                                subscription_id=sub.id,
+                            )
+            elif user.remnawave_uuid:
+                try:
+                    await subscription_service.disable_remnawave_user(user.remnawave_uuid)
+                    logger.info(
+                        '✅ RemnaWave пользователь деактивирован при блокировке',
+                        remnawave_uuid=user.remnawave_uuid,
+                    )
+                except Exception as e:
+                    logger.error('❌ Ошибка деактивации RemnaWave пользователя при блокировке', error=e)
+
+            # Подписку в БД деактивируем только если она не оплаченная активная,
+            # чтобы при разблокировке оплаченную можно было восстановить без потерь.
             if has_active_paid:
                 logger.info(
-                    '⏭️ Пропуск отключения RemnaWave и подписки: у пользователя активная оплаченная подписка',
+                    '⏭️ Подписку в БД оставляем активной (есть оплаченная) — восстановится при разблокировке',
                     user_id=user_id,
-                    remnawave_uuid=user.remnawave_uuid,
                 )
             else:
-                from app.services.subscription_service import SubscriptionService
-
-                subscription_service = SubscriptionService()
-
-                if settings.is_multi_tariff_enabled():
-                    # In multi-tariff mode, disable each subscription's panel user individually
-                    for sub in subs:
-                        panel_uuid = sub.remnawave_uuid
-                        if panel_uuid:
-                            try:
-                                await subscription_service.disable_remnawave_user(panel_uuid)
-                                logger.info(
-                                    '✅ RemnaWave пользователь деактивирован при блокировке',
-                                    remnawave_uuid=panel_uuid,
-                                    subscription_id=sub.id,
-                                )
-                            except Exception as e:
-                                logger.error(
-                                    '❌ Ошибка деактивации RemnaWave при блокировке',
-                                    error=e,
-                                    subscription_id=sub.id,
-                                )
-                elif user.remnawave_uuid:
-                    try:
-                        await subscription_service.disable_remnawave_user(user.remnawave_uuid)
-                        logger.info(
-                            '✅ RemnaWave пользователь деактивирован при блокировке',
-                            remnawave_uuid=user.remnawave_uuid,
-                        )
-                    except Exception as e:
-                        logger.error('❌ Ошибка деактивации RemnaWave пользователя при блокировке', error=e)
-
                 for sub in subs:
                     if sub.status in ['active', 'trial']:
                         await deactivate_subscription(db, sub)
