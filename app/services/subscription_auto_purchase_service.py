@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import structlog
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -2456,6 +2457,13 @@ async def try_auto_extend_expired_after_topup(
                 text=full_message,
                 reply_markup=keyboard,
                 parse_mode='HTML',
+            )
+        except (TelegramBadRequest, TelegramForbiddenError) as error:
+            # chat not found / bot blocked — нормальная ситуация, не error
+            logger.warning(
+                '⚠️ Автопродление expired: чат пользователя недоступен',
+                telegram_id=user.telegram_id or user.id,
+                reason=str(error),
             )
         except Exception as error:
             logger.error(

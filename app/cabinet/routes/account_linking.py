@@ -897,8 +897,9 @@ async def execute_merge_endpoint(
         await db.commit()
     except ValueError as exc:
         await db.rollback()
-        # ValueError = неисправимая ошибка (пользователь не найден/удалён) — токен не восстанавливаем
-        logger.error('Merge execution failed (ValueError)', error=str(exc))
+        # ValueError = пользователь не найден/удалён — это пользовательский сценарий (двойной клик / повтор),
+        # не системная ошибка. Логируем как warning.
+        logger.warning('Merge execution skipped (user already merged/deleted)', reason=str(exc))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Account merge cannot be completed. The accounts may have already been merged or deleted.',

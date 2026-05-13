@@ -4,6 +4,7 @@ import json
 import redis.asyncio as aioredis
 import structlog
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -227,6 +228,13 @@ async def send_referral_notification(
     try:
         await bot.send_message(telegram_id, message, parse_mode='HTML')
         logger.info('✅ Уведомление отправлено пользователю', telegram_id=telegram_id)
+    except (TelegramBadRequest, TelegramForbiddenError) as e:
+        # chat not found / bot blocked / user deactivated — нормальная ситуация, не error
+        logger.warning(
+            '⚠️ Не удалось доставить реферальное уведомление (чат недоступен)',
+            telegram_id=telegram_id,
+            reason=str(e),
+        )
     except Exception as e:
         logger.error('❌ Ошибка отправки уведомления пользователю', telegram_id=telegram_id, error=e)
 

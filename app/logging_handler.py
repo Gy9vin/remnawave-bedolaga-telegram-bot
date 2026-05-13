@@ -69,6 +69,9 @@ IGNORED_LOGGER_PREFIXES: Final[tuple[str, ...]] = (
     'app.external.pal24_client',
     'app.external.telegram_stars',
     'app.webserver.payments',
+    # Низкоуровневый HTTP-логгер Remnawave API — шум при сетевых сбоях / 404.
+    # Важные ошибки переподнимаются на сервисном слое с бизнес-контекстом.
+    'app.external.remnawave_api',
 )
 
 
