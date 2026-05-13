@@ -287,6 +287,9 @@ class MonitoringService:
             await self._run_monitoring_task(
                 db, self._reconcile_expiry_fallback(db), '_reconcile_expiry_fallback'
             )
+            await self._run_monitoring_task(
+                db, self._maybe_restart_nodes(), '_maybe_restart_nodes'
+            )
 
             try:
                 await self._cleanup_notification_cache()
@@ -453,6 +456,15 @@ class MonitoringService:
                 logger.info('🔁 Fallback reconcile отработал', **stats)
         except Exception as e:
             logger.error('Ошибка reconcile fallback', error=e)
+
+    async def _maybe_restart_nodes(self, *_args, **_kwargs):
+        """Авто-рестарт всех нод Remnawave по таймеру/расписанию."""
+        try:
+            from app.services.nodes_restart_service import maybe_run_periodic
+
+            await maybe_run_periodic()
+        except Exception as e:
+            logger.error('Ошибка авто-рестарта нод', error=e)
 
     async def _check_expired_subscriptions(self, db: AsyncSession):
         try:

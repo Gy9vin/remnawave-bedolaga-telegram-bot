@@ -351,6 +351,15 @@ class Settings(BaseSettings):
     EXPIRED_CLEANUP_REQUIRE_ZERO_BALANCE: bool = True
     EXPIRED_CLEANUP_INTERVAL_HOURS: int = 24
 
+    # Автоматическая принудительная перезагрузка нод Remnawave (для самовосстановления)
+    NODES_AUTO_RESTART_ENABLED: bool = False
+    # Режим 'interval' — рестарт каждые N часов от последнего рестарта.
+    # Режим 'daily' — рестарт раз в сутки в указанный час UTC (NODES_AUTO_RESTART_AT_HOUR).
+    NODES_AUTO_RESTART_MODE: str = 'interval'  # 'interval' | 'daily'
+    NODES_AUTO_RESTART_INTERVAL_HOURS: int = 24  # для режима 'interval'
+    NODES_AUTO_RESTART_AT_HOUR: int = 4  # 0-23 UTC, для режима 'daily'
+    NODES_AUTO_RESTART_FORCE: bool = True  # forceRestart=true (плавный=false, но он не работает)
+
     # Настройки конструктора меню (API)
     MENU_LAYOUT_ENABLED: bool = False  # Включить управление меню через API
 

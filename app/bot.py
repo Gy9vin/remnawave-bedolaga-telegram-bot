@@ -32,6 +32,7 @@ from app.handlers.admin import (
     contests as admin_contests,
     daily_contests as admin_daily_contests,
     expiry_fallback as admin_expiry_fallback,
+    nodes_restart as admin_nodes_restart,
     faq as admin_faq,
     happ_management as admin_happ_management,
     main as admin_main,
@@ -226,6 +227,7 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     admin_blacklist.register_blacklist_handlers(dp)
     admin_blocked_users.register_handlers(dp)
     admin_expiry_fallback.register_handlers(dp)
+    admin_nodes_restart.register_handlers(dp)
     admin_channel_non_subscribers.register_handlers(dp)
     admin_happ_management.register_handlers(dp)
     admin_required_channels.register_handlers(dp)

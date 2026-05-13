@@ -262,6 +262,12 @@ def get_admin_system_submenu_keyboard(language: str = 'ru') -> InlineKeyboardMar
             ],
             [InlineKeyboardButton(text=_t(texts, 'ADMIN_SYSTEM_LOGS', '🧾 Логи'), callback_data='admin_system_logs')],
             [InlineKeyboardButton(text=texts.t('ADMIN_REPORTS', '📊 Отчеты'), callback_data='admin_reports')],
+            [
+                InlineKeyboardButton(
+                    text=_t(texts, 'ADMIN_SYSTEM_NODES_RESTART', '🔄 Перезагрузка нод'),
+                    callback_data='admin_nodes_restart_menu',
+                )
+            ],
             [InlineKeyboardButton(text=texts.BACK, callback_data='admin_panel')],
         ]
     )

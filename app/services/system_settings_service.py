@@ -147,6 +147,7 @@ class BotConfigurationService:
         'MODEM': '📡 Модем',
         'OAUTH': '🔐 OAuth провайдеры',
         'EXPIRY_FALLBACK': '🛟 Fallback при истечении',
+        'NODES_RESTART': '🔄 Автоперезагрузка нод',
     }
 
     CATEGORY_DESCRIPTIONS: dict[str, str] = {
@@ -220,6 +221,7 @@ class BotConfigurationService:
         'BAN_NOTIFICATIONS': 'Тексты уведомлений о блокировках, которые отправляются пользователям.',
         'OAUTH': 'Вход в кабинет через сторонние сервисы (Google, Yandex, Discord, VK). Один redirect URI на все провайдеры: <CABINET_URL>/auth/oauth/callback (т.е. если CABINET_URL=https://example.com/cabinet, то redirect URI = https://example.com/cabinet/auth/oauth/callback). Этот же URI пропиши в каждом OAuth-приложении.',
         'EXPIRY_FALLBACK': 'Fallback-сквад при истечении подписки и исчерпании трафика: вместо полного отключения юзер получает урезанный VPN (только Telegram, банки, кабинет) на N дней, чтобы успеть продлить.',
+        'NODES_RESTART': 'Принудительная перезагрузка всех нод Remnawave по таймеру или расписанию для самовосстановления.',
     }
 
     @staticmethod
@@ -326,6 +328,11 @@ class BotConfigurationService:
         'EXPIRED_CLEANUP_ENABLED': 'EXPIRY_FALLBACK',
         'EXPIRED_CLEANUP_REQUIRE_ZERO_BALANCE': 'EXPIRY_FALLBACK',
         'EXPIRED_CLEANUP_INTERVAL_HOURS': 'EXPIRY_FALLBACK',
+        'NODES_AUTO_RESTART_ENABLED': 'NODES_RESTART',
+        'NODES_AUTO_RESTART_MODE': 'NODES_RESTART',
+        'NODES_AUTO_RESTART_INTERVAL_HOURS': 'NODES_RESTART',
+        'NODES_AUTO_RESTART_AT_HOUR': 'NODES_RESTART',
+        'NODES_AUTO_RESTART_FORCE': 'NODES_RESTART',
         'OAUTH_GOOGLE_ENABLED': 'OAUTH',
         'OAUTH_GOOGLE_CLIENT_ID': 'OAUTH',
         'OAUTH_GOOGLE_CLIENT_SECRET': 'OAUTH',
@@ -744,6 +751,43 @@ class BotConfigurationService:
             'description': 'Интервал автоматической очистки в часах.',
             'format': 'Целое число часов.',
             'example': '24',
+        },
+        'NODES_AUTO_RESTART_ENABLED': {
+            'description': (
+                'Автоматическая принудительная перезагрузка всех нод Remnawave по таймеру '
+                'или расписанию. Эквивалент кнопки «Restart all» в панели с forceRestart=true.'
+            ),
+            'format': 'Булево значение.',
+            'example': 'true',
+        },
+        'NODES_AUTO_RESTART_MODE': {
+            'description': (
+                'Режим работы: "interval" — каждые N часов от последнего рестарта; '
+                '"daily" — раз в сутки в указанный час UTC.'
+            ),
+            'format': 'Строка: "interval" или "daily".',
+            'example': 'daily',
+        },
+        'NODES_AUTO_RESTART_INTERVAL_HOURS': {
+            'description': 'Интервал между перезагрузками в часах (только для режима "interval").',
+            'format': 'Целое число от 1.',
+            'example': '12',
+        },
+        'NODES_AUTO_RESTART_AT_HOUR': {
+            'description': (
+                'Час UTC, в который запускать ежедневный рестарт (только для режима "daily"). '
+                'Например 4 = 04:00 UTC, что для МСК = 07:00.'
+            ),
+            'format': 'Целое число 0-23.',
+            'example': '4',
+        },
+        'NODES_AUTO_RESTART_FORCE': {
+            'description': (
+                'forceRestart=true. Плавный рестарт (false) часто не работает в Remnawave, '
+                'поэтому по умолчанию принудительный.'
+            ),
+            'format': 'Булево значение.',
+            'example': 'true',
         },
         'MULTI_TARIFF_ENABLED': {
             'description': (
