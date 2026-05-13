@@ -397,7 +397,16 @@ class RemnaWaveAPI:
                         is_harmless = response.status == 400 and (
                             'already enabled' in error_lower or 'already disabled' in error_lower
                         )
-                        log = logger.warning if response.status in (502, 503, 504) or is_harmless else logger.error
+                        # 404 на GET /api/users/<uuid> — нормальный кейс (юзер удалён в панели),
+                        # caller получает None. Не спамим error-логом.
+                        is_user_not_found = (
+                            response.status == 404
+                            and (response_data.get('errorCode') == 'A063' or 'not found' in error_lower)
+                        )
+                        if response.status in (502, 503, 504) or is_harmless or is_user_not_found:
+                            log = logger.warning
+                        else:
+                            log = logger.error
                         log('API Error %s: %s', response.status, error_message)
                         log('Response: %s', response_text[:500])
                         raise RemnaWaveAPIError(error_message, response.status, response_data)

@@ -116,11 +116,23 @@ def _is_dev_user_allowed(subscription: Subscription) -> bool:
 
 
 async def _get_remnawave_user(remnawave_uuid: str):
-    """Достаёт юзера из Remnawave."""
+    """Достаёт юзера из Remnawave.
+
+    Возвращает None если:
+      - 404 (юзер удалён в панели) — нормальный кейс, не логируем как ошибку
+      - сетевая/другая ошибка — лог error
+    """
+    from app.external.remnawave_api import RemnaWaveAPIError
     from app.services.remnawave_service import remnawave_service
     try:
         async with remnawave_service.get_api_client() as api:
             return await api.get_user_by_uuid(remnawave_uuid)
+    except RemnaWaveAPIError as exc:
+        if getattr(exc, 'status_code', None) == 404:
+            logger.debug('Remnawave: юзер не найден (404)', remnawave_uuid=remnawave_uuid)
+            return None
+        logger.error('Ошибка получения юзера из Remnawave', remnawave_uuid=remnawave_uuid, exc=str(exc))
+        return None
     except Exception as exc:
         logger.error('Ошибка получения юзера из Remnawave', remnawave_uuid=remnawave_uuid, exc=str(exc))
         return None
