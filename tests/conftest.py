@@ -39,6 +39,13 @@ if 'app.cabinet.routes.websocket' not in sys.modules:
 if 'redis.asyncio' not in sys.modules:
     redis_module = types.ModuleType('redis')
     redis_async_module = types.ModuleType('redis.asyncio')
+    redis_exceptions_module = types.ModuleType('redis.exceptions')
+
+    class _FakeRedisError(Exception):
+        """Base Redis exception for tests."""
+
+    class _FakeNoScriptError(_FakeRedisError):
+        """Redis script cache miss exception for tests."""
 
     class _FakeRedisClient:
         async def ping(self):
@@ -72,22 +79,13 @@ if 'redis.asyncio' not in sys.modules:
     def _from_url(url):
         return _FakeRedisClient()
 
+    redis_module.__path__ = []
+    redis_module.asyncio = redis_async_module
     redis_async_module.from_url = _from_url
     redis_async_module.Redis = _FakeRedisClient
-
-    # Заглушка для redis.exceptions (нужна для cache.py)
-    redis_exceptions_module = types.ModuleType('redis.exceptions')
-
-    class _FakeNoScriptError(Exception):
-        pass
-
-    class _FakeRedisError(Exception):
-        pass
-
-    redis_exceptions_module.NoScriptError = _FakeNoScriptError
     redis_exceptions_module.RedisError = _FakeRedisError
+    redis_exceptions_module.NoScriptError = _FakeNoScriptError
     redis_module.exceptions = redis_exceptions_module
-
     sys.modules['redis'] = redis_module
     sys.modules['redis.asyncio'] = redis_async_module
     sys.modules['redis.exceptions'] = redis_exceptions_module
