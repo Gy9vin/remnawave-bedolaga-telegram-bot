@@ -547,6 +547,47 @@ class PricingEngine:
         return await self._calculate_classic_mode(db, subscription, period_days, user=user)
 
     # ------------------------------------------------------------------
+    # Modem add-on helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _calculate_modem_addon_price(subscription: Subscription | None, period_days: int) -> int:
+        """Цена модем-аддона за период (с учётом скидки по периоду).
+
+        Возвращает 0, если модем не подключён или фича выключена.
+        Зеркалит логику subscription_purchase_service: цена модема —
+        отдельная компонента стоимости, не часть extra_devices.
+        """
+        if not subscription:
+            return 0
+        if not getattr(subscription, 'modem_enabled', False):
+            return 0
+        if not settings.is_modem_enabled():
+            return 0
+        months = max(1, calculate_months_from_days(period_days))
+        per_month = settings.get_modem_price_per_month()
+        base = per_month * months
+        discount = settings.get_modem_period_discount(months) or 0
+        if discount > 0:
+            return base - (base * discount // 100)
+        return base
+
+    @staticmethod
+    def _effective_device_limit_with_modem(subscription: Subscription | None, raw_device_limit: int) -> int:
+        """Логический device_limit без +1 слота, который добавил enable_modem.
+
+        Когда модем подключён, ModemService инкрементит subscription.device_limit на +1
+        (для синхронизации с Remnawave). Это +1 нельзя засчитывать как платное
+        extra-device в pricing — иначе клиент платит дважды (раз как устройство,
+        раз как модем).
+        """
+        if not subscription:
+            return raw_device_limit
+        if getattr(subscription, 'modem_enabled', False) and settings.is_modem_enabled():
+            return max(0, raw_device_limit - 1)
+        return raw_device_limit
+
+    # ------------------------------------------------------------------
     # Tariff mode
     # ------------------------------------------------------------------
 
@@ -560,12 +601,15 @@ class PricingEngine:
     ) -> RenewalPricing:
         """Price calculation when subscription is linked to a Tariff."""
         tariff = subscription.tariff
-        device_limit = subscription.device_limit or 0
+        raw_device_limit = subscription.device_limit or 0
+        device_limit = self._effective_device_limit_with_modem(subscription, raw_device_limit)
+        modem_price = self._calculate_modem_addon_price(subscription, period_days)
         return await self._calculate_tariff_core(
             tariff,
             period_days,
             device_limit,
             user=user,
+            modem_price_kopeks=modem_price,
         )
 
     async def _calculate_tariff_core(
@@ -576,6 +620,7 @@ class PricingEngine:
         *,
         custom_traffic_gb: int | None = None,
         user: User | None = None,
+        modem_price_kopeks: int = 0,
     ) -> RenewalPricing:
         """Core tariff pricing logic (raw params, no Subscription needed).
 
@@ -647,7 +692,8 @@ class PricingEngine:
         subtotal = discounted_base + discounted_devices + discounted_traffic
         after_offer = self.apply_discount(subtotal, offer_pct)
         offer_discount = subtotal - after_offer
-        final_total = self.apply_personal_multiplier(after_offer, user)
+        # Модем — отдельный аддон, скидки группы/оффера/мультипликатора на него не действуют.
+        final_total = self.apply_personal_multiplier(after_offer, user) + max(0, modem_price_kopeks)
 
         breakdown = dataclasses.asdict(
             TariffBreakdown(
@@ -658,6 +704,8 @@ class PricingEngine:
                 months_in_period=months,
             )
         )
+        if modem_price_kopeks > 0:
+            breakdown['modem_price_kopeks'] = modem_price_kopeks
 
         if final_total < 0:
             logger.warning(
@@ -719,6 +767,7 @@ class PricingEngine:
         *,
         purchased_traffic_gb: int = 0,
         user: User | None = None,
+        modem_price_kopeks: int = 0,
     ) -> RenewalPricing:
         """Core classic-mode pricing logic (raw params, no Subscription needed).
 
@@ -792,7 +841,8 @@ class PricingEngine:
         # --- Promo offer discount on entire subtotal ---
         after_offer = self.apply_discount(subtotal, offer_pct)
         promo_offer_discount = subtotal - after_offer
-        final_total = self.apply_personal_multiplier(after_offer, user)
+        # Модем — отдельный аддон, скидки/мультипликаторы на него не действуют.
+        final_total = self.apply_personal_multiplier(after_offer, user) + max(0, modem_price_kopeks)
 
         # Total group discount = sum of per-category discounts
         base_group_discount = base_price_original - base_price
@@ -828,6 +878,8 @@ class PricingEngine:
                 devices_price_per_month=devices_price_per_month,
             )
         )
+        if modem_price_kopeks > 0:
+            breakdown['modem_price_kopeks'] = modem_price_kopeks
 
         if final_total < 0:
             logger.warning(
@@ -870,7 +922,11 @@ class PricingEngine:
             else settings.DEFAULT_TRAFFIC_LIMIT_GB
         )
         purchased_traffic_gb = subscription.purchased_traffic_gb or 0
-        device_limit = subscription.device_limit or 0
+        raw_device_limit = subscription.device_limit or 0
+        # Модем добавил +1 слот в device_limit при включении — вычитаем,
+        # чтобы не платить за этот слот как за extra-device.
+        device_limit = self._effective_device_limit_with_modem(subscription, raw_device_limit)
+        modem_price = self._calculate_modem_addon_price(subscription, period_days)
 
         return await self._calculate_classic_core(
             db,
@@ -880,6 +936,7 @@ class PricingEngine:
             device_limit,
             purchased_traffic_gb=purchased_traffic_gb,
             user=user,
+            modem_price_kopeks=modem_price,
         )
 
     async def calculate_classic_new_subscription_price(
