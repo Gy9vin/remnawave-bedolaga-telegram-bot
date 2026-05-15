@@ -283,14 +283,20 @@ def get_channel_sub_keyboard(
 
 def get_post_registration_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
     texts = get_texts(language)
+    # Не врём: если триал платный, кнопка должна явно показывать стоимость,
+    # иначе юзер тыкает 'бесплатно' и получает чек на 10₽.
+    trial_paid = settings.is_trial_paid_activation_enabled() and settings.get_trial_activation_price() > 0
+    if trial_paid:
+        price_text = settings.format_price(settings.get_trial_activation_price())
+        button_text = texts.t(
+            'POST_REGISTRATION_TRIAL_BUTTON_PAID',
+            '💳 Подключиться за {price}',
+        ).format(price=price_text)
+    else:
+        button_text = texts.t('POST_REGISTRATION_TRIAL_BUTTON', '🚀 Подключиться бесплатно 🚀')
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=texts.t('POST_REGISTRATION_TRIAL_BUTTON', '🚀 Подключиться бесплатно 🚀'),
-                    callback_data='trial_activate',
-                )
-            ],
+            [InlineKeyboardButton(text=button_text, callback_data='trial_activate')],
             [InlineKeyboardButton(text=texts.t('SKIP_BUTTON', 'Пропустить ➡️'), callback_data='back_to_menu')],
         ]
     )
@@ -1330,12 +1336,19 @@ def get_insufficient_balance_keyboard_with_cart(
 
 def get_trial_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
     texts = get_texts(language)
+    trial_paid = settings.is_trial_paid_activation_enabled() and settings.get_trial_activation_price() > 0
+    if trial_paid:
+        price_text = settings.format_price(settings.get_trial_activation_price())
+        activate_text = texts.t(
+            'TRIAL_ACTIVATE_BUTTON_PAID',
+            '💳 Активировать за {price}',
+        ).format(price=price_text)
+    else:
+        activate_text = texts.t('TRIAL_ACTIVATE_BUTTON', '🎁 Активировать')
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text=texts.t('TRIAL_ACTIVATE_BUTTON', '🎁 Активировать'), callback_data='trial_activate'
-                ),
+                InlineKeyboardButton(text=activate_text, callback_data='trial_activate'),
                 InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu'),
             ]
         ]
