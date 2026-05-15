@@ -1113,14 +1113,23 @@ async def activate_purchase(db: AsyncSession, purchase_token: str, *, skip_notif
                 and _aware(existing_for_tariff.end_date) > datetime.now(UTC)
             )
             if existing_for_tariff and _has_time:
-                # Extend existing active/trial subscription instead of replacing (preserve remaining days)
+                # Extend existing active/trial subscription instead of replacing (preserve remaining days).
+                # При продлении подарком НЕ понижаем device_limit и не перетираем squads —
+                # юзер мог сам докупить устройства или подключить серверы, нельзя их терять.
+                # traffic_limit_gb тоже не трогаем: extend_subscription с None сохранит активные
+                # пакеты докупленного трафика.
+                merged_device_limit = max(
+                    int(existing_for_tariff.device_limit or 0),
+                    int(tariff.device_limit or 0),
+                )
+                existing_squads = list(existing_for_tariff.connected_squads or [])
+                merged_squads = list(dict.fromkeys(existing_squads + list(squads or [])))
                 subscription = await extend_subscription(
                     db,
                     existing_for_tariff,
                     purchase.period_days,
-                    traffic_limit_gb=tariff.traffic_limit_gb,
-                    device_limit=tariff.device_limit,
-                    connected_squads=squads,
+                    device_limit=merged_device_limit,
+                    connected_squads=merged_squads or None,
                     commit=False,
                 )
             elif existing_for_tariff:
@@ -1157,15 +1166,25 @@ async def activate_purchase(db: AsyncSession, purchase_token: str, *, skip_notif
                 and _aware(existing_subscription.end_date) > datetime.now(UTC)
             )
             if existing_subscription is not None and _sub_has_time:
-                # Extend existing active subscription (preserve remaining days)
+                # Extend existing active subscription (preserve remaining days).
+                # При продлении подарком НЕ понижаем device_limit и не перетираем squads —
+                # юзер мог сам докупить устройства или подключить серверы, нельзя их терять.
+                # traffic_limit_gb тоже не трогаем (None) — extend_subscription сохранит активные
+                # пакеты докупленного трафика. tariff_id переставляем только если он отличается.
+                merged_device_limit = max(
+                    int(existing_subscription.device_limit or 0),
+                    int(tariff.device_limit or 0),
+                )
+                existing_squads = list(existing_subscription.connected_squads or [])
+                merged_squads = list(dict.fromkeys(existing_squads + list(squads or [])))
+                pass_tariff_id = tariff.id if existing_subscription.tariff_id != tariff.id else None
                 subscription = await extend_subscription(
                     db,
                     existing_subscription,
                     purchase.period_days,
-                    tariff_id=tariff.id,
-                    traffic_limit_gb=tariff.traffic_limit_gb,
-                    device_limit=tariff.device_limit,
-                    connected_squads=squads,
+                    tariff_id=pass_tariff_id,
+                    device_limit=merged_device_limit,
+                    connected_squads=merged_squads or None,
                     commit=False,
                 )
             elif existing_subscription is not None:
