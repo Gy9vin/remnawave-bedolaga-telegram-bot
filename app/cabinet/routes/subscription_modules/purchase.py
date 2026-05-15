@@ -1125,8 +1125,12 @@ async def get_trial_info(
                     trial_tariff = None
 
         if trial_tariff:
-            traffic_limit_gb = trial_tariff.traffic_limit_gb
-            device_limit = trial_tariff.device_limit
+            # Если у тарифа лимит = 0 ("не задано"), используем значение из .env —
+            # иначе info показывает безлимит, а активация выдаёт лимит из ENV.
+            tariff_traffic = int(trial_tariff.traffic_limit_gb or 0)
+            traffic_limit_gb = tariff_traffic if tariff_traffic > 0 else settings.TRIAL_TRAFFIC_LIMIT_GB
+            tariff_devices = int(trial_tariff.device_limit or 0)
+            device_limit = tariff_devices if tariff_devices > 0 else settings.TRIAL_DEVICE_LIMIT
             tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
             if tariff_trial_days:
                 duration_days = tariff_trial_days
@@ -1266,8 +1270,13 @@ async def activate_trial(
         if trial_tariff:
             from app.database.crud.server_squad import get_effective_tariff_squad_uuids
 
-            trial_traffic_limit = trial_tariff.traffic_limit_gb
-            trial_device_limit = trial_tariff.device_limit
+            # Если у тарифа лимит = 0 ("не задано"), используем значение из .env.
+            # Иначе тариф 'Стандартный' с traffic_limit_gb=0 (synced from default)
+            # давал бы безлимит, хотя в TRIAL_TRAFFIC_LIMIT_GB=5.
+            tariff_traffic = int(trial_tariff.traffic_limit_gb or 0)
+            trial_traffic_limit = tariff_traffic if tariff_traffic > 0 else settings.TRIAL_TRAFFIC_LIMIT_GB
+            tariff_devices = int(trial_tariff.device_limit or 0)
+            trial_device_limit = tariff_devices if tariff_devices > 0 else settings.TRIAL_DEVICE_LIMIT
             trial_squads = await get_effective_tariff_squad_uuids(db, trial_tariff.allowed_squads)
             tariff_id_for_trial = trial_tariff.id
             tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
