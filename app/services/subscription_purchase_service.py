@@ -1220,6 +1220,19 @@ class MiniAppSubscriptionPurchaseService:
 
             subscription.is_trial = False
             subscription.status = SubscriptionStatus.ACTIVE.value
+            # Этот сервис вызывается только из /cabinet/subscription/purchase
+            # (classic mode endpoint). В classic mode тариф не привязывается
+            # к подписке — это лишь пометка триала через is_trial_available.
+            # Если оставить tariff_id триал-тарифа после конверсии — UI
+            # продолжит показывать подписку как пробную, блокировать докупку
+            # устройств и т.п.
+            if subscription.tariff_id is not None:
+                logger.info(
+                    '🧹 Classic purchase: обнуляем tariff_id (подписка не должна висеть на тарифе)',
+                    subscription_id=subscription.id,
+                    old_tariff_id=subscription.tariff_id,
+                )
+                subscription.tariff_id = None
             subscription.traffic_limit_gb = pricing.selection.traffic_value
             # Если модем подключён, добавляем +1 к device_limit (модем оплачивается отдельно)
             device_limit = pricing.selection.devices
