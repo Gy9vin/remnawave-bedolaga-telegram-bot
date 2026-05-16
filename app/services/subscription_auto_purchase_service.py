@@ -3235,6 +3235,13 @@ async def _process_legacy_generic_cart(
                     reply_markup=keyboard,
                     parse_mode='HTML',
                 )
+            except (TelegramBadRequest, TelegramForbiddenError) as error:
+                # chat not found / bot blocked — нормальная ситуация, не error
+                logger.warning(
+                    'Автопокупка: чат пользователя недоступен',
+                    telegram_id=user.telegram_id or user.id,
+                    reason=str(error),
+                )
             except Exception as error:  # pragma: no cover - defensive logging
                 logger.error(
                     'Автопокупка: не удалось уведомить пользователя',

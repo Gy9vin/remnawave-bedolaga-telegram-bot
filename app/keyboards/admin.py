@@ -1456,6 +1456,12 @@ def get_broadcast_target_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text=_t(texts, 'ADMIN_BROADCAST_TARGET_FALLBACK', '🛟 В fallback-сквадe'),
+                    callback_data='broadcast_fallback',
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text='🛡 Только админам (тест)',
                     callback_data='broadcast_admins',
                 )

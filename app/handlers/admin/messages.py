@@ -766,6 +766,7 @@ async def select_broadcast_target(callback: types.CallbackQuery, db_user: User, 
         'expired': 'С истекшей подпиской',
         'active_zero': 'Активная подписка, трафик 0 ГБ',
         'trial_zero': 'Триальная подписка, трафик 0 ГБ',
+        'fallback': 'В fallback-сквадe (Telegram-only)',
         'admins': '🛡 Только админам (тест)',
     }
 
@@ -1737,6 +1738,24 @@ async def get_target_users_count(db: AsyncSession, target: str) -> int:
         result = await db.execute(query)
         return result.scalar() or 0
 
+    if target == 'fallback':
+        # Юзеры с активным expiry- или traffic-fallback (сидят на ограниченном сквадe)
+        from sqlalchemy import or_ as _or
+
+        query = (
+            select(sql_func.count(distinct(User.id)))
+            .join(Subscription, User.id == Subscription.user_id)
+            .where(
+                base_filter,
+                _or(
+                    Subscription.expiry_fallback_active.is_(True),
+                    Subscription.traffic_fallback_active.is_(True),
+                ),
+            )
+        )
+        result = await db.execute(query)
+        return result.scalar() or 0
+
     # Custom filters — быстрый COUNT вместо загрузки всех пользователей
     if target.startswith('custom_'):
         now = datetime.now(UTC)
@@ -1946,6 +1965,17 @@ async def get_target_users(db: AsyncSession, target: str) -> list:
     if target == 'inactive_90d':
         threshold = datetime.now(UTC) - timedelta(days=90)
         return [user for user in users if user.last_activity and user.last_activity < threshold]
+
+    if target == 'fallback':
+        # Юзеры с активным expiry- или traffic-fallback
+        return [
+            user
+            for user in users
+            if any(
+                getattr(s, 'expiry_fallback_active', False) or getattr(s, 'traffic_fallback_active', False)
+                for s in (getattr(user, 'subscriptions', None) or [])
+            )
+        ]
 
     # Фильтр по тарифу
     if target.startswith('tariff_'):
