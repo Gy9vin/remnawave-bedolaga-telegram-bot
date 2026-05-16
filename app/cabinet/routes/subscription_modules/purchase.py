@@ -856,13 +856,20 @@ async def purchase_tariff(
             subscription.is_trial = False
             await db.flush()
 
+        # В classic mode тариф не привязывается к подписке (используется
+        # только для пометки триала через is_trial_available). Передавать
+        # tariff_id = id триал-тарифа = подписка остаётся 'на пробном тарифе'
+        # после конверсии: UI показывает тариф пробный, докупка устройств
+        # блокируется. В classic mode tariff_id = None — чистая платная.
+        effective_tariff_id = None if settings.is_classic_mode() else tariff.id
+
         if subscription:
             # Extend/change tariff — сохраняем докупленные устройства при продлении того же тарифа
             subscription = await extend_subscription(
                 db=db,
                 subscription=subscription,
                 days=period_days,
-                tariff_id=tariff.id,
+                tariff_id=effective_tariff_id,
                 traffic_limit_gb=traffic_limit_gb,
                 device_limit=effective_device_limit,
                 connected_squads=squads,
@@ -877,7 +884,7 @@ async def purchase_tariff(
                     traffic_limit_gb=traffic_limit_gb,
                     device_limit=tariff.device_limit,
                     connected_squads=squads,
-                    tariff_id=tariff.id,
+                    tariff_id=effective_tariff_id,
                 )
             except IntegrityError:
                 # Partial unique index violation: user already has active subscription for this tariff

@@ -765,22 +765,23 @@ async def extend_subscription(
         # иначе классические триалы (tariff_id=None) никогда не конвертировались
         if subscription.is_trial:
             subscription.is_trial = False
-            # В classic mode тариф используется только для триала (помечен
-            # is_trial_available=true). После конверсии подписка не должна
-            # висеть на 'триал-тарифе' — отвязываем, чтобы в UI подписка
-            # показывалась как обычная платная, а не как пробный тариф.
-            if tariff_id is None and settings.is_classic_mode():
-                if subscription.tariff_id is not None:
-                    logger.info(
-                        '🧹 Classic mode: обнуляем tariff_id при конверсии trial → paid',
-                        subscription_id=subscription.id,
-                        old_tariff_id=subscription.tariff_id,
-                    )
-                    subscription.tariff_id = None
             logger.info(
                 '🎓 Подписка конвертирована из триала в платную (классический режим)', subscription_id=subscription.id
             )
         logger.info('🔄 Статус подписки изменён с trial на ACTIVE', subscription_id=subscription.id)
+
+    # В classic mode tariff_id не должен висеть на подписке вообще —
+    # тарифы используются только для пометки триала через is_trial_available.
+    # Если caller не передаёт новый tariff_id (или передаёт None), обнуляем
+    # текущий, чтобы UI не показывал подписку как 'триал-тариф' после
+    # конверсии и чтобы докупка устройств не блокировалась.
+    if days > 0 and tariff_id is None and settings.is_classic_mode() and subscription.tariff_id is not None:
+        logger.info(
+            '🧹 Classic mode: обнуляем tariff_id (подписка не должна висеть на тарифе)',
+            subscription_id=subscription.id,
+            old_tariff_id=subscription.tariff_id,
+        )
+        subscription.tariff_id = None
     elif days > 0 and subscription.status == SubscriptionStatus.PENDING.value:
         logger.warning('⚠️ Попытка продлить PENDING подписку , дни', subscription_id=subscription.id, days=days)
 
