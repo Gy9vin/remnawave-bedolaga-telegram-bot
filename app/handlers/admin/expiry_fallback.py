@@ -30,6 +30,8 @@ CALLBACK_CONFIRM = 'admin_expiry_fallback_confirm'
 CALLBACK_RUN = 'admin_expiry_fallback_run'
 CALLBACK_RESTORE_CONFIRM = 'admin_expiry_fallback_restore_confirm'
 CALLBACK_RESTORE_RUN = 'admin_expiry_fallback_restore_run'
+CALLBACK_REGRACE_CONFIRM = 'admin_expiry_fallback_regrace_confirm'
+CALLBACK_REGRACE_RUN = 'admin_expiry_fallback_regrace_run'
 
 
 def _menu_keyboard(enabled: bool, has_uuid: bool) -> InlineKeyboardMarkup:
@@ -48,6 +50,14 @@ def _menu_keyboard(enabled: bool, has_uuid: bool) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text='🔧 Вернуть ошибочно загнанных',
                     callback_data=CALLBACK_RESTORE_CONFIRM,
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text='🔁 Вернуть DISABLED → fallback (+3 дня)',
+                    callback_data=CALLBACK_REGRACE_CONFIRM,
                 )
             ]
         )
@@ -375,9 +385,92 @@ async def run_restore(callback: types.CallbackQuery, db_user: User) -> None:
     )
 
 
+@admin_required
+@error_handler
+async def confirm_regrace(callback: types.CallbackQuery, db_user: User) -> None:  # noqa: ARG001
+    grace_days = int(getattr(settings, 'EXPIRY_FALLBACK_GRACE_DAYS', 3) or 3)
+    text = (
+        '⚠️ <b>Вернуть всех DISABLED в fallback</b>\n\n'
+        f'Подписки со статусом <code>DISABLED</code>, истёкшие, не триальные, '
+        f'у пользователей не в BLOCKED — будут восстановлены в fallback-сквад '
+        f'с новым grace-периодом <b>{grace_days} дн.</b>\n\n'
+        f'• enable_user() в Remnawave\n'
+        f'• status → EXPIRED\n'
+        f'• move_to_fallback(reason="expired")\n\n'
+        f'Юзеры получат шанс продлиться. Cleanup сработает снова через '
+        f'{int(getattr(settings, "EXPIRY_FALLBACK_DAYS", 3) or 3)} дн., '
+        f'если не продлят.\n\n'
+        f'Продолжить?'
+    )
+    await callback.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text='✅ Запустить', callback_data=CALLBACK_REGRACE_RUN),
+                    InlineKeyboardButton(text='⬅️ Отмена', callback_data=CALLBACK_MENU),
+                ]
+            ]
+        ),
+    )
+
+
+@admin_required
+@error_handler
+async def run_regrace(callback: types.CallbackQuery, db_user: User) -> None:
+    from app.services.expiry_fallback_service import regrace_disabled_subscriptions
+
+    await callback.message.edit_text(
+        '🔄 <b>Возвращаю DISABLED в fallback…</b>\n\nОперация может занять несколько минут.',
+        parse_mode=ParseMode.HTML,
+    )
+
+    async with AsyncSessionLocal() as db:
+        stats = await regrace_disabled_subscriptions(db)
+
+    if not stats.get('success'):
+        await callback.message.edit_text(
+            f'❌ <b>Не удалось запустить</b>\n\n{stats.get("error", "Неизвестная ошибка")}',
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text='⬅️ Назад', callback_data=CALLBACK_MENU)]
+                ]
+            ),
+        )
+        return
+
+    text = (
+        '✅ <b>Готово</b>\n\n'
+        f'• Найдено DISABLED: <b>{stats["scanned"]}</b>\n'
+        f'• Возвращено в fallback: <b>{stats["restored"]}</b>\n'
+        f'• Пропущено (BLOCKED юзер): <b>{stats["skipped_blocked_user"]}</b>\n'
+        f'• Пропущено (нет UUID): <b>{stats["skipped_no_uuid"]}</b>\n'
+        f'• Ошибок: <b>{stats["failed"]}</b>\n'
+    )
+    logger.info(
+        'Бот: regrace_disabled_subscriptions',
+        admin_telegram_id=db_user.telegram_id,
+        admin_user_id=db_user.id,
+        stats=stats,
+    )
+    await callback.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text='⬅️ Назад', callback_data=CALLBACK_MENU)]
+            ]
+        ),
+    )
+
+
 def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(show_menu, F.data == CALLBACK_MENU)
     dp.callback_query.register(confirm_scan, F.data == CALLBACK_CONFIRM)
     dp.callback_query.register(run_scan, F.data == CALLBACK_RUN)
     dp.callback_query.register(confirm_restore, F.data == CALLBACK_RESTORE_CONFIRM)
     dp.callback_query.register(run_restore, F.data == CALLBACK_RESTORE_RUN)
+    dp.callback_query.register(confirm_regrace, F.data == CALLBACK_REGRACE_CONFIRM)
+    dp.callback_query.register(run_regrace, F.data == CALLBACK_REGRACE_RUN)
