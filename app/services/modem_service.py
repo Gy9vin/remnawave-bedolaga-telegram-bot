@@ -138,10 +138,23 @@ class ModemService:
                 available=False, error=ModemError.TRIAL_SUBSCRIPTION, modem_enabled=modem_enabled
             )
 
-        if not self.is_modem_feature_enabled():
-            return ModemAvailabilityResult(
-                available=False, error=ModemError.MODEM_DISABLED, modem_enabled=modem_enabled
-            )
+        # Глобальный флаг фичи блокирует ПОДКЛЮЧЕНИЕ, но НЕ блокирует
+        # отключение тем, у кого модем уже куплен. Иначе после выключения
+        # фичи юзеры с купленным модемом застряли бы без возможности отказа.
+        feature_on = self.is_modem_feature_enabled()
+        if not feature_on:
+            # Фича выключена: доступны ТОЛЬКО операции с уже включённым
+            # модемом (просмотр статуса, отключение). Если у юзера модема
+            # нет — для него фичи просто не существует.
+            if not modem_enabled:
+                return ModemAvailabilityResult(
+                    available=False, error=ModemError.MODEM_DISABLED, modem_enabled=modem_enabled
+                )
+            if for_enable:
+                return ModemAvailabilityResult(
+                    available=False, error=ModemError.MODEM_DISABLED, modem_enabled=modem_enabled
+                )
+            # for_disable или просмотр статуса — разрешено
 
         if for_enable and modem_enabled:
             return ModemAvailabilityResult(
