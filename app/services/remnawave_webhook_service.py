@@ -1063,7 +1063,19 @@ class RemnaWaveWebhookService:
             return
 
         self._stamp_webhook_update(subscription)
-        if subscription.status != SubscriptionStatus.DISABLED.value:
+        # EXPIRED — конечное состояние (выставлено нашим cleanup'ом из fallback
+        # после истечения total_days). disable_user() в Remnawave вызван НАМИ
+        # как часть этого cleanup'а, поэтому пришедший в ответ webhook —
+        # echo нашего же действия. Не понижаем EXPIRED → DISABLED, иначе
+        # юзер в кабинете висит со статусом 'disabled' вместо 'expired'.
+        if subscription.status == SubscriptionStatus.EXPIRED.value:
+            logger.info(
+                'Webhook user.disabled: подписка уже EXPIRED (cleanup из fallback), пропуск',
+                subscription_id=subscription.id,
+                user_id=user.id,
+            )
+            await db.commit()
+        elif subscription.status != SubscriptionStatus.DISABLED.value:
             await deactivate_subscription(db, subscription)
             logger.info('Webhook: subscription disabled for user', subscription_id=subscription.id, user_id=user.id)
         else:
