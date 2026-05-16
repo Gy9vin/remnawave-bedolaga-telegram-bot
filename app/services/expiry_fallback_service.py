@@ -342,14 +342,17 @@ _NOTIFY_SEMAPHORE = asyncio.Semaphore(5)
 
 
 async def regrace_disabled_subscriptions(db: AsyncSession) -> dict:
-    """Массово возвращает DISABLED подписки в fallback и даёт +grace дней.
+    """Массово возвращает DISABLED/EXPIRED подписки в fallback и даёт +grace дней.
 
     Юзкейс: после cleanup_expired (или гонки webhook → DISABLED) куча юзеров
-    висит в Remnawave/БД со статусом DISABLED. Эта функция:
-      1. Находит подписки status=DISABLED AND end_date <= now AND is_trial=False
-         AND user.status != BLOCKED (чтобы не задеть забаненных админом)
-      2. Для каждой — enable_user() в Remnawave + status=EXPIRED в БД +
-         move_to_fallback(reason='expired') → expire_at = now+grace_days
+    висит в Remnawave/БД со статусом DISABLED/EXPIRED. Эта функция:
+      1. Находит подписки status IN (DISABLED, EXPIRED) AND end_date <= now
+         AND is_trial=False AND user.status != BLOCKED AND fallback флаги
+         сняты (expiry_fallback_active=False, чтобы не дёргать тех, кто УЖЕ
+         в fallback и сейчас в grace-периоде)
+      2. Для каждой — enable_user() в Remnawave (если в Remnawave DISABLED)
+         + status=EXPIRED в БД + move_to_fallback(reason='expired')
+         → expire_at = now+grace_days
       3. Возвращает статистику.
 
     Используется для разовой амнистии после cleanup или для «дать всем
@@ -364,6 +367,7 @@ async def regrace_disabled_subscriptions(db: AsyncSession) -> dict:
         'failed': 0,
         'skipped_no_uuid': 0,
         'skipped_blocked_user': 0,
+        'skipped_already_in_fallback': 0,
     }
 
     if not bool(getattr(settings, 'EXPIRY_FALLBACK_ENABLED', False)):
@@ -376,29 +380,35 @@ async def regrace_disabled_subscriptions(db: AsyncSession) -> dict:
     now = datetime.now(UTC)
     from app.database.models import User as UserModel
 
+    # Ловим обе категории:
+    # - DISABLED: гонка webhook не успела (наш webhook fix может ещё не быть)
+    # - EXPIRED: cleanup нормально снял флаги fallback, но в Remnawave juser DISABLED
+    # Фильтруем тех, кто УЖЕ в активном fallback (expiry_fallback_active=true) —
+    # их трогать не надо, они в grace, продлевают сами.
     result = await db.execute(
         select(Subscription)
         .options(selectinload(Subscription.user))
         .join(UserModel, UserModel.id == Subscription.user_id)
         .where(
-            Subscription.status == SubscriptionStatus.DISABLED.value,
+            Subscription.status.in_([
+                SubscriptionStatus.DISABLED.value,
+                SubscriptionStatus.EXPIRED.value,
+            ]),
             Subscription.is_trial.is_(False),
             Subscription.end_date <= now,
             UserModel.status != 'blocked',
+            Subscription.expiry_fallback_active.is_not(True),
+            Subscription.traffic_fallback_active.is_not(True),
+            Subscription.remnawave_uuid.is_not(None),
         )
     )
     subs = list(result.scalars().all())
     stats['scanned'] = len(subs)
 
+    total = len(subs)
+    processed = 0
     for sub in subs:
         try:
-            if not sub.remnawave_uuid:
-                stats['skipped_no_uuid'] += 1
-                continue
-            if sub.user and sub.user.status == 'blocked':
-                stats['skipped_blocked_user'] += 1
-                continue
-
             # enable юзера в Remnawave (после cleanup он DISABLED там)
             try:
                 async with remnawave_service.get_api_client() as api:
@@ -411,13 +421,7 @@ async def regrace_disabled_subscriptions(db: AsyncSession) -> dict:
                 )
 
             # status=EXPIRED чтобы move_to_fallback корректно отработал
-            # (он не любит DISABLED → ставит pre_expiry_squads и т.п.)
             sub.status = SubscriptionStatus.EXPIRED.value
-            # Снимаем флаги fallback, если cleanup их сбросил — move_to_fallback
-            # ожидает «чистую» подписку, иначе ранний return.
-            sub.expiry_fallback_active = False
-            sub.traffic_fallback_active = False
-            sub.expiry_fallback_started_at = None
             await db.commit()
 
             ok = await move_to_fallback(db, sub, reason='expired', notify=False)
@@ -428,6 +432,16 @@ async def regrace_disabled_subscriptions(db: AsyncSession) -> dict:
         except Exception as exc:
             stats['failed'] += 1
             logger.error('regrace: ошибка обработки подписки', subscription_id=sub.id, error=str(exc))
+
+        processed += 1
+        if processed % 100 == 0:
+            logger.info(
+                'regrace progress',
+                processed=processed,
+                total=total,
+                restored=stats['restored'],
+                failed=stats['failed'],
+            )
 
     stats['success'] = True
     logger.info('regrace_disabled_subscriptions completed', **stats)
