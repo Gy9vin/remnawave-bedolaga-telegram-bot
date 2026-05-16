@@ -131,10 +131,19 @@ async def get_all_active_tariffs(db: AsyncSession) -> list[Tariff]:
 async def get_tariffs_for_user(
     db: AsyncSession,
     promo_group_id: int | None = None,
+    *,
+    exclude_trial_only: bool = True,
 ) -> list[Tariff]:
     """
     Получает тарифы, доступные для пользователя с учетом его промогруппы.
     Если у тарифа нет ограничений по промогруппам - он доступен всем.
+
+    exclude_trial_only (default True): отфильтровать тарифы, помеченные
+    как is_trial_available=true. Такие тарифы предназначены ТОЛЬКО для
+    выдачи триала через get_trial_tariff() — если показать их в списке
+    покупки, юзер может купить «пробный тариф» как платную подписку
+    и подписка останется привязанной к trial-тарифу (UI будет считать
+    её триальной, докупка устройств блокируется).
     """
     query = (
         select(Tariff)
@@ -142,6 +151,8 @@ async def get_tariffs_for_user(
         .where(Tariff.is_active.is_(True))
         .order_by(Tariff.display_order, Tariff.id)
     )
+    if exclude_trial_only:
+        query = query.where(Tariff.is_trial_available.is_not(True))
 
     result = await db.execute(query)
     tariffs = result.scalars().all()
