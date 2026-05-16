@@ -71,6 +71,15 @@ class ReferralContestService:
                     await self._process_summaries()
                 except asyncio.CancelledError:
                     raise
+                except (TimeoutError, ConnectionError, OSError) as exc:
+                    # Транзиентные сетевые/таймаут проблемы БД — warning, не error,
+                    # чтобы не спамить админский Telegram-чат при кратковременных
+                    # всплесках нагрузки или флапах сети.
+                    logger.warning(
+                        'Transient error in contest service (will retry next tick)',
+                        error=str(exc)[:200],
+                        error_type=type(exc).__name__,
+                    )
                 except Exception as exc:
                     logger.error('Ошибка сервиса конкурсов', exc=exc)
 
