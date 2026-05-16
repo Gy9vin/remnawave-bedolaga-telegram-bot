@@ -2506,6 +2506,16 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
 
             existing_subscription.is_trial = False
             existing_subscription.status = SubscriptionStatus.ACTIVE.value
+            # В classic mode тариф используется только для пометки триала
+            # (is_trial_available). После покупки платной подписка не должна
+            # висеть на 'триал-тарифе' — отвязываем для корректного UI.
+            if was_trial_conversion and settings.is_classic_mode() and existing_subscription.tariff_id is not None:
+                logger.info(
+                    '🧹 Classic mode: обнуляем tariff_id при конверсии trial → paid',
+                    subscription_id=existing_subscription.id,
+                    old_tariff_id=existing_subscription.tariff_id,
+                )
+                existing_subscription.tariff_id = None
             existing_subscription.traffic_limit_gb = final_traffic_gb if final_traffic_gb is not None else 0
             old_device_limit_bot = existing_subscription.device_limit or settings.DEFAULT_DEVICE_LIMIT
             if should_update_devices:

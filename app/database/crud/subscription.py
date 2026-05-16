@@ -765,6 +765,18 @@ async def extend_subscription(
         # иначе классические триалы (tariff_id=None) никогда не конвертировались
         if subscription.is_trial:
             subscription.is_trial = False
+            # В classic mode тариф используется только для триала (помечен
+            # is_trial_available=true). После конверсии подписка не должна
+            # висеть на 'триал-тарифе' — отвязываем, чтобы в UI подписка
+            # показывалась как обычная платная, а не как пробный тариф.
+            if tariff_id is None and settings.is_classic_mode():
+                if subscription.tariff_id is not None:
+                    logger.info(
+                        '🧹 Classic mode: обнуляем tariff_id при конверсии trial → paid',
+                        subscription_id=subscription.id,
+                        old_tariff_id=subscription.tariff_id,
+                    )
+                    subscription.tariff_id = None
             logger.info(
                 '🎓 Подписка конвертирована из триала в платную (классический режим)', subscription_id=subscription.id
             )
