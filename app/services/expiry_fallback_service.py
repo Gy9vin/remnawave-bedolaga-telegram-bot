@@ -1057,11 +1057,30 @@ async def _reconcile_single_active_fallback(
     ):
         user = sub.user
         if not require_zero_balance or (user and (user.balance_kopeks or 0) == 0):
+            from app.external.remnawave_api import RemnaWaveAPIError
             from app.services.remnawave_service import remnawave_service
             try:
                 if sub.remnawave_uuid:
                     async with remnawave_service.get_api_client() as api:
-                        await api.disable_user(sub.remnawave_uuid)
+                        try:
+                            await api.disable_user(sub.remnawave_uuid)
+                        except RemnaWaveAPIError as api_exc:
+                            # Идемпотентность: юзер уже DISABLED в Remnawave
+                            # (предыдущий cleanup, ручная блокировка админа,
+                            # 404 — юзер удалён в панели). Не ошибка, всё ок.
+                            msg = str(api_exc).lower()
+                            if (
+                                'already disabled' in msg
+                                or 'not found' in msg
+                                or getattr(api_exc, 'status_code', None) == 404
+                            ):
+                                logger.debug(
+                                    'Reconcile cleanup: юзер уже DISABLED/удалён в Remnawave, продолжаем',
+                                    subscription_id=sub.id,
+                                    reason=msg[:120],
+                                )
+                            else:
+                                raise
                 sub.status = SubscriptionStatus.EXPIRED.value
                 _clear_fallback_state(sub)
                 await db.commit()
