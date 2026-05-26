@@ -3205,6 +3205,285 @@ async def admin_user_fallback_restore(callback: types.CallbackQuery, db_user: Us
 
 @admin_required
 @error_handler
+async def admin_user_change_tgid_ask(
+    callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext
+):
+    """Спрашиваем новый Telegram ID для замены у юзера."""
+    user_id = int(callback.data.split('_')[-1])
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        await callback.answer('Пользователь не найден', show_alert=True)
+        return
+
+    await state.update_data(target_user_id=user.id)
+    await state.set_state(AdminStates.editing_user_telegram_id)
+
+    text = (
+        f'🆔 <b>Смена Telegram ID</b>\n\n'
+        f'👤 Пользователь: <b>{user.full_name}</b> (DB ID {user.id})\n'
+        f'📱 Текущий Telegram ID: <code>{user.telegram_id}</code>\n\n'
+        f'Введи <b>новый Telegram ID</b> (число).\n\n'
+        f'<i>Все данные (баланс, подписки, рефералы, история) останутся за этим '
+        f'аккаунтом — изменится только привязка к Telegram-чату.</i>\n\n'
+        f'⚠️ Если на новом ID уже есть юзер — операция будет отклонена.'
+    )
+    await callback.message.edit_text(
+        text,
+        parse_mode='HTML',
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text='❌ Отмена', callback_data=f'admin_user_manage_{user.id}')]
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def admin_user_change_tgid_process(
+    message: types.Message, db_user: User, db: AsyncSession, state: FSMContext
+):
+    """Применяем новый Telegram ID."""
+    raw = (message.text or '').strip()
+    if not raw.lstrip('-').isdigit():
+        await message.answer('❌ Нужно число (Telegram ID). Попробуй ещё раз или нажми Отмена в меню.')
+        return
+
+    new_tgid = int(raw)
+    data = await state.get_data()
+    target_user_id = data.get('target_user_id')
+    await state.clear()
+
+    if not target_user_id:
+        await message.answer('❌ Контекст утерян, попробуй заново через меню пользователя.')
+        return
+
+    user = await get_user_by_id(db, target_user_id)
+    if not user:
+        await message.answer('❌ Пользователь не найден')
+        return
+
+    if user.telegram_id == new_tgid:
+        await message.answer(
+            f'ℹ️ У пользователя уже стоит Telegram ID <code>{new_tgid}</code>.',
+            parse_mode='HTML',
+        )
+        return
+
+    from sqlalchemy import select as _select
+
+    existing = await db.execute(_select(User).where(User.telegram_id == new_tgid, User.id != user.id))
+    occupant = existing.scalars().first()
+    if occupant:
+        await message.answer(
+            f'❌ Telegram ID <code>{new_tgid}</code> уже занят другим пользователем '
+            f'(DB ID {occupant.id}, @{occupant.username or "—"}).\n\n'
+            f'Сначала удали/смени ID у того пользователя.',
+            parse_mode='HTML',
+        )
+        return
+
+    old_tgid = user.telegram_id
+    user.telegram_id = new_tgid
+    user.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    logger.info(
+        'Админ сменил Telegram ID пользователя',
+        admin_telegram_id=db_user.telegram_id,
+        target_user_id=user.id,
+        old_telegram_id=old_tgid,
+        new_telegram_id=new_tgid,
+    )
+
+    await message.answer(
+        f'✅ <b>Telegram ID обновлён</b>\n\n'
+        f'👤 {user.full_name} (DB ID {user.id})\n'
+        f'📱 <code>{old_tgid}</code> → <code>{new_tgid}</code>',
+        parse_mode='HTML',
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text='👤 К пользователю', callback_data=f'admin_user_manage_{user.id}')]
+            ]
+        ),
+    )
+
+
+@admin_required
+@error_handler
+async def admin_user_transfer_refs_ask(
+    callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext
+):
+    """Спрашиваем Telegram ID получателя для переноса рефералов."""
+    user_id = int(callback.data.split('_')[-1])
+    donor = await get_user_by_id(db, user_id)
+    if not donor:
+        await callback.answer('Пользователь не найден', show_alert=True)
+        return
+
+    from sqlalchemy import func as _func, select as _select
+    from app.database.models import ReferralEarning
+
+    refs_count_q = await db.execute(_select(_func.count(User.id)).where(User.referred_by_id == donor.id))
+    refs_count = refs_count_q.scalar() or 0
+    earnings_count_q = await db.execute(
+        _select(_func.count(ReferralEarning.id)).where(ReferralEarning.user_id == donor.id)
+    )
+    earnings_count = earnings_count_q.scalar() or 0
+
+    await state.update_data(donor_user_id=donor.id)
+    await state.set_state(AdminStates.transferring_user_referrals)
+
+    text = (
+        f'👥 <b>Передача рефералов</b>\n\n'
+        f'🎁 От: <b>{donor.full_name}</b> (DB ID {donor.id}, TG <code>{donor.telegram_id}</code>)\n'
+        f'• Приглашённых: <b>{refs_count}</b>\n'
+        f'• Записей о бонусах: <b>{earnings_count}</b>\n\n'
+        f'Введи <b>Telegram ID получателя</b> (тот, кому переедут рефералы).'
+    )
+    await callback.message.edit_text(
+        text,
+        parse_mode='HTML',
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text='❌ Отмена', callback_data=f'admin_user_manage_{donor.id}')]
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def admin_user_transfer_refs_process(
+    message: types.Message, db_user: User, db: AsyncSession, state: FSMContext
+):
+    """Переносим рефералов + историю earnings от donor к recipient."""
+    raw = (message.text or '').strip()
+    if not raw.lstrip('-').isdigit():
+        await message.answer('❌ Нужно число (Telegram ID получателя).')
+        return
+
+    recipient_tgid = int(raw)
+    data = await state.get_data()
+    donor_id = data.get('donor_user_id')
+    await state.clear()
+
+    if not donor_id:
+        await message.answer('❌ Контекст утерян, попробуй заново.')
+        return
+
+    from sqlalchemy import select as _select, update as _update, delete as _delete
+    from app.database.models import ReferralEarning
+
+    donor = await get_user_by_id(db, donor_id)
+    if not donor:
+        await message.answer('❌ Donor не найден.')
+        return
+
+    recip_q = await db.execute(_select(User).where(User.telegram_id == recipient_tgid))
+    recipient = recip_q.scalars().first()
+    if not recipient:
+        await message.answer(
+            f'❌ Получатель с Telegram ID <code>{recipient_tgid}</code> не найден в БД. '
+            f'Юзер должен сначала зарегистрироваться в боте.',
+            parse_mode='HTML',
+        )
+        return
+
+    if recipient.id == donor.id:
+        await message.answer('❌ Получатель = donor, перенос невозможен.')
+        return
+
+    if recipient.referred_by_id == donor.id:
+        await message.answer(
+            '❌ Получатель — реферал donor. Сначала отвяжи или удали эту связь.',
+        )
+        return
+
+    try:
+        # 1) Удалить дубликаты registration_pending (partial unique index)
+        await db.execute(
+            _delete(ReferralEarning).where(
+                ReferralEarning.user_id == donor.id,
+                ReferralEarning.reason == 'referral_registration_pending',
+                ReferralEarning.referral_id.in_(
+                    _select(ReferralEarning.referral_id).where(
+                        ReferralEarning.user_id == recipient.id,
+                        ReferralEarning.reason == 'referral_registration_pending',
+                    )
+                ),
+            )
+        )
+
+        # 2) Перенос приглашённых
+        moved_refs_res = await db.execute(
+            _update(User)
+            .where(User.referred_by_id == donor.id)
+            .values(referred_by_id=recipient.id)
+        )
+
+        # 3) Перенос earnings
+        moved_earnings_res = await db.execute(
+            _update(ReferralEarning)
+            .where(ReferralEarning.user_id == donor.id)
+            .values(user_id=recipient.id)
+        )
+
+        # 4) Перенос ReferralContestEvent (если таблица есть)
+        moved_contest = 0
+        try:
+            from app.database.models import ReferralContestEvent
+
+            res = await db.execute(
+                _update(ReferralContestEvent)
+                .where(ReferralContestEvent.referrer_id == donor.id)
+                .values(referrer_id=recipient.id)
+            )
+            moved_contest = res.rowcount or 0
+        except Exception as contest_exc:
+            logger.warning('Не удалось перенести ReferralContestEvent', error=str(contest_exc))
+
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        logger.error('Ошибка переноса рефералов', error=exc)
+        await message.answer(f'❌ Ошибка переноса: <code>{str(exc)[:200]}</code>', parse_mode='HTML')
+        return
+
+    moved_refs = moved_refs_res.rowcount or 0
+    moved_earnings = moved_earnings_res.rowcount or 0
+
+    logger.info(
+        'Админ перенёс рефералов',
+        admin_telegram_id=db_user.telegram_id,
+        donor_user_id=donor.id,
+        recipient_user_id=recipient.id,
+        moved_refs=moved_refs,
+        moved_earnings=moved_earnings,
+        moved_contest=moved_contest,
+    )
+
+    await message.answer(
+        f'✅ <b>Перенос завершён</b>\n\n'
+        f'🎁 От: <b>{donor.full_name}</b> (TG <code>{donor.telegram_id}</code>)\n'
+        f'🎯 К: <b>{recipient.full_name}</b> (TG <code>{recipient.telegram_id}</code>)\n\n'
+        f'• Перенесено приглашённых: <b>{moved_refs}</b>\n'
+        f'• Перенесено записей о бонусах: <b>{moved_earnings}</b>\n'
+        f'• Перенесено событий конкурсов: <b>{moved_contest}</b>',
+        parse_mode='HTML',
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text='👤 К donor', callback_data=f'admin_user_manage_{donor.id}')],
+                [types.InlineKeyboardButton(text='👤 К получателю', callback_data=f'admin_user_manage_{recipient.id}')],
+            ]
+        ),
+    )
+
+
+@admin_required
+@error_handler
 async def show_inactive_users(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     UserService()
 
@@ -6562,6 +6841,20 @@ def register_handlers(dp: Dispatcher):
         admin_user_fallback_restore,
         F.data.startswith('admin_user_fallback_restore_'),
     )
+
+    # Смена Telegram ID
+    dp.callback_query.register(
+        admin_user_change_tgid_ask,
+        F.data.startswith('admin_user_change_tgid_'),
+    )
+    dp.message.register(admin_user_change_tgid_process, AdminStates.editing_user_telegram_id)
+
+    # Передача рефералов
+    dp.callback_query.register(
+        admin_user_transfer_refs_ask,
+        F.data.startswith('admin_user_transfer_refs_'),
+    )
+    dp.message.register(admin_user_transfer_refs_process, AdminStates.transferring_user_referrals)
 
     dp.callback_query.register(show_inactive_users, F.data == 'admin_users_inactive')
 

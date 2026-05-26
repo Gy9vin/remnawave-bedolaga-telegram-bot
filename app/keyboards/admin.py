@@ -1200,6 +1200,20 @@ def get_user_management_keyboard(
         ]
     )
 
+    # Перенос аккаунта: смена telegram_id + перенос рефералов
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text='🆔 Сменить Telegram ID',
+                callback_data=f'admin_user_change_tgid_{user_id}',
+            ),
+            InlineKeyboardButton(
+                text='👥 Передать рефералов',
+                callback_data=f'admin_user_transfer_refs_{user_id}',
+            ),
+        ]
+    )
+
     if user_status == 'active':
         keyboard.append(
             [

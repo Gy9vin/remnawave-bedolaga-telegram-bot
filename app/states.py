@@ -58,6 +58,8 @@ class AdminStates(StatesGroup):
     granting_subscription = State()
     editing_user_subscription = State()
     editing_user_restriction_reason = State()
+    editing_user_telegram_id = State()
+    transferring_user_referrals = State()
 
     creating_promocode = State()
     setting_promocode_type = State()
