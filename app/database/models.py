@@ -2072,6 +2072,8 @@ class Subscription(Base):
 
     autopay_enabled = Column(Boolean, default=False)
     autopay_days_before = Column(Integer, default=3)
+    # NULL → fall back to settings.DEFAULT_AUTOPAY_PERIOD_DAYS, then tariff shortest period
+    autopay_period_days = Column(Integer, nullable=True)
 
     # Флаг для защиты от повторного автопродления перед истечением
     auto_renewed_before_expiry = Column(Boolean, default=False, nullable=False)

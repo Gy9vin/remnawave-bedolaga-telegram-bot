@@ -34,17 +34,6 @@ os.environ.setdefault('BACKUP_LOCATION', _tempfile.mkdtemp(prefix='bedolaga_test
 sys.modules.setdefault('asyncpg', types.ModuleType('asyncpg'))
 sys.modules.setdefault('aiosqlite', types.ModuleType('aiosqlite'))
 
-# Заглушка для cabinet websocket модуля, чтобы избежать создания /app/data/backups
-# при lazy-import внутри subscription_auto_purchase_service
-if 'app.cabinet.routes.websocket' not in sys.modules:
-    from unittest.mock import AsyncMock as _AsyncMock
-
-    _ws_module = types.ModuleType('app.cabinet.routes.websocket')
-    _ws_module.notify_user_subscription_activated = _AsyncMock()
-    _ws_module.notify_user_subscription_renewed = _AsyncMock()
-    _ws_module.notify_user_subscription_cancelled = _AsyncMock()
-    sys.modules['app.cabinet.routes.websocket'] = _ws_module
-
 # Эмуляция redis.asyncio, чтобы модуль кеша мог импортироваться.
 if 'redis.asyncio' not in sys.modules:
     redis_module = types.ModuleType('redis')
@@ -95,7 +84,6 @@ if 'redis.asyncio' not in sys.modules:
     redis_async_module.Redis = _FakeRedisClient
     redis_exceptions_module.RedisError = _FakeRedisError
     redis_exceptions_module.NoScriptError = _FakeNoScriptError
-    redis_module.exceptions = redis_exceptions_module
     sys.modules['redis'] = redis_module
     sys.modules['redis.asyncio'] = redis_async_module
     sys.modules['redis.exceptions'] = redis_exceptions_module
@@ -204,62 +192,11 @@ def fixed_datetime() -> datetime:
     return datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
-@pytest.fixture
-def mock_db_session():
-    """Мок AsyncSession для тестов без реальной БД."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    session = AsyncMock()
-    session.add = MagicMock()
-    session.commit = AsyncMock()
-    session.refresh = AsyncMock()
-    session.execute = AsyncMock()
-    session.rollback = AsyncMock()
-    return session
-
-
-@pytest.fixture
-def sample_user():
-    """Тестовый пользователь."""
-    return types.SimpleNamespace(
-        id=1,
-        telegram_id=123456789,
-        username='testuser',
-        balance_kopeks=50000,
-        language='ru',
-    )
-
-
-@pytest.fixture
-def sample_promo_group():
-    """Тестовая промо-группа."""
-    return types.SimpleNamespace(
-        id=10,
-        name='Test VIP Group',
-        priority=50,
-        discount_percent=15,
-    )
-
-
-@pytest.fixture
-def sample_promocode_promo_group(sample_promo_group):
-    """Тестовый промокод типа PROMO_GROUP."""
-    from app.database.models import PromoCodeType
-
-    return types.SimpleNamespace(
-        id=100,
-        code='VIPGROUP',
-        type=PromoCodeType.PROMO_GROUP.value,
-        balance_bonus_kopeks=0,
-        subscription_days=0,
-        max_uses=100,
-        current_uses=20,
-        is_active=True,
-        is_valid=True,
-        promo_group_id=sample_promo_group.id,
-        promo_group=sample_promo_group,
-        valid_until=None,
-    )
+# Auto-load fixture modules so tests don't need explicit imports.
+# Promocode/promo-group tests in tests/services/test_promocode_service.py,
+# tests/crud/test_promocode_crud.py, and tests/integration/test_promocode_promo_group_flow.py
+# all rely on these without importing them directly.
+pytest_plugins = ['tests.fixtures.promocode_fixtures']
 
 
 def pytest_configure(config: pytest.Config) -> None:
