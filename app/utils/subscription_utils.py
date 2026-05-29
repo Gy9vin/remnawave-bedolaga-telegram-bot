@@ -116,13 +116,20 @@ def resolve_hwid_device_limit(subscription: Subscription | None) -> int | None:
     if not settings.is_devices_selection_enabled():
         forced_limit = settings.get_disabled_mode_device_limit()
         if forced_limit is not None and forced_limit > 0:
+            # ВАЖНО: не понижаем лимит для тех, кто докупил устройств.
+            # У юзера в подписке может стоять, например, 17 устройств
+            # (DEFAULT 2 + докупил 15). Если бездумно вернуть forced_limit=2 —
+            # Remnawave получит лимит 2, юзер потеряет купленное.
+            sub_limit = getattr(subscription, 'device_limit', None) or 0
+            effective = max(int(forced_limit), int(sub_limit))
             _logger.info(
-                'DEVICES_SELECTION disabled, using forced limit',
+                'DEVICES_SELECTION disabled, using max(forced, subscription) limit',
                 forced_limit=forced_limit,
-                subscription_device_limit=getattr(subscription, 'device_limit', None),
+                subscription_device_limit=sub_limit,
+                effective_limit=effective,
                 subscription_id=getattr(subscription, 'id', None),
             )
-            return forced_limit
+            return effective
         # forced_limit не задан или равен 0 — используем device_limit из подписки,
         # чтобы при смене тарифа лимит устройств обновлялся в панели
 
