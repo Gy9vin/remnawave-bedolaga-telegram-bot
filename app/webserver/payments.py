@@ -496,7 +496,14 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
                     return JSONResponse({'status': 'ok'})
 
                 order_id = payload.get('orderId') or payload.get('order_id') or 'unknown'
-                logger.error('Wata webhook processing failed: order_id payload', order_id=order_id, payload=payload)
+                # Логируем только безопасные поля — Wata payload содержит данные
+                # карты/кошелька, email, суммы. Полный payload в ERROR-лог не пишем.
+                logger.error(
+                    'Wata webhook processing failed',
+                    order_id=order_id,
+                    status_field=payload.get('status'),
+                    payload_keys=list(payload.keys()),
+                )
                 return JSONResponse(
                     {'status': 'error', 'reason': 'not_processed'},
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -665,9 +672,18 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
             if not merchant_id and not secret and not raw_body.strip():
                 logger.info('Platega webhook verification ping (no auth headers, empty body)')
                 return JSONResponse({'status': 'ok'})
+            # Безопасность: если конфигурация не задана — отказываем сразу.
+            # Иначе hmac.compare_digest('', '') вернёт True и любой запрос с пустыми
+            # auth-заголовками пройдёт верификацию.
+            if not settings.PLATEGA_MERCHANT_ID or not settings.PLATEGA_SECRET:
+                logger.error('Platega webhook called but credentials are not configured')
+                return JSONResponse(
+                    {'status': 'error', 'reason': 'service_unavailable'},
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
             if not (
-                hmac.compare_digest(merchant_id, settings.PLATEGA_MERCHANT_ID or '')
-                and hmac.compare_digest(secret, settings.PLATEGA_SECRET or '')
+                hmac.compare_digest(merchant_id, settings.PLATEGA_MERCHANT_ID)
+                and hmac.compare_digest(secret, settings.PLATEGA_SECRET)
             ):
                 return JSONResponse(
                     {'status': 'error', 'reason': 'unauthorized'},
@@ -741,11 +757,12 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
             try:
                 raw_body = await request.body()
 
-                # Логируем для диагностики
+                # Логируем для диагностики (только имена заголовков, без значений —
+                # Authorization/Cookie/X-Content-HMAC содержат секреты)
                 logger.info(
-                    'CloudPayments check webhook received, body_len all_headers',
+                    'CloudPayments check webhook received',
                     raw_body_count=len(raw_body),
-                    headers=dict(request.headers),
+                    header_keys=list(request.headers.keys()),
                 )
 
                 # Проверяем подпись если API_SECRET настроен
@@ -846,11 +863,11 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
             try:
                 raw_body = await request.body()
 
-                # Логируем для диагностики
+                # Логируем для диагностики (только имена заголовков, без значений)
                 logger.info(
-                    'CloudPayments universal webhook received, body_len headers',
+                    'CloudPayments universal webhook received',
                     raw_body_count=len(raw_body),
-                    headers=dict(request.headers),
+                    header_keys=list(request.headers.keys()),
                 )
 
                 # Проверяем подпись если API_SECRET настроен

@@ -329,54 +329,15 @@ class MonitoringService:
                 db, self._maybe_restart_nodes(), '_maybe_restart_nodes'
             )
 
+            # Дополнительные задачи которые ранее были в старом дублирующем
+            # блоке. Прогоняем через _run_monitoring_task для изоляции.
+            await self._run_monitoring_task(db, self._check_traffic_warnings(db), '_check_traffic_warnings')
+            await self._run_monitoring_task(db, self._check_low_balance_alerts(db), '_check_low_balance_alerts')
+            await self._run_monitoring_task(
+                db, self._cleanup_expired_refresh_tokens(db), '_cleanup_expired_refresh_tokens'
+            )
+
             try:
-                await self._cleanup_notification_cache()
-
-                expired_offers = await deactivate_expired_offers(db)
-                if expired_offers:
-                    logger.info('🧹 Деактивировано просроченных скидочных предложений', expired_offers=expired_offers)
-
-                expired_active_discounts = await cleanup_expired_promo_offer_discounts(db)
-                if expired_active_discounts:
-                    logger.info(
-                        '🧹 Сброшено активных скидок промо-предложений с истекшим сроком',
-                        expired_active_discounts=expired_active_discounts,
-                    )
-
-                cleaned_test_access = await promo_offer_service.cleanup_expired_test_access(db)
-                if cleaned_test_access:
-                    logger.info(
-                        '🧹 Отозвано истекших тестовых доступов к сквадам', cleaned_test_access=cleaned_test_access
-                    )
-
-                # ВАЖНО: autopay ПЕРЕД check_expired — иначе подписки с автоплатой
-                # экспайрятся до того, как autopay успеет их продлить
-                # Продление с баланса работает всегда, если у подписки autopay_enabled=True
-                await self._process_autopayments(db)
-                # Рекуррентные автоплатежи с карты: требуют ENABLE_AUTOPAY + YOOKASSA_RECURRENT_ENABLED
-                if settings.ENABLE_AUTOPAY and settings.YOOKASSA_RECURRENT_ENABLED:
-                    try:
-                        from app.services.recurrent_payment_service import process_recurrent_payments
-
-                        await process_recurrent_payments(db=db, bot=self.bot)
-                    except Exception as recurrent_error:
-                        logger.error(
-                            'Ошибка рекуррентных автоплатежей',
-                            error=recurrent_error,
-                            exc_info=True,
-                        )
-                await self._check_expired_subscriptions(db)
-                await self._check_expiring_subscriptions(db)
-                await self._check_trial_expiring_soon(db)
-                await self._check_trial_channel_subscriptions(db)
-                await self._check_expired_subscription_followups(db)
-                await self._check_traffic_warnings(db)
-                await self._check_low_balance_alerts(db)
-                await self._retry_stuck_guest_purchases(db)
-                await self._cleanup_expired_refresh_tokens(db)
-                await self._cleanup_inactive_users(db)
-                await self._sync_with_remnawave(db)
-
                 await self._log_monitoring_event(
                     db,
                     'monitoring_cycle_completed',
