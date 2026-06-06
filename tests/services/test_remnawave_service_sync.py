@@ -1,5 +1,4 @@
 import sys
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -28,6 +27,14 @@ def _make_panel_user(telegram_id: int, expire_at: str, status: str = 'ACTIVE') -
         'expireAt': expire_at,
         'status': status,
     }
+
+
+def _async_nested_ctx() -> MagicMock:
+    """Async context manager for ``db.begin_nested()`` (SAVEPOINT)."""
+    nested = MagicMock()
+    nested.__aenter__ = AsyncMock(return_value=None)
+    nested.__aexit__ = AsyncMock(return_value=None)
+    return nested
 
 
 def test_deduplicate_prefers_latest_expire_date():
@@ -67,30 +74,16 @@ def test_deduplicate_ignores_records_without_expire_date():
     assert deduplicated[telegram_id] is valid
 
 
-def _make_db_with_savepoint() -> AsyncMock:
-    """Создаём AsyncMock для db с поддержкой begin_nested() как async context manager."""
-    db = AsyncMock()
-
-    @asynccontextmanager
-    async def _begin_nested_cm():
-        yield MagicMock()
-
-    db.begin_nested = MagicMock(side_effect=_begin_nested_cm)
-    return db
-
-
 async def test_get_or_create_user_handles_unique_violation(monkeypatch):
     service = _create_service()
-    db = _make_db_with_savepoint()
+    db = AsyncMock()
+    db.begin_nested = MagicMock(return_value=_async_nested_ctx())
 
     panel_user = {'telegramId': 555, 'username': 'existing'}
     existing_user = object()
 
     create_user_mock = AsyncMock(side_effect=IntegrityError('stmt', 'params', Exception('unique')))
     get_user_mock = AsyncMock(return_value=existing_user)
-    rollback_mock = AsyncMock()
-
-    db.rollback = rollback_mock
 
     monkeypatch.setattr('app.services.remnawave_service.create_user_no_commit', create_user_mock)
     monkeypatch.setattr(
@@ -108,7 +101,8 @@ async def test_get_or_create_user_handles_unique_violation(monkeypatch):
 
 async def test_get_or_create_user_creates_new(monkeypatch):
     service = _create_service()
-    db = _make_db_with_savepoint()
+    db = AsyncMock()
+    db.begin_nested = MagicMock(return_value=_async_nested_ctx())
 
     panel_user = {'telegramId': 777, 'username': 'new_user'}
     new_user = object()

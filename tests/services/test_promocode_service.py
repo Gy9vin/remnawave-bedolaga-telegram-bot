@@ -41,9 +41,6 @@ async def test_activate_promo_group_promocode_success(
     check_usage_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.check_user_promocode_usage', check_usage_mock)
 
-    count_activations_mock = AsyncMock(return_value=0)
-    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', count_activations_mock)
-
     get_promo_group_mock = AsyncMock(return_value=sample_promo_group)
     monkeypatch.setattr('app.services.promocode_service.get_promo_group_by_id', get_promo_group_mock)
 
@@ -53,11 +50,11 @@ async def test_activate_promo_group_promocode_success(
     add_promo_group_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.add_user_to_promo_group', add_promo_group_mock)
 
-    from unittest.mock import MagicMock
-
-    promo_use_obj = MagicMock()
-    create_usage_mock = AsyncMock(return_value=promo_use_obj)
+    create_usage_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.create_promocode_use', create_usage_mock)
+
+    # Anti-stacking gate: production imports this locally from the CRUD module
+    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', AsyncMock(return_value=0))
 
     # Execute
     service = PromoCodeService()
@@ -74,16 +71,17 @@ async def test_activate_promo_group_promocode_success(
     # Verify user promo group check
     has_promo_group_mock.assert_awaited_once_with(mock_db_session, sample_user.id, sample_promo_group.id)
 
-    # Verify promo group assignment
+    # Verify promo group assignment (production passes commit=False for the atomic single-commit flow)
     add_promo_group_mock.assert_awaited_once_with(
-        mock_db_session, sample_user.id, sample_promo_group.id, assigned_by='promocode'
+        mock_db_session, sample_user.id, sample_promo_group.id, assigned_by='promocode', commit=False
     )
 
-    # Verify usage recorded (now called first as race-condition lock)
+    # Verify usage recorded
     create_usage_mock.assert_awaited_once_with(mock_db_session, sample_promocode_promo_group.id, sample_user.id)
 
-    # Verify counter incremented via SQL UPDATE (not in-memory)
-    mock_db_session.execute.assert_awaited()
+    # Verify counter incremented: production uses an atomic SQL UPDATE that does
+    # not mutate the in-memory fixture, so read the +1 value from the returned envelope.
+    assert result['promocode']['current_uses'] == 21
     mock_db_session.commit.assert_awaited()
 
 
@@ -115,9 +113,6 @@ async def test_activate_promo_group_user_already_has_group(
     check_usage_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.check_user_promocode_usage', check_usage_mock)
 
-    count_activations_mock = AsyncMock(return_value=0)
-    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', count_activations_mock)
-
     # User ALREADY HAS the promo group
     has_promo_group_mock = AsyncMock(return_value=True)
     monkeypatch.setattr('app.services.promocode_service.has_user_promo_group', has_promo_group_mock)
@@ -127,6 +122,9 @@ async def test_activate_promo_group_user_already_has_group(
 
     create_usage_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.create_promocode_use', create_usage_mock)
+
+    # Anti-stacking gate: production imports this locally from the CRUD module
+    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', AsyncMock(return_value=0))
 
     # Execute
     service = PromoCodeService()
@@ -169,9 +167,6 @@ async def test_activate_promo_group_group_not_found(
     check_usage_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.check_user_promocode_usage', check_usage_mock)
 
-    count_activations_mock = AsyncMock(return_value=0)
-    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', count_activations_mock)
-
     has_promo_group_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.has_user_promo_group', has_promo_group_mock)
 
@@ -184,6 +179,9 @@ async def test_activate_promo_group_group_not_found(
 
     create_usage_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.create_promocode_use', create_usage_mock)
+
+    # Anti-stacking gate: production imports this locally from the CRUD module
+    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', AsyncMock(return_value=0))
 
     # Execute
     service = PromoCodeService()
@@ -229,9 +227,6 @@ async def test_activate_promo_group_assignment_error(
     check_usage_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.check_user_promocode_usage', check_usage_mock)
 
-    count_activations_mock = AsyncMock(return_value=0)
-    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', count_activations_mock)
-
     get_promo_group_mock = AsyncMock(return_value=sample_promo_group)
     monkeypatch.setattr('app.services.promocode_service.get_promo_group_by_id', get_promo_group_mock)
 
@@ -244,6 +239,9 @@ async def test_activate_promo_group_assignment_error(
 
     create_usage_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.create_promocode_use', create_usage_mock)
+
+    # Anti-stacking gate: production imports this locally from the CRUD module
+    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', AsyncMock(return_value=0))
 
     # Execute
     service = PromoCodeService()
@@ -284,9 +282,6 @@ async def test_activate_promo_group_assigned_by_value(
     check_usage_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.check_user_promocode_usage', check_usage_mock)
 
-    count_activations_mock = AsyncMock(return_value=0)
-    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', count_activations_mock)
-
     get_promo_group_mock = AsyncMock(return_value=sample_promo_group)
     monkeypatch.setattr('app.services.promocode_service.get_promo_group_by_id', get_promo_group_mock)
 
@@ -299,16 +294,20 @@ async def test_activate_promo_group_assigned_by_value(
     create_usage_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.create_promocode_use', create_usage_mock)
 
+    # Anti-stacking gate: production imports this locally from the CRUD module
+    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', AsyncMock(return_value=0))
+
     # Execute
     service = PromoCodeService()
     await service.activate_promocode(mock_db_session, sample_user.id, 'VIPGROUP')
 
-    # Verify assigned_by="promocode"
+    # Verify assigned_by="promocode" (production passes commit=False for the atomic single-commit flow)
     add_promo_group_mock.assert_awaited_once_with(
         mock_db_session,
         sample_user.id,
         sample_promo_group.id,
         assigned_by='promocode',  # Critical assertion
+        commit=False,
     )
 
 
@@ -337,9 +336,6 @@ async def test_activate_promo_group_description_includes_group_name(
     check_usage_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.check_user_promocode_usage', check_usage_mock)
 
-    count_activations_mock = AsyncMock(return_value=0)
-    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', count_activations_mock)
-
     get_promo_group_mock = AsyncMock(return_value=sample_promo_group)
     monkeypatch.setattr('app.services.promocode_service.get_promo_group_by_id', get_promo_group_mock)
 
@@ -351,6 +347,9 @@ async def test_activate_promo_group_description_includes_group_name(
 
     create_usage_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.create_promocode_use', create_usage_mock)
+
+    # Anti-stacking gate: production imports this locally from the CRUD module
+    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', AsyncMock(return_value=0))
 
     # Execute
     service = PromoCodeService()
@@ -385,9 +384,6 @@ async def test_promocode_data_includes_promo_group_id(
     check_usage_mock = AsyncMock(return_value=False)
     monkeypatch.setattr('app.services.promocode_service.check_user_promocode_usage', check_usage_mock)
 
-    count_activations_mock = AsyncMock(return_value=0)
-    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', count_activations_mock)
-
     get_promo_group_mock = AsyncMock(return_value=sample_promo_group)
     monkeypatch.setattr('app.services.promocode_service.get_promo_group_by_id', get_promo_group_mock)
 
@@ -399,6 +395,9 @@ async def test_promocode_data_includes_promo_group_id(
 
     create_usage_mock = AsyncMock()
     monkeypatch.setattr('app.services.promocode_service.create_promocode_use', create_usage_mock)
+
+    # Anti-stacking gate: production imports this locally from the CRUD module
+    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', AsyncMock(return_value=0))
 
     # Execute
     service = PromoCodeService()
@@ -495,3 +494,76 @@ async def test_activate_trial_promocode_uses_all_available_squads_when_tariff_ha
         tariff_id=7,
     )
     create_remnawave_user_mock.assert_awaited_once_with(mock_db_session, created_subscription)
+
+
+async def test_subscription_days_promo_keeps_trial_a_trial(monkeypatch):
+    """Bug #629889 (class): a days-promocode on a TRIAL must NOT flip is_trial.
+
+    A SUBSCRIPTION_DAYS promo is a free grant, not a purchase. Converting the
+    trial to is_trial=False ungated it from try_auto_extend_expired_after_topup,
+    so once the promo days lapsed it silently became a self-renewing paid sub.
+    The trial must stay is_trial=True; only the promo days are added.
+    """
+    sample_user = SimpleNamespace(
+        id=1,
+        telegram_id=123456789,
+        username='trialuser',
+        full_name='Trial User',
+        balance_kopeks=0,
+        language='ru',
+        has_had_paid_subscription=False,
+        total_spent_kopeks=0,
+    )
+    mock_db_session = AsyncMock()
+    mock_db_session.commit = AsyncMock()
+    mock_db_session.rollback = AsyncMock()
+    mock_db_session.refresh = AsyncMock()
+
+    promocode = SimpleNamespace(
+        id=11,
+        code='DAYS14',
+        type=PromoCodeType.SUBSCRIPTION_DAYS.value,
+        balance_bonus_kopeks=0,
+        subscription_days=14,
+        tariff_id=None,
+        promo_group_id=None,
+        promo_group=None,
+        first_purchase_only=False,
+        max_uses=20,
+        current_uses=0,
+        is_active=True,
+        is_valid=True,
+        valid_until=None,
+    )
+    trial_tariff = SimpleNamespace(id=7, name='Trial', is_daily=False)
+    trial_sub = SimpleNamespace(
+        id=99,
+        is_trial=True,
+        status='trial',
+        tariff=trial_tariff,
+        tariff_id=7,
+        days_left=1,
+    )
+
+    monkeypatch.setattr('app.services.promocode_service.RemnaWaveService', lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        'app.services.promocode_service.SubscriptionService',
+        lambda: SimpleNamespace(update_remnawave_user=AsyncMock()),
+    )
+    monkeypatch.setattr('app.services.promocode_service.get_user_by_id', AsyncMock(return_value=sample_user))
+    monkeypatch.setattr('app.services.promocode_service.get_promocode_by_code', AsyncMock(return_value=promocode))
+    monkeypatch.setattr('app.services.promocode_service.check_user_promocode_usage', AsyncMock(return_value=False))
+    monkeypatch.setattr('app.database.crud.promocode.count_user_recent_activations', AsyncMock(return_value=0))
+    monkeypatch.setattr('app.services.promocode_service.get_subscription_by_user_id', AsyncMock(return_value=trial_sub))
+    monkeypatch.setattr('app.services.promocode_service.create_promocode_use', AsyncMock(return_value=object()))
+    extend_mock = AsyncMock(return_value=trial_sub)
+    monkeypatch.setattr('app.services.promocode_service.extend_subscription', extend_mock)
+
+    service = PromoCodeService()
+    result = await service.activate_promocode(mock_db_session, sample_user.id, promocode.code)
+
+    assert result['success'] is True
+    # The crux: the trial flag is NOT flipped -> stays gated out of auto-renewal.
+    assert trial_sub.is_trial is True
+    # The promo days are still applied to the (still-trial) subscription.
+    extend_mock.assert_awaited_once_with(mock_db_session, trial_sub, 14)

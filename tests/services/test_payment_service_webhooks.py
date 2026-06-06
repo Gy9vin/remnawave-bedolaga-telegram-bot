@@ -73,18 +73,18 @@ class FakeResult:
         items = self._as_iterable()
         return items[0] if items else None
 
-    def scalar_one(self) -> Any:
-        items = self._as_iterable()
-        if len(items) != 1:
-            raise ValueError('Expected exactly one result')
-        return items[0]
-
     def scalar_one_or_none(self) -> Any:
         items = self._as_iterable()
         if not items:
             return None
         if len(items) > 1:
             raise ValueError('Expected zero or one result')
+        return items[0]
+
+    def scalar_one(self) -> Any:
+        items = self._as_iterable()
+        if len(items) != 1:
+            raise ValueError('Expected exactly one result')
         return items[0]
 
     def first(self) -> Any:  # pragma: no cover - утилитарный метод
@@ -113,9 +113,32 @@ class FakeSession:
         self.added: list[Any] = []
         self.execute_statements: list[Any] = []
         self.execute_results: list[Any] = []
+        # Optional opt-in routing: maps an entity-class-name substring to the
+        # object a matching `select(Entity)...` statement should resolve to.
+        # Lets ORM-level lock/select calls (e.g. YooKassaPayment FOR UPDATE,
+        # User eager-load) return the right test object regardless of call order.
+        self.route_by_entity: dict[str, Any] | None = None
+
+    def _route(self, statement: Any) -> Any | None:
+        if not self.route_by_entity:
+            return None
+        try:
+            descriptions = statement.column_descriptions
+        except Exception:
+            return None
+        for description in descriptions:
+            entity = description.get('entity')
+            entity_name = getattr(entity, '__name__', '')
+            for key, value in self.route_by_entity.items():
+                if key in entity_name:
+                    return value
+        return None
 
     async def commit(self) -> None:
         self.commits += 1
+
+    async def flush(self) -> None:
+        return None
 
     async def rollback(self) -> None:  # pragma: no cover
         return None
@@ -128,6 +151,9 @@ class FakeSession:
 
     async def execute(self, statement: Any, *args: Any, **kwargs: Any) -> FakeResult:
         self.execute_statements.append(statement)
+        routed = self._route(statement)
+        if routed is not None:
+            return routed if isinstance(routed, FakeResult) else FakeResult(routed)
         if self.execute_results:
             result = self.execute_results.pop(0)
             if callable(result):  # pragma: no cover - гибкость для будущих тестов
@@ -165,7 +191,7 @@ async def test_process_mulenpay_callback_success(monkeypatch: pytest.MonkeyPatch
     service = _make_service(bot)
     fake_session = FakeSession()
     payment = SimpleNamespace(
-        id=99,
+        id=1,
         uuid='mulen_uuid',
         mulen_payment_id=123,
         amount_kopeks=5000,
@@ -180,16 +206,15 @@ async def test_process_mulenpay_callback_success(monkeypatch: pytest.MonkeyPatch
     async def fake_get_by_id(db, mid):
         return None
 
-    async def fake_get_for_update_mulen(db, payment_id):
+    async def fake_get_mulenpay_for_update(db, pid):
         return payment
 
     monkeypatch.setattr(payment_service_module, 'get_mulenpay_payment_by_uuid', fake_get_by_uuid)
     monkeypatch.setattr(payment_service_module, 'get_mulenpay_payment_by_mulen_id', fake_get_by_id)
 
-    # Мок для get_mulenpay_payment_by_id_for_update (новая защита от race condition)
-    mulen_crud_module = ModuleType('app.database.crud.mulenpay')
-    mulen_crud_module.get_mulenpay_payment_by_id_for_update = fake_get_for_update_mulen
-    monkeypatch.setitem(sys.modules, 'app.database.crud.mulenpay', mulen_crud_module)
+    mulen_module = ModuleType('app.database.crud.mulenpay')
+    mulen_module.get_mulenpay_payment_by_id_for_update = fake_get_mulenpay_for_update
+    monkeypatch.setitem(sys.modules, 'app.database.crud.mulenpay', mulen_module)
 
     transactions: list[dict[str, Any]] = []
 
@@ -222,8 +247,6 @@ async def test_process_mulenpay_callback_success(monkeypatch: pytest.MonkeyPatch
         subscription=None,
         referred_by_id=None,
         referrer=None,
-        language='ru',
-        updated_at=None,
     )
     user.get_primary_promo_group = lambda: getattr(user, 'promo_group', None)
 
@@ -233,12 +256,11 @@ async def test_process_mulenpay_callback_success(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(payment_service_module, 'get_user_by_id', fake_get_user)
     monkeypatch.setattr(type(settings), 'format_price', lambda self, amount: f'{amount / 100:.2f}₽', raising=False)
 
-    # Мок для emit_transaction_side_effects (новая функция эмиссии side effects)
-    trx_side_effects_module = sys.modules.get('app.database.crud.transaction')
-    if trx_side_effects_module is None:
-        trx_side_effects_module = ModuleType('app.database.crud.transaction')
-        monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', trx_side_effects_module)
-    trx_side_effects_module.emit_transaction_side_effects = AsyncMock()
+    async def fake_lock_user(db, locked_user):
+        return locked_user
+
+    monkeypatch.setattr('app.database.crud.user.lock_user_for_update', fake_lock_user)
+    monkeypatch.setattr('app.database.crud.transaction.emit_transaction_side_effects', AsyncMock())
 
     referral_mock = SimpleNamespace(process_referral_topup=AsyncMock())
     monkeypatch.setitem(sys.modules, 'app.services.referral_service', referral_mock)
@@ -272,7 +294,9 @@ async def test_process_mulenpay_callback_success(monkeypatch: pytest.MonkeyPatch
     assert result is True
     assert transactions and transactions[0]['user_id'] == 42
     assert payment.transaction_id == 777
-    assert updated_status['status'] == 'success'
+    # Success path now marks the locked payment row inline (no separate status-CRUD call).
+    assert payment.status == 'success'
+    assert payment.is_paid is True
     assert user.balance_kopeks == 5000
     assert fake_session.commits >= 1
     assert bot.sent_messages  # сообщение пользователю отправлено
@@ -284,7 +308,6 @@ async def test_process_cryptobot_webhook_success(monkeypatch: pytest.MonkeyPatch
     service = _make_service(bot)
     fake_session = FakeSession()
     payment = SimpleNamespace(
-        id=88,
         invoice_id='inv_1',
         user_id=7,
         status='pending',
@@ -305,14 +328,11 @@ async def test_process_cryptobot_webhook_success(monkeypatch: pytest.MonkeyPatch
     async def fake_link(db, invoice_id, transaction_id):
         payment.transaction_id = transaction_id
 
-    async def fake_get_for_update_crypto(db, payment_id):
-        return payment
-
     fake_cryptobot_module = ModuleType('app.database.crud.cryptobot')
     fake_cryptobot_module.get_cryptobot_payment_by_invoice_id = fake_get_crypto
+    fake_cryptobot_module.get_cryptobot_payment_by_invoice_id_for_update = fake_get_crypto
     fake_cryptobot_module.update_cryptobot_payment_status = fake_update_status
     fake_cryptobot_module.link_cryptobot_payment_to_transaction = fake_link
-    fake_cryptobot_module.get_cryptobot_payment_by_id_for_update = fake_get_for_update_crypto
     monkeypatch.setitem(sys.modules, 'app.database.crud.cryptobot', fake_cryptobot_module)
 
     transactions: list[dict[str, Any]] = []
@@ -326,12 +346,16 @@ async def test_process_cryptobot_webhook_success(monkeypatch: pytest.MonkeyPatch
 
     fake_transaction_module = ModuleType('app.database.crud.transaction')
     fake_transaction_module.create_transaction = fake_create_transaction
-    fake_transaction_module.emit_transaction_side_effects = AsyncMock()
 
     async def fake_get_transaction_by_id(db, transaction_id):
         return created_transaction
 
     fake_transaction_module.get_transaction_by_id = fake_get_transaction_by_id
+
+    async def fake_emit_side_effects(db, transaction, **kwargs):
+        return None
+
+    fake_transaction_module.emit_transaction_side_effects = fake_emit_side_effects
     monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', fake_transaction_module)
     monkeypatch.setattr(payment_service_module, 'create_transaction', fake_create_transaction)
 
@@ -344,8 +368,6 @@ async def test_process_cryptobot_webhook_success(monkeypatch: pytest.MonkeyPatch
         subscription=None,
         referred_by_id=None,
         referrer=None,
-        language='ru',
-        updated_at=None,
     )
     user.get_primary_promo_group = lambda: getattr(user, 'promo_group', None)
 
@@ -354,8 +376,12 @@ async def test_process_cryptobot_webhook_success(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(payment_service_module, 'get_user_by_id', fake_get_user_crypto)
 
+    async def fake_lock_user(db, user):
+        return user
+
     fake_user_module = ModuleType('app.database.crud.user')
     fake_user_module.get_user_by_id = fake_get_user_crypto
+    fake_user_module.lock_user_for_update = fake_lock_user
     monkeypatch.setitem(sys.modules, 'app.database.crud.user', fake_user_module)
 
     referral_crypto = SimpleNamespace(process_referral_topup=AsyncMock())
@@ -416,7 +442,7 @@ async def test_process_heleket_webhook_success(monkeypatch: pytest.MonkeyPatch) 
     fake_session = FakeSession()
 
     payment = SimpleNamespace(
-        id=66,
+        id=5001,
         uuid='heleket-uuid',
         order_id='heleket-order',
         user_id=77,
@@ -472,15 +498,15 @@ async def test_process_heleket_webhook_success(monkeypatch: pytest.MonkeyPatch) 
         payment.transaction_id = transaction_id
         return payment
 
-    async def fake_get_for_update_heleket(db, payment_id):
-        return payment
+    async def fake_get_by_id_for_update(db, payment_id):
+        return payment if payment_id == payment.id else None
 
     heleket_module = ModuleType('app.database.crud.heleket')
     heleket_module.get_heleket_payment_by_uuid = fake_get_by_uuid
     heleket_module.get_heleket_payment_by_order_id = fake_get_by_order
+    heleket_module.get_heleket_payment_by_id_for_update = fake_get_by_id_for_update
     heleket_module.update_heleket_payment = fake_update
     heleket_module.link_heleket_payment_to_transaction = fake_link
-    heleket_module.get_heleket_payment_by_id_for_update = fake_get_for_update_heleket
     monkeypatch.setitem(sys.modules, 'app.database.crud.heleket', heleket_module)
 
     transactions: list[dict[str, Any]] = []
@@ -490,13 +516,6 @@ async def test_process_heleket_webhook_success(monkeypatch: pytest.MonkeyPatch) 
         return SimpleNamespace(id=321, **kwargs)
 
     monkeypatch.setattr(payment_service_module, 'create_transaction', fake_create_transaction)
-
-    # Мок для emit_transaction_side_effects (новая функция для heleket)
-    heleket_trx_module = sys.modules.get('app.database.crud.transaction')
-    if heleket_trx_module is None:
-        heleket_trx_module = ModuleType('app.database.crud.transaction')
-        monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', heleket_trx_module)
-    heleket_trx_module.emit_transaction_side_effects = AsyncMock()
 
     user = SimpleNamespace(
         id=77,
@@ -516,6 +535,9 @@ async def test_process_heleket_webhook_success(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(payment_service_module, 'get_user_by_id', fake_get_user)
     monkeypatch.setattr('app.services.payment.heleket.format_referrer_info', lambda u: '')
+
+    monkeypatch.setattr('app.database.crud.user.lock_user_for_update', AsyncMock(side_effect=lambda db, u: u))
+    monkeypatch.setattr('app.database.crud.transaction.emit_transaction_side_effects', AsyncMock())
 
     monkeypatch.setattr(type(settings), 'format_price', lambda self, amount: f'{amount / 100:.2f}₽', raising=False)
 
@@ -576,21 +598,7 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
         transaction_id=None,
         status='pending',
         is_paid=False,
-        payment_method_type=None,
-        refundable=False,
-        confirmation_url=None,
-        captured_at=None,
-        metadata_json=None,
-        description='YooKassa платеж',
     )
-
-    # FakeSession.execute вернёт payment при WITH FOR UPDATE запросе (for _process_successful_yookassa_payment)
-    # и None при остальных запросах (select User, select Subscription итп)
-    fake_session.execute_results = [
-        FakeResult(payment),  # scalar_one() для WITH FOR UPDATE
-        FakeResult(None),  # scalar_one_or_none() для select User
-        FakeResult(None),  # scalar_one_or_none() для select Subscription (если нужно)
-    ]
 
     async def fake_get_payment(db, payment_id):
         return payment
@@ -603,7 +611,6 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
 
     async def fake_link(db, payment_id, transaction_id):
         payment.transaction_id = transaction_id
-        return payment
 
     yk_module = ModuleType('app.database.crud.yookassa')
     yk_module.get_yookassa_payment_by_id = fake_get_payment
@@ -617,23 +624,8 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
         transactions.append(kwargs)
         return SimpleNamespace(id=999, **kwargs)
 
-    trx_module = ModuleType('app.database.crud.transaction')
-    trx_module.create_transaction = fake_create_transaction
-
-    async def fake_get_transaction_by_id(db, trx_id):
-        return None
-
-    trx_module.get_transaction_by_id = fake_get_transaction_by_id
-    monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', trx_module)
     monkeypatch.setattr(payment_service_module, 'create_transaction', fake_create_transaction)
-    monkeypatch.setattr(payment_service_module, 'get_yookassa_payment_by_id', fake_get_payment)
-    monkeypatch.setattr(payment_service_module, 'update_yookassa_payment_status', fake_update)
-    monkeypatch.setattr(payment_service_module, 'link_yookassa_payment_to_transaction', fake_link)
-
-    async def fake_get_transaction_by_external_id(db, external_id, method):
-        return None
-
-    monkeypatch.setattr(payment_service_module, 'get_transaction_by_external_id', fake_get_transaction_by_external_id)
+    monkeypatch.setattr('app.database.crud.transaction.emit_transaction_side_effects', AsyncMock())
 
     user = SimpleNamespace(
         id=21,
@@ -642,10 +634,8 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
         has_made_first_topup=False,
         promo_group=None,
         subscription=None,
-        user_promo_groups=[],
         referred_by_id=None,
         referrer=None,
-        language='ru',
     )
     user.get_primary_promo_group = lambda: getattr(user, 'promo_group', None)
 
@@ -655,7 +645,21 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(payment_service_module, 'get_user_by_id', fake_get_user)
     monkeypatch.setattr(type(settings), 'format_price', lambda self, amount: f'{amount / 100:.2f}₽', raising=False)
 
-    referral_mock = SimpleNamespace(process_referral_topup=AsyncMock())
+    async def fake_lock_user(db, locked_user):
+        return locked_user
+
+    monkeypatch.setattr('app.database.crud.user.lock_user_for_update', fake_lock_user)
+    # ORM-level selects in the success path: the YooKassaPayment FOR UPDATE lock
+    # (scalar_one -> payment) and the eager-load User re-query (scalar_one_or_none -> user).
+    fake_session.route_by_entity = {'YooKassaPayment': payment, 'User': user}
+
+    # The user-success notification lazily imports app.cabinet.routes.websocket, which
+    # transitively imports process_referral_registration from referral_service; expose it
+    # on the stub so that import chain resolves.
+    referral_mock = SimpleNamespace(
+        process_referral_topup=AsyncMock(),
+        process_referral_registration=AsyncMock(),
+    )
     monkeypatch.setitem(sys.modules, 'app.services.referral_service', referral_mock)
 
     admin_calls: list[Any] = []
@@ -672,14 +676,7 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
         'app.services.admin_notification_service',
         SimpleNamespace(AdminNotificationService=DummyAdminService),
     )
-
-    user_cart_stub = SimpleNamespace(user_cart_service=SimpleNamespace(has_user_cart=AsyncMock(return_value=False)))
-    monkeypatch.setitem(sys.modules, 'app.services.user_cart_service', user_cart_stub)
-
     service.build_topup_success_keyboard = AsyncMock(return_value=None)
-
-    # Мокаем _send_payment_success_notification чтобы избежать проблем с cabinet.routes.websocket
-    service._send_payment_success_notification = AsyncMock()
 
     payload = {
         'object': {
@@ -697,6 +694,7 @@ async def test_process_yookassa_webhook_success(monkeypatch: pytest.MonkeyPatch)
     assert payment.transaction_id == 999
     assert payment.is_paid is True
     assert user.balance_kopeks == 10000
+    assert bot.sent_messages
     assert admin_calls
 
 
@@ -706,27 +704,14 @@ async def test_process_yookassa_webhook_uses_remote_status(monkeypatch: pytest.M
     service = _make_service(bot)
     fake_session = FakeSession()
     payment = SimpleNamespace(
-        id=2,
+        id=1,
         yookassa_payment_id='yk_789',
         user_id=42,
         amount_kopeks=20000,
         transaction_id=None,
         status='pending',
         is_paid=False,
-        payment_method_type=None,
-        refundable=False,
-        confirmation_url=None,
-        captured_at=None,
-        metadata_json=None,
-        description='YooKassa платеж',
     )
-
-    # execute_results: первый вызов — WITH FOR UPDATE (scalar_one), остальные — None
-    fake_session.execute_results = [
-        FakeResult(payment),  # scalar_one() для WITH FOR UPDATE
-        FakeResult(None),  # scalar_one_or_none() для select User
-        FakeResult(None),  # scalar_one_or_none() для select Subscription
-    ]
 
     async def fake_get_payment(db, payment_id):
         return payment
@@ -740,7 +725,6 @@ async def test_process_yookassa_webhook_uses_remote_status(monkeypatch: pytest.M
 
     async def fake_link(db, payment_id, transaction_id):
         payment.transaction_id = transaction_id
-        return payment
 
     yk_module = ModuleType('app.database.crud.yookassa')
     yk_module.get_yookassa_payment_by_id = fake_get_payment
@@ -754,23 +738,7 @@ async def test_process_yookassa_webhook_uses_remote_status(monkeypatch: pytest.M
         transactions.append(kwargs)
         return SimpleNamespace(id=555, **kwargs)
 
-    trx_module = ModuleType('app.database.crud.transaction')
-    trx_module.create_transaction = fake_create_transaction
-
-    async def fake_get_transaction_by_id(db, trx_id):
-        return None
-
-    trx_module.get_transaction_by_id = fake_get_transaction_by_id
-    monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', trx_module)
     monkeypatch.setattr(payment_service_module, 'create_transaction', fake_create_transaction)
-    monkeypatch.setattr(payment_service_module, 'get_yookassa_payment_by_id', fake_get_payment)
-    monkeypatch.setattr(payment_service_module, 'update_yookassa_payment_status', fake_update)
-    monkeypatch.setattr(payment_service_module, 'link_yookassa_payment_to_transaction', fake_link)
-
-    async def fake_get_transaction_by_external_id(db, external_id, method):
-        return None
-
-    monkeypatch.setattr(payment_service_module, 'get_transaction_by_external_id', fake_get_transaction_by_external_id)
 
     user = SimpleNamespace(
         id=42,
@@ -779,10 +747,8 @@ async def test_process_yookassa_webhook_uses_remote_status(monkeypatch: pytest.M
         has_made_first_topup=False,
         promo_group=None,
         subscription=None,
-        user_promo_groups=[],
         referred_by_id=None,
         referrer=None,
-        language='ru',
     )
     user.get_primary_promo_group = lambda: getattr(user, 'promo_group', None)
 
@@ -792,7 +758,18 @@ async def test_process_yookassa_webhook_uses_remote_status(monkeypatch: pytest.M
     monkeypatch.setattr(payment_service_module, 'get_user_by_id', fake_get_user)
     monkeypatch.setattr(type(settings), 'format_price', lambda self, amount: f'{amount / 100:.2f}₽', raising=False)
 
-    referral_mock = SimpleNamespace(process_referral_topup=AsyncMock())
+    async def fake_lock_user(db, locked_user):
+        return locked_user
+
+    monkeypatch.setattr('app.database.crud.user.lock_user_for_update', fake_lock_user)
+    monkeypatch.setattr('app.database.crud.transaction.emit_transaction_side_effects', AsyncMock())
+    # YooKassaPayment FOR UPDATE lock (scalar_one) and User eager-load (scalar_one_or_none).
+    fake_session.route_by_entity = {'YooKassaPayment': payment, 'User': user}
+
+    referral_mock = SimpleNamespace(
+        process_referral_topup=AsyncMock(),
+        process_referral_registration=AsyncMock(),
+    )
     monkeypatch.setitem(sys.modules, 'app.services.referral_service', referral_mock)
 
     admin_calls: list[Any] = []
@@ -810,11 +787,7 @@ async def test_process_yookassa_webhook_uses_remote_status(monkeypatch: pytest.M
         SimpleNamespace(AdminNotificationService=DummyAdminService),
     )
 
-    user_cart_stub = SimpleNamespace(user_cart_service=SimpleNamespace(has_user_cart=AsyncMock(return_value=False)))
-    monkeypatch.setitem(sys.modules, 'app.services.user_cart_service', user_cart_stub)
-
     service.build_topup_success_keyboard = AsyncMock(return_value=None)
-    service._send_payment_success_notification = AsyncMock()
 
     remote_payload = {
         'id': 'yk_789',
@@ -912,7 +885,7 @@ async def test_process_yookassa_webhook_restores_missing_payment(
     fake_session = FakeSession()
 
     restored_payment = SimpleNamespace(
-        id=3,
+        id=999,
         yookassa_payment_id='yk_456',
         user_id=21,
         amount_kopeks=0,
@@ -926,13 +899,6 @@ async def test_process_yookassa_webhook_restores_missing_payment(
         test_mode=False,
         refundable=False,
     )
-
-    # execute_results: первый вызов — WITH FOR UPDATE (scalar_one), остальные — None
-    fake_session.execute_results = [
-        FakeResult(restored_payment),  # scalar_one() для WITH FOR UPDATE
-        FakeResult(None),  # scalar_one_or_none() для select User
-        FakeResult(None),  # scalar_one_or_none() для select Subscription
-    ]
 
     get_calls = {'count': 0}
 
@@ -973,7 +939,6 @@ async def test_process_yookassa_webhook_restores_missing_payment(
 
     async def fake_link(db, yookassa_payment_id, transaction_id):
         restored_payment.transaction_id = transaction_id
-        return restored_payment
 
     monkeypatch.setattr(payment_service_module, 'get_yookassa_payment_by_id', fake_get_payment)
     monkeypatch.setattr(payment_service_module, 'create_yookassa_payment', fake_create_payment)
@@ -991,12 +956,10 @@ async def test_process_yookassa_webhook_restores_missing_payment(
     user = SimpleNamespace(
         id=21,
         telegram_id=2100,
-        language='ru',
         balance_kopeks=0,
         has_made_first_topup=False,
         promo_group=None,
         subscription=None,
-        user_promo_groups=[],
         referred_by_id=None,
         referrer=None,
     )
@@ -1005,19 +968,29 @@ async def test_process_yookassa_webhook_restores_missing_payment(
     async def fake_get_user(db, user_id):
         return user
 
-    # Мокаем app.database.crud.user для прямого импорта внутри _restore_missing_yookassa_payment
-    fake_user_crud_module = ModuleType('app.database.crud.user')
-    fake_user_crud_module.get_user_by_id = fake_get_user  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, 'app.database.crud.user', fake_user_crud_module)
-
-    async def fake_get_transaction_by_external_id(db, external_id, method):
-        return None
-
-    monkeypatch.setattr(payment_service_module, 'get_transaction_by_external_id', fake_get_transaction_by_external_id)
     monkeypatch.setattr(payment_service_module, 'get_user_by_id', fake_get_user)
     monkeypatch.setattr(type(settings), 'format_price', lambda self, amount: f'{amount / 100:.2f}₽', raising=False)
 
-    referral_mock = SimpleNamespace(process_referral_topup=AsyncMock())
+    # The restore path resolves the user via direct `from app.database.crud.user import ...`,
+    # so patch those helpers (lookup + row lock) on the real module without replacing it
+    # (other code imports many other symbols from crud.user).
+    async def fake_get_by_tg(db, tg):
+        return user
+
+    async def fake_lock_user(db, locked_user):
+        return locked_user
+
+    monkeypatch.setattr('app.database.crud.user.get_user_by_id', fake_get_user)
+    monkeypatch.setattr('app.database.crud.user.get_user_by_telegram_id', fake_get_by_tg)
+    monkeypatch.setattr('app.database.crud.user.lock_user_for_update', fake_lock_user)
+    monkeypatch.setattr('app.database.crud.transaction.emit_transaction_side_effects', AsyncMock())
+    # FOR UPDATE re-query of the restored payment (scalar_one) and User eager-load.
+    fake_session.route_by_entity = {'YooKassaPayment': restored_payment, 'User': user}
+
+    referral_mock = SimpleNamespace(
+        process_referral_topup=AsyncMock(),
+        process_referral_registration=AsyncMock(),
+    )
     monkeypatch.setitem(sys.modules, 'app.services.referral_service', referral_mock)
 
     admin_calls: list[Any] = []
@@ -1034,12 +1007,7 @@ async def test_process_yookassa_webhook_restores_missing_payment(
         'app.services.admin_notification_service',
         SimpleNamespace(AdminNotificationService=DummyAdminService),
     )
-
-    user_cart_stub = SimpleNamespace(user_cart_service=SimpleNamespace(has_user_cart=AsyncMock(return_value=False)))
-    monkeypatch.setitem(sys.modules, 'app.services.user_cart_service', user_cart_stub)
-
     service.build_topup_success_keyboard = AsyncMock(return_value=None)
-    service._send_payment_success_notification = AsyncMock()
 
     payload = {
         'object': {
@@ -1065,6 +1033,7 @@ async def test_process_yookassa_webhook_restores_missing_payment(
     assert transactions and transactions[0]['amount_kopeks'] == 15000
     assert restored_payment.transaction_id == 555
     assert user.balance_kopeks == 15000
+    assert bot.sent_messages
     assert admin_calls
 
 
@@ -1098,12 +1067,6 @@ async def test_process_yookassa_webhook_missing_id(monkeypatch: pytest.MonkeyPat
     service = _make_service(bot)
     db = FakeSession()
 
-    # structlog использует 'event' как позиционный аргумент — мокаем warning,
-    # чтобы обойти конфликт с именованным параметром event=...
-    import app.services.payment.yookassa as yk_module_ref
-
-    monkeypatch.setattr(yk_module_ref, 'logger', SimpleNamespace(warning=lambda *a, **kw: None))
-
     result = await service.process_yookassa_webhook(db, {'object': {}})
     assert result is False
 
@@ -1115,7 +1078,7 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
     service.pal24_service = SimpleNamespace(is_configured=True)
     fake_session = FakeSession()
     payment = SimpleNamespace(
-        id=55,
+        id=1,
         bill_id='BILL-1',
         order_id='order-1',
         amount_kopeks=5000,
@@ -1134,6 +1097,9 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
     async def fake_get_by_bill(db, bill_id):
         return payment
 
+    async def fake_get_for_update(db, payment_id):
+        return payment
+
     async def fake_update(db, payment_obj, **kwargs):
         payment.status = kwargs.get('status', payment.status)
         payment.is_paid = kwargs.get('is_paid', payment.is_paid)
@@ -1144,15 +1110,12 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
     async def fake_link(db, payment_obj, transaction_id):
         payment.transaction_id = transaction_id
 
-    async def fake_get_for_update(db, payment_id):
-        return payment
-
     pal_module = ModuleType('app.database.crud.pal24')
     pal_module.get_pal24_payment_by_order_id = fake_get_by_order
     pal_module.get_pal24_payment_by_bill_id = fake_get_by_bill
+    pal_module.get_pal24_payment_by_id_for_update = fake_get_for_update
     pal_module.update_pal24_payment_status = fake_update
     pal_module.link_pal24_payment_to_transaction = fake_link
-    pal_module.get_pal24_payment_by_id_for_update = fake_get_for_update
     monkeypatch.setitem(sys.modules, 'app.database.crud.pal24', pal_module)
     monkeypatch.setattr(payment_service_module, 'get_pal24_payment_by_order_id', fake_get_by_order)
     monkeypatch.setattr(payment_service_module, 'get_pal24_payment_by_bill_id', fake_get_by_bill)
@@ -1163,10 +1126,6 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
         payment.transaction_id = 654
         return SimpleNamespace(id=654, **kwargs)
 
-    trx_module = ModuleType('app.database.crud.transaction')
-    trx_module.create_transaction = fake_create_transaction
-    trx_module.emit_transaction_side_effects = AsyncMock()
-    monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', trx_module)
     monkeypatch.setattr(payment_service_module, 'create_transaction', fake_create_transaction)
 
     user = SimpleNamespace(
@@ -1179,7 +1138,6 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
         referred_by_id=None,
         referrer=None,
         language='ru',
-        updated_at=None,
     )
     user.get_primary_promo_group = lambda: getattr(user, 'promo_group', None)
 
@@ -1189,7 +1147,13 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(payment_service_module, 'get_user_by_id', fake_get_user)
     monkeypatch.setattr(type(settings), 'format_price', lambda self, amount: f'{amount / 100:.2f}₽', raising=False)
 
-    referral_pal = SimpleNamespace(process_referral_topup=AsyncMock())
+    monkeypatch.setattr('app.database.crud.user.lock_user_for_update', AsyncMock(return_value=user))
+    monkeypatch.setattr('app.database.crud.transaction.emit_transaction_side_effects', AsyncMock())
+
+    referral_pal = SimpleNamespace(
+        process_referral_topup=AsyncMock(),
+        process_referral_registration=AsyncMock(),
+    )
     monkeypatch.setitem(sys.modules, 'app.services.referral_service', referral_pal)
 
     admin_calls: list[Any] = []
@@ -1207,51 +1171,6 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
         SimpleNamespace(AdminNotificationService=DummyAdminServicePal),
     )
 
-    user_cart_stub = SimpleNamespace(user_cart_service=SimpleNamespace(has_user_cart=AsyncMock(return_value=True)))
-    monkeypatch.setitem(sys.modules, 'app.services.user_cart_service', user_cart_stub)
-
-    auto_purchase_pal_module = ModuleType('app.services.subscription_auto_purchase_service')
-    auto_purchase_pal_module.auto_purchase_saved_cart_after_topup = AsyncMock(return_value=False)  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, 'app.services.subscription_auto_purchase_service', auto_purchase_pal_module)
-
-    class DummyTypes:
-        class InlineKeyboardMarkup:
-            def __init__(self, inline_keyboard=None, **kwargs):
-                self.inline_keyboard = inline_keyboard or []
-                self.kwargs = kwargs
-
-        class InlineKeyboardButton:
-            def __init__(self, *args, **kwargs):
-                self.args = args
-                self.kwargs = kwargs
-
-    monkeypatch.setitem(sys.modules, 'aiogram', SimpleNamespace(types=DummyTypes))
-    monkeypatch.setitem(
-        sys.modules,
-        'app.localization.texts',
-        SimpleNamespace(get_texts=lambda language: SimpleNamespace(t=lambda key, default=None: default)),
-    )
-
-    # Мок send_cart_notification_after_topup: симулируем отправку сообщения о корзине
-    async def fake_send_cart_notification_after_topup(user_obj, amount_kopeks, db_arg, bot_arg):
-        if not bot_arg or not getattr(user_obj, 'telegram_id', None):
-            return False
-        keyboard = DummyTypes.InlineKeyboardMarkup(
-            inline_keyboard=[
-                [DummyTypes.InlineKeyboardButton(text='Checkout', callback_data='return_to_saved_cart')],
-            ]
-        )
-        await bot_arg.send_message(
-            chat_id=user_obj.telegram_id,
-            text='Корзина ждёт',
-            reply_markup=keyboard,
-        )
-        return True
-
-    common_pal_module = ModuleType('app.services.payment.common')
-    common_pal_module.send_cart_notification_after_topup = fake_send_cart_notification_after_topup  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, 'app.services.payment.common', common_pal_module)
-
     service.build_topup_success_keyboard = AsyncMock(return_value=None)
 
     payload = {
@@ -1266,12 +1185,14 @@ async def test_process_pal24_callback_success(monkeypatch: pytest.MonkeyPatch) -
     assert result is True
     assert payment.transaction_id == 654
     assert user.balance_kopeks == 5000
-    assert bot.sent_messages
-    saved_cart_message = bot.sent_messages[-1]
-    reply_markup = saved_cart_message['kwargs'].get('reply_markup')
-    assert reply_markup is not None
-    assert reply_markup.inline_keyboard[0][0].kwargs['callback_data'] == 'return_to_saved_cart'
     assert admin_calls
+    # The success path now sends a single "Пополнение успешно!" message to the user;
+    # the separate saved-cart message (return_to_saved_cart) was removed when the
+    # duplicate post-topup message was dropped from production.
+    assert bot.sent_messages
+    success_message = bot.sent_messages[-1]
+    assert success_message['args'][0] == user.telegram_id
+    assert 'Пополнение успешно' in success_message['args'][1]
 
 
 @pytest.mark.anyio('asyncio')
@@ -1350,14 +1271,17 @@ async def test_get_pal24_payment_status_auto_finalize(monkeypatch: pytest.Monkey
     monkeypatch.setattr(payment_service_module, 'update_pal24_payment_status', fake_update_payment)
     monkeypatch.setattr(payment_service_module, 'link_pal24_payment_to_transaction', fake_link_payment)
 
-    # Мок для get_pal24_payment_by_id_for_update (новая защита от race condition)
-    pal24_crud_module = sys.modules.get('app.database.crud.pal24')
-    if pal24_crud_module is None:
-        pal24_crud_module = ModuleType('app.database.crud.pal24')
-        monkeypatch.setitem(sys.modules, 'app.database.crud.pal24', pal24_crud_module)
-    pal24_crud_module.get_pal24_payment_by_id_for_update = fake_get_payment_by_id
-    pal24_crud_module.update_pal24_payment_status = fake_update_payment
-    pal24_crud_module.link_pal24_payment_to_transaction = fake_link_payment
+    # Auto-finalize acquires a FOR UPDATE lock via import_module('app.database.crud.pal24')
+    # and locks the user row before crediting; stub both so the real DB calls are bypassed.
+    async def fake_pal24_lock(db, pid):
+        return payment
+
+    async def fake_lock_user(db, locked_user):
+        return locked_user
+
+    monkeypatch.setattr('app.database.crud.pal24.get_pal24_payment_by_id_for_update', fake_pal24_lock)
+    monkeypatch.setattr('app.database.crud.user.lock_user_for_update', fake_lock_user)
+    monkeypatch.setattr('app.database.crud.transaction.emit_transaction_side_effects', AsyncMock())
 
     transactions: list[dict[str, Any]] = []
 
@@ -1387,7 +1311,10 @@ async def test_get_pal24_payment_status_auto_finalize(monkeypatch: pytest.Monkey
     monkeypatch.setattr(payment_service_module, 'get_user_by_id', fake_get_user)
     monkeypatch.setattr(type(settings), 'format_price', lambda self, amount: f'{amount / 100:.2f}₽', raising=False)
 
-    referral_stub = SimpleNamespace(process_referral_topup=AsyncMock())
+    referral_stub = SimpleNamespace(
+        process_referral_topup=AsyncMock(),
+        process_referral_registration=AsyncMock(),
+    )
     monkeypatch.setitem(sys.modules, 'app.services.referral_service', referral_stub)
 
     admin_notifications: list[Any] = []

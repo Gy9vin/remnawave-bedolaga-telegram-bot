@@ -1,8 +1,8 @@
 import asyncio
 import html
-import logging
 from datetime import UTC, datetime, timedelta
 
+import structlog
 from aiogram import Dispatcher, F, types
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.fsm.context import FSMContext
@@ -28,7 +28,6 @@ from app.keyboards.admin import (
     get_admin_messages_keyboard,
     get_broadcast_button_config,
     get_broadcast_button_labels,
-    get_broadcast_button_url,
     get_broadcast_history_keyboard,
     get_broadcast_media_keyboard,
     get_broadcast_target_keyboard,
@@ -36,7 +35,6 @@ from app.keyboards.admin import (
     get_media_confirm_keyboard,
     get_pinned_message_keyboard,
     get_updated_message_buttons_selector_keyboard_with_media,
-    is_broadcast_url_button_available,
 )
 from app.localization.texts import get_texts
 from app.services.pinned_message_service import (
@@ -47,10 +45,10 @@ from app.services.pinned_message_service import (
 )
 from app.states import AdminStates
 from app.utils.decorators import admin_required, error_handler
-from app.utils.miniapp_buttons import build_miniapp_or_callback_button
+from app.utils.miniapp_buttons import BUTTON_KEY_TO_CABINET_PATH, build_miniapp_or_callback_button
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def safe_edit_or_send_text(callback: types.CallbackQuery, text: str, reply_markup=None, parse_mode: str = 'HTML'):
@@ -78,7 +76,7 @@ async def safe_edit_or_send_text(callback: types.CallbackQuery, text: str, reply
 BUTTON_ROWS = BROADCAST_BUTTON_ROWS
 DEFAULT_SELECTED_BUTTONS = DEFAULT_BROADCAST_BUTTONS
 
-TEXT_MENU_MINIAPP_BUTTON_KEYS = {
+CABINET_MINIAPP_BUTTON_KEYS = {
     'balance',
     'referrals',
     'promocode',
@@ -88,23 +86,20 @@ TEXT_MENU_MINIAPP_BUTTON_KEYS = {
 }
 
 
-async def get_message_buttons_selector_keyboard(
-    language: str = 'ru', db: AsyncSession | None = None
+def get_message_buttons_selector_keyboard(language: str = 'ru') -> types.InlineKeyboardMarkup:
+    return get_updated_message_buttons_selector_keyboard(list(DEFAULT_SELECTED_BUTTONS), language)
+
+
+def get_updated_message_buttons_selector_keyboard(
+    selected_buttons: list, language: str = 'ru'
 ) -> types.InlineKeyboardMarkup:
-    return await get_updated_message_buttons_selector_keyboard(list(DEFAULT_SELECTED_BUTTONS), language, db)
+    return get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, False, language)
 
 
-async def get_updated_message_buttons_selector_keyboard(
-    selected_buttons: list, language: str = 'ru', db: AsyncSession | None = None
-) -> types.InlineKeyboardMarkup:
-    return await get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, False, language, db)
-
-
-async def create_broadcast_keyboard(
+def create_broadcast_keyboard(
     selected_buttons: list,
     language: str = 'ru',
     custom_buttons: list[dict] | None = None,
-    db: AsyncSession | None = None,
 ) -> types.InlineKeyboardMarkup | None:
     selected_buttons = selected_buttons or []
     keyboard: list[list[types.InlineKeyboardButton]] = []
@@ -115,34 +110,15 @@ async def create_broadcast_keyboard(
         for button_key in row:
             if button_key not in selected_buttons:
                 continue
-
-            # Пропускаем URL-кнопки, если URL не настроен
-            if not await is_broadcast_url_button_available(button_key, db):
-                continue
-
             button_config = button_config_map[button_key]
-
-            # URL-кнопки (channel, cabinet)
-            if 'url' in button_config:
-                url = await get_broadcast_button_url(button_key, db)
-                if url:
-                    # Кнопка "Личный кабинет" должна открывать миниапп
-                    if button_key == 'cabinet':
-                        row_buttons.append(
-                            types.InlineKeyboardButton(text=button_config['text'], web_app=types.WebAppInfo(url=url))
-                        )
-                    # Остальные URL-кнопки (channel) открываются как обычные ссылки
-                    else:
-                        row_buttons.append(types.InlineKeyboardButton(text=button_config['text'], url=url))
-            # Callback-кнопки с поддержкой miniapp в text menu mode
-            elif settings.is_text_main_menu_mode() and button_key in TEXT_MENU_MINIAPP_BUTTON_KEYS:
+            if settings.is_cabinet_mode() and button_key in CABINET_MINIAPP_BUTTON_KEYS:
                 row_buttons.append(
                     build_miniapp_or_callback_button(
                         text=button_config['text'],
                         callback_data=button_config['callback'],
+                        cabinet_path=BUTTON_KEY_TO_CABINET_PATH.get(button_key, ''),
                     )
                 )
-            # Обычные callback-кнопки
             else:
                 row_buttons.append(
                     types.InlineKeyboardButton(text=button_config['text'], callback_data=button_config['callback'])
@@ -201,8 +177,7 @@ async def _persist_broadcast_result(
                 broadcast_history = await session.get(BroadcastHistory, broadcast_id)
                 if not broadcast_history:
                     logger.critical(
-                        'Не удалось найти запись BroadcastHistory #%s для записи результатов',
-                        broadcast_id,
+                        'Не удалось найти запись BroadcastHistory для записи результатов', broadcast_id=broadcast_id
                     )
                     return
 
@@ -214,7 +189,7 @@ async def _persist_broadcast_result(
                 await session.commit()
 
                 logger.info(
-                    'Результаты рассылки сохранены (id sent failed blocked status=)',
+                    'Результаты рассылки сохранены',
                     broadcast_id=broadcast_id,
                     sent_count=sent_count,
                     failed_count=failed_count,
@@ -225,25 +200,25 @@ async def _persist_broadcast_result(
 
         except InterfaceError as error:
             logger.warning(
-                'Ошибка соединения при сохранении результатов рассылки (попытка %d/%d): %s',
-                attempt,
-                max_retries,
-                error,
+                'Ошибка соединения при сохранении результатов рассылки, повтор',
+                attempt=attempt,
+                max_retries=max_retries,
+                error=error,
             )
             if attempt < max_retries:
                 await asyncio.sleep(retry_delay)
                 retry_delay *= 2
             else:
                 logger.critical(
-                    'Не удалось сохранить результаты рассылки после %d попыток (id=%s)',
-                    max_retries,
-                    broadcast_id,
+                    'Не удалось сохранить результаты рассылки после всех попыток',
+                    max_retries=max_retries,
+                    broadcast_id=broadcast_id,
                 )
 
         except Exception as error:
             logger.critical(
-                'Неожиданная ошибка при сохранении результатов рассылки (id=%s)',
-                broadcast_id,
+                'Неожиданная ошибка при сохранении результатов рассылки',
+                broadcast_id=broadcast_id,
                 exc_info=error,
             )
             return
@@ -660,6 +635,8 @@ async def show_messages_history(callback: types.CallbackQuery, db_user: User, db
                 else (broadcast.message_text or '📊 Опрос')
             )
 
+            import html
+
             message_preview = html.escape(message_preview)
 
             text += f"""
@@ -766,8 +743,6 @@ async def select_broadcast_target(callback: types.CallbackQuery, db_user: User, 
         'expired': 'С истекшей подпиской',
         'active_zero': 'Активная подписка, трафик 0 ГБ',
         'trial_zero': 'Триальная подписка, трафик 0 ГБ',
-        'fallback': 'В fallback-сквадe (Telegram-only)',
-        'admins': '🛡 Только админам (тест)',
     }
 
     # Обработка фильтра по тарифу
@@ -963,9 +938,7 @@ async def handle_change_media(callback: types.CallbackQuery, db_user: User, stat
 
 @admin_required
 @error_handler
-async def show_button_selector_callback(
-    callback: types.CallbackQuery, db_user: User, state: FSMContext, db: AsyncSession | None = None
-):
+async def show_button_selector_callback(callback: types.CallbackQuery, db_user: User, state: FSMContext):
     data = await state.get_data()
     has_media = data.get('has_media', False)
     selected_buttons = data.get('selected_buttons')
@@ -990,17 +963,13 @@ async def show_button_selector_callback(
 🔗 <b>Подключиться</b> — поможет подключить приложение
 📱 <b>Подписка</b> — покажет состояние подписки
 🛠️ <b>Техподдержка</b> — свяжет с поддержкой
-📢 <b>Информационный канал</b> — ссылка на канал
-🏠 <b>Личный кабинет</b> — откроет личный кабинет
 
 🏠 <b>Кнопка "На главную"</b> включена по умолчанию, но вы можете отключить её при необходимости.{media_info}
 
 Выберите нужные кнопки и нажмите "Продолжить":
 """
 
-    keyboard = await get_updated_message_buttons_selector_keyboard_with_media(
-        selected_buttons, has_media, db_user.language, db
-    )
+    keyboard = get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
 
     # Проверяем, является ли текущее сообщение медиа-сообщением
     # (фото, видео, документ и т.д.) - для них нельзя использовать edit_text
@@ -1047,17 +1016,13 @@ async def show_button_selector(message: types.Message, db_user: User, state: FSM
 🔗 <b>Подключиться</b> — поможет подключить приложение
 📱 <b>Подписка</b> — покажет состояние подписки
 🛠️ <b>Техподдержка</b> — свяжет с поддержкой
-📢 <b>Информационный канал</b> — ссылка на канал
-🏠 <b>Личный кабинет</b> — откроет личный кабинет
 
 🏠 <b>Кнопка "На главную"</b> включена по умолчанию, но вы можете отключить её при необходимости.
 
 Выберите нужные кнопки и нажмите "Продолжить":
 """
 
-    keyboard = await get_updated_message_buttons_selector_keyboard_with_media(
-        selected_buttons, has_media, db_user.language
-    )
+    keyboard = get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
 
     await message.answer(text, reply_markup=keyboard, parse_mode='HTML')
 
@@ -1081,9 +1046,7 @@ async def toggle_button_selection(callback: types.CallbackQuery, db_user: User, 
     await state.update_data(selected_buttons=selected_buttons)
 
     has_media = data.get('has_media', False)
-    keyboard = await get_updated_message_buttons_selector_keyboard_with_media(
-        selected_buttons, has_media, db_user.language
-    )
+    keyboard = get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
 
     await callback.message.edit_reply_markup(reply_markup=keyboard)
     await callback.answer()
@@ -1129,7 +1092,7 @@ async def confirm_button_selection(callback: types.CallbackQuery, db_user: User,
 👥 <b>Получателей:</b> {user_count}
 
 📝 <b>Сообщение:</b>
-{html.escape(message_text)}{media_info}
+{message_text}{media_info}
 
 {buttons_info}
 
@@ -1270,7 +1233,7 @@ async def confirm_broadcast(callback: types.CallbackQuery, db_user: User, state:
     sent_count = 0
     failed_count = 0
 
-    broadcast_keyboard = await create_broadcast_keyboard(selected_buttons, admin_language)
+    broadcast_keyboard = create_broadcast_keyboard(selected_buttons, admin_language)
 
     # =========================================================================
     # Rate limiting: Telegram допускает ~30 msg/sec для бота.
@@ -1355,11 +1318,11 @@ async def confirm_broadcast(callback: types.CallbackQuery, db_user: User, state:
                 wait_seconds = e.retry_after + 1
                 flood_wait_until = asyncio.get_event_loop().time() + wait_seconds
                 logger.warning(
-                    'FloodWait: Telegram просит подождать %d сек (пользователь %d, попытка %d/%d)',
-                    e.retry_after,
-                    telegram_id,
-                    attempt + 1,
-                    _MAX_SEND_RETRIES,
+                    'FloodWait: Telegram просит подождать перед повтором отправки',
+                    retry_after=e.retry_after,
+                    telegram_id=telegram_id,
+                    attempt=attempt + 1,
+                    MAX_SEND_RETRIES=_MAX_SEND_RETRIES,
                 )
                 await asyncio.sleep(wait_seconds)
 
@@ -1375,11 +1338,11 @@ async def confirm_broadcast(callback: types.CallbackQuery, db_user: User, state:
 
             except Exception as e:
                 logger.error(
-                    'Ошибка отправки пользователю %d (попытка %d/%d): %s',
-                    telegram_id,
-                    attempt + 1,
-                    _MAX_SEND_RETRIES,
-                    e,
+                    'Ошибка отправки пользователю, повтор',
+                    telegram_id=telegram_id,
+                    attempt=attempt + 1,
+                    MAX_SEND_RETRIES=_MAX_SEND_RETRIES,
+                    e=e,
                 )
                 if attempt < _MAX_SEND_RETRIES - 1:
                     await asyncio.sleep(0.5 * (attempt + 1))
@@ -1434,7 +1397,7 @@ async def confirm_broadcast(callback: types.CallbackQuery, db_user: User, state:
             await progress_message.edit_text(text, parse_mode='HTML')
         except TelegramRetryAfter as e:
             # Не паникуем — пропускаем обновление прогресса
-            logger.debug('FloodWait при обновлении прогресса, пропускаем: %d сек', e.retry_after)
+            logger.debug('FloodWait при обновлении прогресса, пропускаем: сек', retry_after=e.retry_after)
         except TelegramBadRequest:
             # Сообщение удалено или контент не изменился — отправляем новое
             try:
@@ -1477,7 +1440,7 @@ async def confirm_broadcast(callback: types.CallbackQuery, db_user: User, state:
                     failed_count += 1
             elif isinstance(result, Exception):
                 failed_count += 1
-                logger.error('Необработанное исключение в рассылке: %s', result)
+                logger.error('Необработанное исключение в рассылке', result=result)
 
         # Обновляем прогресс каждые _PROGRESS_UPDATE_INTERVAL батчей
         if batch_idx % _PROGRESS_UPDATE_INTERVAL == 0:
@@ -1489,7 +1452,7 @@ async def confirm_broadcast(callback: types.CallbackQuery, db_user: User, state:
     # Учитываем пропущенных email-only пользователей
     skipped_email_users = total_users_count - total_recipients
     if skipped_email_users > 0:
-        logger.info('Пропущено %d email-only пользователей при рассылке', skipped_email_users)
+        logger.info('Пропущено email-only пользователей при рассылке', skipped_email_users=skipped_email_users)
 
     status = 'completed' if failed_count == 0 and blocked_count == 0 else 'partial'
 
@@ -1541,12 +1504,12 @@ async def confirm_broadcast(callback: types.CallbackQuery, db_user: User, state:
 
     await state.clear()
     logger.info(
-        'Рассылка завершена админом %s: sent=%d, failed=%d, total=%d (медиа: %s)',
-        admin_telegram_id,
-        sent_count,
-        failed_count,
-        total_users_count,
-        has_media,
+        'Рассылка завершена админом',
+        admin_telegram_id=admin_telegram_id,
+        sent_count=sent_count,
+        failed_count=failed_count,
+        total_users_count=total_users_count,
+        has_media=has_media,
     )
 
 
@@ -1555,15 +1518,6 @@ async def get_target_users_count(db: AsyncSession, target: str) -> int:
     from sqlalchemy import distinct, func as sql_func
 
     base_filter = User.status == UserStatus.ACTIVE.value
-
-    if target == 'admins':
-        admin_ids_raw = settings.ADMIN_IDS or ''
-        admin_ids_list = [int(x.strip()) for x in str(admin_ids_raw).split(',') if x.strip().isdigit()]
-        if not admin_ids_list:
-            return 0
-        query = select(sql_func.count(User.id)).where(User.telegram_id.in_(admin_ids_list))
-        result = await db.execute(query)
-        return result.scalar() or 0
 
     if target == 'all':
         query = select(sql_func.count(User.id)).where(base_filter)
@@ -1738,24 +1692,6 @@ async def get_target_users_count(db: AsyncSession, target: str) -> int:
         result = await db.execute(query)
         return result.scalar() or 0
 
-    if target == 'fallback':
-        # Юзеры с активным expiry- или traffic-fallback (сидят на ограниченном сквадe)
-        from sqlalchemy import or_ as _or
-
-        query = (
-            select(sql_func.count(distinct(User.id)))
-            .join(Subscription, User.id == Subscription.user_id)
-            .where(
-                base_filter,
-                _or(
-                    Subscription.expiry_fallback_active.is_(True),
-                    Subscription.traffic_fallback_active.is_(True),
-                ),
-            )
-        )
-        result = await db.execute(query)
-        return result.scalar() or 0
-
     # Custom filters — быстрый COUNT вместо загрузки всех пользователей
     if target.startswith('custom_'):
         now = datetime.now(UTC)
@@ -1806,11 +1742,6 @@ async def get_target_users(db: AsyncSession, target: str) -> list:
 
         users.extend(batch)
         offset += batch_size
-
-    if target == 'admins':
-        admin_ids_raw = settings.ADMIN_IDS or ''
-        admin_ids_list = [int(x.strip()) for x in str(admin_ids_raw).split(',') if x.strip().isdigit()]
-        return [u for u in users if u.telegram_id in admin_ids_list]
 
     if target == 'all':
         return users
@@ -1966,17 +1897,6 @@ async def get_target_users(db: AsyncSession, target: str) -> list:
         threshold = datetime.now(UTC) - timedelta(days=90)
         return [user for user in users if user.last_activity and user.last_activity < threshold]
 
-    if target == 'fallback':
-        # Юзеры с активным expiry- или traffic-fallback
-        return [
-            user
-            for user in users
-            if any(
-                getattr(s, 'expiry_fallback_active', False) or getattr(s, 'traffic_fallback_active', False)
-                for s in (getattr(user, 'subscriptions', None) or [])
-            )
-        ]
-
     # Фильтр по тарифу
     if target.startswith('tariff_'):
         tariff_id = int(target.split('_')[1])
@@ -2097,7 +2017,6 @@ def get_target_name(target_type: str) -> str:
         'custom_inactive_month': 'Неактивные 30+ дней',
         'custom_referrals': 'Через рефералов',
         'custom_direct': 'Прямая регистрация',
-        'admins': '🛡 Только админам (тест)',
     }
     # Обработка фильтра по тарифу
     if target_type.startswith('tariff_'):

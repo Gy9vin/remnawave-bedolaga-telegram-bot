@@ -119,7 +119,7 @@ async def start_simple_subscription_purchase(
 
     can_pay_from_balance = user_balance_kopeks >= price_kopeks
     logger.warning(
-        'SIMPLE_SUBSCRIPTION_DEBUG_START_BALANCE | user= | balance= | min_required= | can_pay',
+        'SIMPLE_SUBSCRIPTION_DEBUG_START_BALANCE',
         db_user_id=db_user.id,
         user_balance_kopeks=user_balance_kopeks,
         price_kopeks=price_kopeks,
@@ -351,14 +351,12 @@ async def _ensure_simple_subscription_squad_uuid(
 
         resolved_uuid = await get_random_active_squad_uuid(db)
     except Exception as error:  # pragma: no cover - defensive logging
-        logger.error('SIMPLE_SUBSCRIPTION_RANDOM_SQUAD_ERROR | user= | error', user_id=user_id, error=error)
+        logger.error('SIMPLE_SUBSCRIPTION_RANDOM_SQUAD_ERROR', user_id=user_id, error=error)
         return None
 
     if resolved_uuid:
         await state.update_data(resolved_squad_uuid=resolved_uuid)
-        logger.info(
-            'SIMPLE_SUBSCRIPTION_RANDOM_SQUAD_ASSIGNED | user= | squad', user_id=user_id, resolved_uuid=resolved_uuid
-        )
+        logger.info('SIMPLE_SUBSCRIPTION_RANDOM_SQUAD_ASSIGNED', user_id=user_id, resolved_uuid=resolved_uuid)
 
     return resolved_uuid
 
@@ -421,7 +419,7 @@ async def handle_simple_subscription_pay_with_balance(
 
     total_required = price_kopeks
     logger.warning(
-        'SIMPLE_SUBSCRIPTION_DEBUG_PAY_BALANCE | user= | period= | base= | traffic= | devices= | servers= | discount= | total_required= | balance',
+        'SIMPLE_SUBSCRIPTION_DEBUG_PAY_BALANCE',
         db_user_id=db_user.id,
         subscription_params=subscription_params['period_days'],
         price_breakdown=price_breakdown.get('base_price', 0),
@@ -675,7 +673,7 @@ async def handle_simple_subscription_pay_with_balance(
         await callback.answer()
 
         logger.info(
-            'Пользователь успешно купил подписку с баланса на ₽',
+            'Пользователь успешно купил подписку с баланса',
             telegram_id=db_user.telegram_id,
             price_kopeks=price_kopeks / 100,
         )
@@ -744,7 +742,7 @@ async def handle_simple_subscription_other_payment_methods(
     user_balance_kopeks = getattr(db_user, 'balance_kopeks', 0)
     can_pay_from_balance = user_balance_kopeks >= price_kopeks
     logger.warning(
-        'SIMPLE_SUBSCRIPTION_DEBUG_METHODS | user= | balance= | base= | traffic= | devices= | servers= | discount= | total_required= | can_pay',
+        'SIMPLE_SUBSCRIPTION_DEBUG_METHODS',
         db_user_id=db_user.id,
         user_balance_kopeks=user_balance_kopeks,
         price_breakdown=price_breakdown.get('base_price', 0),
@@ -2169,7 +2167,7 @@ async def confirm_simple_subscription_purchase(
 
     total_required = price_kopeks
     logger.warning(
-        'SIMPLE_SUBSCRIPTION_DEBUG_CONFIRM | user= | period= | base= | traffic= | devices= | servers= | discount= | total_required= | balance',
+        'SIMPLE_SUBSCRIPTION_DEBUG_CONFIRM',
         db_user_id=db_user.id,
         subscription_params=subscription_params['period_days'],
         price_breakdown=price_breakdown.get('base_price', 0),
@@ -2423,7 +2421,7 @@ async def confirm_simple_subscription_purchase(
         await callback.answer()
 
         logger.info(
-            'Пользователь успешно купил подписку с баланса на ₽',
+            'Пользователь успешно купил подписку с баланса',
             telegram_id=db_user.telegram_id,
             price_kopeks=price_kopeks / 100,
         )

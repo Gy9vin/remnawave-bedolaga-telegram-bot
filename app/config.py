@@ -136,10 +136,22 @@ class Settings(BaseSettings):
 
     REDIS_URL: str = 'redis://localhost:6379/0'
     CART_TTL_SECONDS: int = 3600  # Время жизни корзины пользователя в Redis (1 час)
+    # «Свежее намерение» пополнить ради сохранённой корзины. Тихая авто-покупка из
+    # корзины после пополнения срабатывает ТОЛЬКО если в течение этого окна юзер
+    # явно нажал «Корзина сохранена → выбрать оплату» (return_to_cart). Иначе
+    # пополнение ради подарка / просто денег не должно молча тратиться на подписку.
+    CART_AUTOPURCHASE_INTENT_TTL_SECONDS: int = 1800  # 30 минут (хватает на оплату, но не на «забытую» корзину)
 
     REMNAWAVE_API_URL: str | None = None
     REMNAWAVE_API_KEY: str | None = None
     REMNAWAVE_SECRET_KEY: str | None = None
+
+    # HTTP-таймауты запросов к панели RemnaWave (секунды). Self-hosted панели
+    # бывают медленными на коннект: раньше connect был зашит в 10с, из-за чего
+    # на медленной панели соединение рвалось (ConnectionTimeoutError). Транзиентные
+    # таймауты логируются как WARNING, чтобы не спамить админ-чат ошибками.
+    REMNAWAVE_API_CONNECT_TIMEOUT: int = 30
+    REMNAWAVE_API_TOTAL_TIMEOUT: int = 60
 
     REMNAWAVE_USERNAME: str | None = None
     REMNAWAVE_PASSWORD: str | None = None

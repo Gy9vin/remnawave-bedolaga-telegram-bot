@@ -544,6 +544,7 @@ class FortuneWheelService:
                 prize.prize_value,
                 description=f'Выигрыш в колесе удачи: {prize.prize_value / 100:.2f}₽',
                 create_transaction=True,
+                commit=False,
             )
             logger.info(
                 '💰 Начислено ₽ на баланс user_id', prize_value=round(prize.prize_value / 100, 2), user_id=user.id
@@ -561,6 +562,7 @@ class FortuneWheelService:
                         prize.prize_value_kopeks,
                         description=f'Выигрыш в колесе удачи: {prize.prize_value} дней (на баланс, мульти-тариф)',
                         create_transaction=True,
+                        commit=False,
                     )
                     logger.info(
                         'Мульти-тариф: дни конвертированы в баланс (подписка не указана)',
@@ -589,6 +591,7 @@ class FortuneWheelService:
                             balance_bonus,
                             description=f'Выигрыш в колесе удачи: {prize.prize_value} дней → {balance_bonus / 100:.2f}₽',
                             create_transaction=True,
+                            commit=False,
                         )
                         logger.info(
                             '💰 Суточный тариф: дней конвертированы в ₽ для user_id',
@@ -604,6 +607,7 @@ class FortuneWheelService:
                             prize.prize_value_kopeks,
                             description=f'Выигрыш в колесе удачи: {prize.prize_value} дней (на баланс)',
                             create_transaction=True,
+                            commit=False,
                         )
                         logger.info('💰 Дни конвертированы в баланс для user_id', user_id=user.id)
                 else:
@@ -627,6 +631,7 @@ class FortuneWheelService:
                     prize.prize_value_kopeks,
                     description=f'Выигрыш в колесе удачи: {prize.prize_value} дней (на баланс)',
                     create_transaction=True,
+                    commit=False,
                 )
                 logger.info('💰 Дни конвертированы в баланс для user_id', user_id=user.id)
             return None
@@ -642,6 +647,7 @@ class FortuneWheelService:
                         prize.prize_value_kopeks,
                         description=f'Выигрыш в колесе удачи: {prize.prize_value}GB (на баланс, мульти-тариф)',
                         create_transaction=True,
+                        commit=False,
                     )
                     logger.info(
                         'Мульти-тариф: трафик конвертирован в баланс (подписка не указана)',
@@ -670,6 +676,7 @@ class FortuneWheelService:
                     prize.prize_value_kopeks,
                     description=f'Выигрыш в колесе удачи: {prize.prize_value}GB (на баланс)',
                     create_transaction=True,
+                    commit=False,
                 )
             return None
 
@@ -743,6 +750,27 @@ class FortuneWheelService:
                     error='no_prizes',
                     message='Призы не настроены',
                 )
+
+            # Serialize all of this user's spins on the user row and re-check the
+            # daily limit *under the lock*. The up-front check in check_availability
+            # races with concurrent POST /wheel/spin requests (TOCTTOU): each request
+            # gets its own session, all read the same spins_today before any commits,
+            # and all pass. Holding this lock through create_wheel_spin — the prize
+            # grants below use commit=False so the whole spin is ONE transaction —
+            # makes a second concurrent spin block here until the first commits, then
+            # observe the updated count. It also serializes the days-payment
+            # read-modify-write on the subscription (no lost update).
+            from app.database.crud.user import lock_user_for_update
+
+            user = await lock_user_for_update(db, user)
+            if config.daily_spin_limit > 0:
+                spins_today = await get_user_spins_today(db, user.id)
+                if spins_today >= config.daily_spin_limit:
+                    return SpinResult(
+                        success=False,
+                        error='daily_limit_reached',
+                        message=self._get_error_message('daily_limit_reached'),
+                    )
 
             # Resolve target subscription for days payment and prize application
             target_subscription = None

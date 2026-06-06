@@ -30,6 +30,9 @@ class DummySession:
     async def refresh(self, *_args: Any, **_kwargs: Any) -> None:
         return None
 
+    async def flush(self) -> None:
+        return None
+
 
 class DummyLocalPayment:
     def __init__(self, payment_id: int = 501) -> None:
@@ -164,6 +167,11 @@ async def test_process_mulenpay_callback_avoids_duplicate_transactions(
             self.mulen_payment_id: int | None = None
             self.status = 'created'
             self.is_paid = False
+            self.metadata_json: dict[str, Any] = {}
+            self.paid_at: datetime | None = None
+            self.updated_at: datetime | None = None
+            self.callback_payload: dict[str, Any] | None = None
+            self.created_at = datetime.now(UTC)
 
     payment = DummyPayment()
 
@@ -196,8 +204,9 @@ async def test_process_mulenpay_callback_avoids_duplicate_transactions(
             self.telegram_id = 99
             self.balance_kopeks = 0
             self.has_made_first_topup = False
+            self.referred_by_id: int | None = None
+            self.updated_at: datetime | None = None
             self.language = 'ru'
-            self.updated_at = None
             self.promo_group = None
             self.subscription = None
             self.user_promo_groups = []
@@ -211,26 +220,21 @@ async def test_process_mulenpay_callback_avoids_duplicate_transactions(
         assert user_id == payment.user_id
         return dummy_user
 
-    balance_call: dict[str, Any] = {}
+    async def fake_get_mulenpay_payment_by_id_for_update(_db: DummySession, _payment_id: int) -> DummyPayment:
+        assert _payment_id == payment.id
+        return payment
 
-    async def fake_add_user_balance(
-        _db: DummySession,
-        user: DummyUser,
-        amount_kopeks: int,
-        description: str,
-        *,
-        create_transaction: bool = True,
-        **_kwargs: Any,
-    ) -> bool:
-        balance_call.update(
-            {
-                'create_transaction': create_transaction,
-                'description': description,
-                'amount_kopeks': amount_kopeks,
-            }
-        )
-        user.balance_kopeks += amount_kopeks
-        return True
+    async def fake_lock_user_for_update(_db: DummySession, user: DummyUser) -> DummyUser:
+        return user
+
+    async def fake_emit_transaction_side_effects(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def fake_try_fulfill_guest_purchase(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def fake_send_cart_notification_after_topup(*_args: Any, **_kwargs: Any) -> None:
+        return None
 
     async def fake_process_referral_topup(*_args: Any, **_kwargs: Any) -> None:
         return None
@@ -256,26 +260,6 @@ async def test_process_mulenpay_callback_avoids_duplicate_transactions(
         has_user_cart=fake_has_user_cart
     )
     monkeypatch.setitem(sys.modules, 'app.services.user_cart_service', user_cart_module)
-
-    # Мок для SELECT FOR UPDATE блокировки платежа (новый upstream-паттерн)
-    async def fake_get_for_update_mulen(_db: Any, payment_id: int) -> DummyPayment:
-        return payment
-
-    mulenpay_crud_module = ModuleType('app.database.crud.mulenpay')
-    mulenpay_crud_module.get_mulenpay_payment_by_id_for_update = fake_get_for_update_mulen  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, 'app.database.crud.mulenpay', mulenpay_crud_module)
-
-    # Мок emit_transaction_side_effects (новый upstream-паттерн для отложенных эффектов)
-    from unittest.mock import AsyncMock as _AsyncMock
-
-    trx_crud_module = ModuleType('app.database.crud.transaction')
-    trx_crud_module.emit_transaction_side_effects = _AsyncMock()  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, 'app.database.crud.transaction', trx_crud_module)
-
-    # Мок common модуля для send_cart_notification_after_topup
-    common_mulen_module = ModuleType('app.services.payment.common')
-    common_mulen_module.send_cart_notification_after_topup = _AsyncMock(return_value=False)  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, 'app.services.payment.common', common_mulen_module)
 
     monkeypatch.setattr(
         payment_service_module,
@@ -308,13 +292,43 @@ async def test_process_mulenpay_callback_avoids_duplicate_transactions(
         raising=False,
     )
 
+    # FOR UPDATE row lock — patch at SOURCE module (reached via import_module)
+    monkeypatch.setattr(
+        'app.database.crud.mulenpay.get_mulenpay_payment_by_id_for_update',
+        fake_get_mulenpay_payment_by_id_for_update,
+        raising=False,
+    )
+    # Locally-imported helpers — patch at their SOURCE modules
+    monkeypatch.setattr(
+        'app.database.crud.user.lock_user_for_update',
+        fake_lock_user_for_update,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        'app.database.crud.transaction.emit_transaction_side_effects',
+        fake_emit_transaction_side_effects,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        'app.services.payment.common.try_fulfill_guest_purchase',
+        fake_try_fulfill_guest_purchase,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        'app.services.payment.common.send_cart_notification_after_topup',
+        fake_send_cart_notification_after_topup,
+        raising=False,
+    )
+
     result = await service.process_mulenpay_callback(
         db,
         {'uuid': payment.uuid, 'payment_status': 'success', 'id': 123, 'amount': 1500},
     )
 
     assert result is True
-    assert transaction_calls, 'create_transaction should be called'
-    # Баланс теперь начисляется напрямую (user.balance_kopeks +=), а не через add_user_balance
+    # Exactly one transaction created (no double-credit / idempotent webhook)
+    assert len(transaction_calls) == 1, 'exactly one transaction should be created'
+    # Balance credited exactly once with the full payment amount
     assert dummy_user.balance_kopeks == payment.amount_kopeks
+    # Payment linked to its transaction
     assert payment.transaction_id is not None
