@@ -969,7 +969,7 @@ async def show_button_selector_callback(callback: types.CallbackQuery, db_user: 
 Выберите нужные кнопки и нажмите "Продолжить":
 """
 
-    keyboard = get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
+    keyboard = await get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
 
     # Проверяем, является ли текущее сообщение медиа-сообщением
     # (фото, видео, документ и т.д.) - для них нельзя использовать edit_text
@@ -1022,7 +1022,7 @@ async def show_button_selector(message: types.Message, db_user: User, state: FSM
 Выберите нужные кнопки и нажмите "Продолжить":
 """
 
-    keyboard = get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
+    keyboard = await get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
 
     await message.answer(text, reply_markup=keyboard, parse_mode='HTML')
 
@@ -1046,7 +1046,7 @@ async def toggle_button_selection(callback: types.CallbackQuery, db_user: User, 
     await state.update_data(selected_buttons=selected_buttons)
 
     has_media = data.get('has_media', False)
-    keyboard = get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
+    keyboard = await get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, has_media, db_user.language)
 
     await callback.message.edit_reply_markup(reply_markup=keyboard)
     await callback.answer()
