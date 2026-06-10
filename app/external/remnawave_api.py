@@ -391,7 +391,10 @@ class RemnaWaveAPI:
                     except json.JSONDecodeError:
                         response_data = {'raw_response': response_text}
 
-                    if response.status in (429, 502, 503, 504) and attempt < max_retries:
+                    # 500 тоже транзиент — RemnaWave иногда отдаёт 500 при внутренних
+                    # сбоях/перегрузке, обычно проходит на ретрае. Если после 3 попыток
+                    # всё ещё 500 — упадём в общий error-блок ниже.
+                    if response.status in (429, 500, 502, 503, 504) and attempt < max_retries:
                         retry_after = float(response.headers.get('Retry-After', base_delay * (2**attempt)))
                         logger.warning(
                             'Retryable %s on %s %s, retry %s/%s after %ss',
@@ -417,9 +420,12 @@ class RemnaWaveAPI:
                         # нельзя: error-логи буферизуются и сыплют отчётом в админ-чат (например, при
                         # просмотре юзера с протухшим panel uuid — A063). Понижаем до warning.
                         is_not_found = response.status == 404
+                        # 5xx после retry — серверная ошибка панели, не наш баг.
+                        # Sync-цикл повторится через мониторинг; админ-чат не спамим.
+                        is_server_error = 500 <= response.status < 600
                         log = (
                             logger.warning
-                            if response.status in (502, 503, 504) or is_harmless or is_not_found
+                            if is_server_error or is_harmless or is_not_found
                             else logger.error
                         )
                         log('API Error %s: %s', response.status, error_message)

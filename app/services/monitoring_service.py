@@ -450,9 +450,14 @@ class MonitoringService:
         try:
             from app.services.expiry_fallback_service import reconcile_fallback_subscriptions
 
-            stats = await reconcile_fallback_subscriptions(db)
-            if stats and any(v > 0 for v in stats.values() if isinstance(v, int)):
-                logger.info('🔁 Fallback reconcile отработал', **stats)
+            # Используем свежую сессию: основная сессия monitoring_cycle живёт через
+            # много задач (autopay → sync_remnawave → ...) и может протухнуть по
+            # idle_in_transaction_session_timeout пока висит долгий sync RemnaWave.
+            # pool_pre_ping не помогает — сессия уже взяла connection и держит его.
+            async with AsyncSessionLocal() as fresh_db:
+                stats = await reconcile_fallback_subscriptions(fresh_db)
+                if stats and any(v > 0 for v in stats.values() if isinstance(v, int)):
+                    logger.info('🔁 Fallback reconcile отработал', **stats)
         except Exception as e:
             logger.error('Ошибка reconcile fallback', error=e)
 
