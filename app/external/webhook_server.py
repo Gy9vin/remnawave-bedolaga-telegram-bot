@@ -128,8 +128,7 @@ class WebhookServer:
 
     async def _tribute_webhook_handler(self, request: web.Request) -> web.Response:
         try:
-            logger.info('Получен Tribute webhook', method=request.method, path=request.path)
-            logger.info('Headers', value=dict(request.headers))
+            logger.info('Tribute webhook received', path=request.path, content_length=request.content_length)
 
             raw_body = await request.read()
 
@@ -138,29 +137,30 @@ class WebhookServer:
                 return web.json_response({'status': 'error', 'reason': 'empty_body'}, status=400)
 
             payload = raw_body.decode('utf-8')
-            logger.info('Payload', payload=payload)
 
             try:
                 webhook_data = json.loads(payload)
-                logger.info('Распарсенные данные', webhook_data=webhook_data)
             except json.JSONDecodeError as e:
                 logger.error('Ошибка парсинга JSON', error=e)
                 return web.json_response({'status': 'error', 'reason': 'invalid_json'}, status=400)
 
+            # Fail-closed: если API ключ не настроен — провайдер не сконфигурирован
+            if not settings.TRIBUTE_API_KEY:
+                logger.error('Tribute webhook: TRIBUTE_API_KEY не задан — отклоняем (fail-closed)')
+                return web.json_response({'status': 'error', 'reason': 'provider_not_configured'}, status=503)
+
             signature = request.headers.get('trbt-signature')
-            logger.info('Signature', signature=signature)
 
             if not signature:
                 logger.error('Отсутствует заголовок подписи Tribute webhook')
                 return web.json_response({'status': 'error', 'reason': 'missing_signature'}, status=401)
 
-            if settings.TRIBUTE_API_KEY:
-                from app.external.tribute import TributeService as TributeAPI
+            from app.external.tribute import TributeService as TributeAPI
 
-                tribute_api = TributeAPI()
-                if not tribute_api.verify_webhook_signature(payload, signature):
-                    logger.error('Неверная подпись Tribute webhook')
-                    return web.json_response({'status': 'error', 'reason': 'invalid_signature'}, status=401)
+            tribute_api = TributeAPI()
+            if not tribute_api.verify_webhook_signature(payload, signature):
+                logger.error('Неверная подпись Tribute webhook')
+                return web.json_response({'status': 'error', 'reason': 'invalid_signature'}, status=401)
 
             result = await self.tribute_service.process_webhook(payload)
 
@@ -176,8 +176,7 @@ class WebhookServer:
 
     async def _cryptobot_webhook_handler(self, request: web.Request) -> web.Response:
         try:
-            logger.info('Получен CryptoBot webhook', method=request.method, path=request.path)
-            logger.info('Headers', value=dict(request.headers))
+            logger.info('CryptoBot webhook received', path=request.path, content_length=request.content_length)
 
             raw_body = await request.read()
 
@@ -186,17 +185,14 @@ class WebhookServer:
                 return web.json_response({'status': 'error', 'reason': 'empty_body'}, status=400)
 
             payload = raw_body.decode('utf-8')
-            logger.info('CryptoBot Payload', payload=payload)
 
             try:
                 webhook_data = json.loads(payload)
-                logger.info('CryptoBot данные', webhook_data=webhook_data)
             except json.JSONDecodeError as e:
                 logger.error('Ошибка парсинга CryptoBot JSON', error=e)
                 return web.json_response({'status': 'error', 'reason': 'invalid_json'}, status=400)
 
             signature = request.headers.get('Crypto-Pay-API-Signature')
-            logger.info('CryptoBot Signature', signature=signature)
 
             if settings.CRYPTOBOT_API_TOKEN:
                 if not signature:
@@ -270,7 +266,7 @@ class WebhookServer:
                 logger.error('Ошибка парсинга Freekassa form-data', error=e)
                 return web.Response(text='NO', status=400)
 
-            logger.info('Freekassa webhook data', value=dict(form_data))
+            # Не логируем form_data целиком — содержит SIGN и другие чувствительные поля
 
             # Извлекаем параметры
             merchant_id = int(form_data.get('MERCHANT_ID', 0))

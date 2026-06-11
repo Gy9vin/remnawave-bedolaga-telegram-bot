@@ -755,6 +755,11 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
         async def cloudpayments_check_webhook(request: Request) -> JSONResponse:
             """Check webhook - вызывается перед списанием, можно отклонить платёж."""
             try:
+                # Fail-closed: если секрет не настроен — провайдер не сконфигурирован
+                if not settings.CLOUDPAYMENTS_API_SECRET:
+                    logger.error('CloudPayments webhook: CLOUDPAYMENTS_API_SECRET не задан — отклоняем (fail-closed)')
+                    return JSONResponse({'code': 13}, status_code=503)
+
                 raw_body = await request.body()
 
                 # Логируем для диагностики (только имена заголовков, без значений —
@@ -765,7 +770,7 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
                     header_keys=list(request.headers.keys()),
                 )
 
-                # Проверяем подпись если API_SECRET настроен
+                # Проверяем подпись
                 # CloudPayments использует заголовок X-Content-HMAC или Content-HMAC
                 signature = request.headers.get('X-Content-HMAC') or request.headers.get('Content-HMAC') or ''
                 if settings.CLOUDPAYMENTS_API_SECRET:
@@ -790,9 +795,14 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
         @router.post(settings.CLOUDPAYMENTS_WEBHOOK_PATH + '/pay')
         async def cloudpayments_pay_webhook(request: Request) -> JSONResponse:
             """Pay webhook - вызывается после успешной оплаты."""
+            # Fail-closed: если секрет не настроен — провайдер не сконфигурирован
+            if not settings.CLOUDPAYMENTS_API_SECRET:
+                logger.error('CloudPayments webhook: CLOUDPAYMENTS_API_SECRET не задан — отклоняем (fail-closed)')
+                return JSONResponse({'code': 13}, status_code=503)
+
             raw_body = await request.body()
 
-            # Проверяем подпись если API_SECRET настроен
+            # Проверяем подпись
             signature = request.headers.get('X-Content-HMAC') or request.headers.get('Content-HMAC') or ''
             if settings.CLOUDPAYMENTS_API_SECRET:
                 if not signature:
@@ -825,9 +835,14 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
         @router.post(settings.CLOUDPAYMENTS_WEBHOOK_PATH + '/fail')
         async def cloudpayments_fail_webhook(request: Request) -> JSONResponse:
             """Fail webhook - вызывается при неуспешной оплате."""
+            # Fail-closed: если секрет не настроен — провайдер не сконфигурирован
+            if not settings.CLOUDPAYMENTS_API_SECRET:
+                logger.error('CloudPayments webhook: CLOUDPAYMENTS_API_SECRET не задан — отклоняем (fail-closed)')
+                return JSONResponse({'code': 13}, status_code=503)
+
             raw_body = await request.body()
 
-            # Проверяем подпись если API_SECRET настроен
+            # Проверяем подпись
             signature = request.headers.get('X-Content-HMAC') or request.headers.get('Content-HMAC') or ''
             if settings.CLOUDPAYMENTS_API_SECRET:
                 if not signature:
@@ -861,6 +876,11 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
         async def cloudpayments_webhook(request: Request) -> JSONResponse:
             """Универсальный webhook endpoint."""
             try:
+                # Fail-closed: если секрет не настроен — провайдер не сконфигурирован
+                if not settings.CLOUDPAYMENTS_API_SECRET:
+                    logger.error('CloudPayments webhook: CLOUDPAYMENTS_API_SECRET не задан — отклоняем (fail-closed)')
+                    return JSONResponse({'code': 13}, status_code=503)
+
                 raw_body = await request.body()
 
                 # Логируем для диагностики (только имена заголовков, без значений)
@@ -870,7 +890,7 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
                     header_keys=list(request.headers.keys()),
                 )
 
-                # Проверяем подпись если API_SECRET настроен
+                # Проверяем подпись
                 signature = request.headers.get('X-Content-HMAC') or request.headers.get('Content-HMAC') or ''
                 if settings.CLOUDPAYMENTS_API_SECRET:
                     if not signature:
@@ -1342,12 +1362,45 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
 
         @router.post(settings.OVERPAY_WEBHOOK_PATH)
         async def overpay_webhook(request: Request) -> JSONResponse:
+            # Fail-closed: секрет обязателен
+            if not settings.OVERPAY_WEBHOOK_SECRET:
+                logger.error('Overpay webhook: OVERPAY_WEBHOOK_SECRET не задан — отклоняем (fail-closed)')
+                return JSONResponse(
+                    {'status': False, 'reason': 'provider_not_configured'},
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+
+            # IP allowlist (опционально)
+            if settings.OVERPAY_IP_ALLOWLIST:
+                allowed_ips = [ip.strip() for ip in settings.OVERPAY_IP_ALLOWLIST.split(',') if ip.strip()]
+                if allowed_ips:
+                    client_ip = request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
+                    if not client_ip:
+                        client_ip = request.client.host if request.client else ''
+                    if client_ip not in allowed_ips:
+                        logger.warning('Overpay webhook: IP не в allowlist', client_ip=client_ip)
+                        return JSONResponse({'status': False}, status_code=status.HTTP_403_FORBIDDEN)
+
             try:
                 raw_body = await request.body()
                 payload = json.loads(raw_body)
             except Exception as parse_error:
                 logger.error('Overpay webhook: failed to parse JSON', parse_error=parse_error)
                 return JSONResponse({'status': False}, status_code=status.HTTP_400_BAD_REQUEST)
+
+            # Проверяем HMAC-SHA256 подпись из заголовка X-Overpay-Signature
+            signature_header = request.headers.get('X-Overpay-Signature', '')
+            if not signature_header:
+                logger.warning('Overpay webhook: отсутствует заголовок X-Overpay-Signature')
+                return JSONResponse({'status': False}, status_code=status.HTTP_401_UNAUTHORIZED)
+            expected_sig = hmac.new(
+                settings.OVERPAY_WEBHOOK_SECRET.encode('utf-8'),
+                raw_body,
+                hashlib.sha256,
+            ).hexdigest()
+            if not hmac.compare_digest(expected_sig, signature_header.lower()):
+                logger.warning('Overpay webhook: неверная подпись')
+                return JSONResponse({'status': False}, status_code=status.HTTP_401_UNAUTHORIZED)
 
             # Overpay uses mTLS for authentication — verify payment exists in DB
             merchant_transaction_id = payload.get('merchantTransactionId')

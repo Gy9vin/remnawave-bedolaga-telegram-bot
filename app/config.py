@@ -815,6 +815,8 @@ class Settings(BaseSettings):
     OVERPAY_RETURN_URL: str | None = None
     OVERPAY_LIFETIME_MINUTES: int = 1440
     OVERPAY_PAYMENT_METHODS: str = 'card,fps'
+    OVERPAY_WEBHOOK_SECRET: str = ''  # HMAC-SHA256 секрет для верификации webhook подписи (X-Overpay-Signature)
+    OVERPAY_IP_ALLOWLIST: str = ''  # CSV список разрешённых IP отправителей webhook (пусто = без проверки)
 
     # AuraPay (aurapay.tech)
     AURAPAY_ENABLED: bool = False

@@ -95,6 +95,9 @@ class TributeService:
         try:
             user_telegram_id = payment_data['user_id']
             amount_kopeks = payment_data['amount_kopeks']
+            # TODO(security): сравнивать amount_kopeks с pre-stored expected_amount_kopeks из БД
+            # Требует создания модели TributePayment (аналог FreekassaPayment) и миграции Alembic.
+            # Пример толеранса: if abs(received - expected) > 1: reject  (±1 копейка, как в Freekassa)
             payment_id = payment_data['payment_id']
             trb_user_id = payment_data.get('trb_user_id')
 
@@ -245,15 +248,25 @@ class TributeService:
 
     async def _handle_refund(self, refund_data: dict[str, Any]):
         try:
-            user_id = refund_data['user_id']
+            telegram_id = refund_data['user_id']  # в webhook это telegram_id, не internal PK
             amount_kopeks = refund_data['amount_kopeks']
             payment_id = refund_data['payment_id']
             trb_user_id = refund_data.get('trb_user_id')
 
             async for session in get_db():
+                # Резолвим telegram_id → internal user.id
+                user = await get_user_by_telegram_id(session, telegram_id)
+                if not user:
+                    logger.warning(
+                        'Tribute refund: пользователь не найден по telegram_id, пропускаем',
+                        telegram_id=telegram_id,
+                        payment_id=payment_id,
+                    )
+                    return
+
                 await create_transaction(
                     db=session,
-                    user_id=user_id,
+                    user_id=user.id,  # internal PK, не telegram_id
                     type=TransactionType.REFUND,
                     amount_kopeks=-amount_kopeks,
                     description=f'Возврат Tribute платежа {payment_id}',
@@ -263,23 +276,21 @@ class TributeService:
                     commit=False,
                 )
 
-                user = await get_user_by_telegram_id(session, user_id)
-                if user:
-                    # Lock user row to prevent concurrent balance race conditions
-                    from app.database.crud.user import lock_user_for_update
+                # Lock user row to prevent concurrent balance race conditions
+                from app.database.crud.user import lock_user_for_update
 
-                    user = await lock_user_for_update(session, user)
-                    if user.balance_kopeks >= amount_kopeks:
-                        user.balance_kopeks -= amount_kopeks
+                user = await lock_user_for_update(session, user)
+                if user.balance_kopeks >= amount_kopeks:
+                    user.balance_kopeks -= amount_kopeks
 
                 await session.commit()
 
-                await self._send_refund_notification(user_id, amount_kopeks)
+                await self._send_refund_notification(telegram_id, amount_kopeks)
 
                 logger.info(
                     'Обработан возврат Tribute: ₽ для пользователя',
                     amount_kopeks=amount_kopeks / 100,
-                    user_id=user_id,
+                    telegram_id=telegram_id,
                     trb_user_id=trb_user_id,
                 )
                 break
