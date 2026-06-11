@@ -12,9 +12,11 @@ from sqlalchemy.orm import selectinload
 from app.cabinet.routes.media import make_media_token
 from app.cabinet.routes.websocket import notify_admins_new_ticket, notify_admins_ticket_reply
 from app.config import settings
+from app.database.crud.ticket import TicketMessageCRUD
 from app.database.crud.ticket_notification import TicketNotificationCRUD
 from app.database.models import Ticket, TicketMessage, User
 from app.handlers.tickets import notify_admins_about_new_ticket, notify_admins_about_ticket_reply
+from app.utils.cache import RateLimitCache
 
 from ..dependencies import get_cabinet_db, get_current_cabinet_user
 from ..schemas.tickets import (
@@ -144,6 +146,10 @@ async def create_ticket(
             status_code=status.HTTP_403_FORBIDDEN,
             detail='Support tickets are disabled',
         )
+
+    # Rate limit: 5 tickets per 5 minutes
+    if await RateLimitCache.is_rate_limited(user.id, 'ticket_create', limit=5, window=300):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Too many requests')
 
     # Create ticket
     ticket = Ticket(

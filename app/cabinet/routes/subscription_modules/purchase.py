@@ -366,9 +366,10 @@ async def get_purchase_options(
         return payload
 
     except PurchaseValidationError as e:
+        logger.error('Purchase options validation failed', error=str(e), user_id=user.id, code=e.code)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            detail='Невозможно совершить покупку. Проверьте параметры.',
         )
     except Exception as e:
         logger.error('Failed to build purchase options for user', user_id=user.id, error=e)
@@ -434,9 +435,10 @@ async def preview_purchase(
         return preview
 
     except PurchaseValidationError as e:
+        logger.error('Purchase preview validation failed', error=str(e), user_id=user.id, code=e.code)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            detail='Невозможно совершить покупку. Проверьте параметры.',
         )
     except Exception as e:
         logger.error('Failed to calculate purchase preview for user', user_id=user.id, error=e)
@@ -557,9 +559,10 @@ async def submit_purchase(
         }
 
     except PurchaseValidationError as e:
+        logger.error('Purchase validation failed', error=str(e), user_id=user.id, code=e.code)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            detail='Невозможно совершить покупку. Проверьте параметры.',
         )
     except PurchaseBalanceError as e:
         # Save cart for auto-purchase after balance top-up

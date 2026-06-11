@@ -27,6 +27,7 @@ from app.services.payment_verification_service import (
     method_display_name,
     run_manual_check,
 )
+from app.utils.cache import RateLimitCache
 from app.utils.currency_converter import currency_converter
 
 from ..dependencies import get_cabinet_db, get_current_cabinet_user
@@ -311,6 +312,10 @@ async def create_topup(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Create payment for balance top-up."""
+    # Rate limit: 10 requests per minute
+    if await RateLimitCache.is_rate_limited(user.id, 'balance_topup', limit=10, window=60):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Too many requests')
+
     if getattr(user, 'restriction_topup', False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

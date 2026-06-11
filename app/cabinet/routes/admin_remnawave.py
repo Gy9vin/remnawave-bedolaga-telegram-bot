@@ -775,9 +775,10 @@ async def migrate_squad_users(
             target_uuid=target.squad_uuid,
         )
     except RemnaWaveConfigurationError as exc:
+        logger.error('Squad migration failed: RemnaWave config error', error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail='Operation failed. Check logs.',
         )
 
     if not result.get('success'):
@@ -936,9 +937,10 @@ async def sync_from_panel(
             data=stats,
         )
     except RemnaWaveConfigurationError as exc:
+        logger.error('Sync from panel failed: RemnaWave config error', error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail='Operation failed. Check logs.',
         )
 
 

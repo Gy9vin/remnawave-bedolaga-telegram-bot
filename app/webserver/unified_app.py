@@ -252,42 +252,19 @@ def create_unified_app(
 
     @app.get(unified_health_path)
     async def unified_health() -> JSONResponse:
-        webhook_path = settings.get_telegram_webhook_path() if enable_telegram_webhook else None
-
-        telegram_state = {
-            'enabled': enable_telegram_webhook,
-            'running': bool(telegram_processor and telegram_processor.is_running),
-            'url': settings.get_telegram_webhook_url(),
-            'path': webhook_path,
-            'secret_configured': bool(settings.WEBHOOK_SECRET_TOKEN),
-            'queue_maxsize': settings.get_webhook_queue_maxsize(),
-            'workers': settings.get_webhook_worker_count(),
-        }
-
-        payment_state = {
-            'enabled': bool(payments_router),
-            'providers': payment_providers_state,
-        }
-
-        miniapp_state = {
-            'mounted': miniapp_mounted,
-            'path': str(miniapp_path),
-        }
-
-        remnawave_webhook_state = {
-            'enabled': remnawave_webhook_enabled,
-            'path': settings.REMNAWAVE_WEBHOOK_PATH if remnawave_webhook_enabled else None,
-        }
-
         return JSONResponse(
             {
                 'status': 'ok',
                 'bot_run_mode': settings.get_bot_run_mode(),
                 'web_api_enabled': settings.is_web_api_enabled(),
-                'payment_webhooks': payment_state,
-                'telegram_webhook': telegram_state,
-                'remnawave_webhook': remnawave_webhook_state,
-                'miniapp_static': miniapp_state,
+                'payment_webhooks': {'configured': bool(payments_router)},
+                'telegram_webhook': {
+                    'enabled': enable_telegram_webhook,
+                    'running': bool(telegram_processor and telegram_processor.is_running),
+                    'secret_configured': bool(settings.WEBHOOK_SECRET_TOKEN),
+                },
+                'remnawave_webhook': {'enabled': remnawave_webhook_enabled},
+                'miniapp_static': {'mounted': miniapp_mounted},
             }
         )
 

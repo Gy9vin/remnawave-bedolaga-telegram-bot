@@ -3334,9 +3334,16 @@ class Settings(BaseSettings):
         return bool(self.WEB_API_ENABLED)
 
     def get_web_api_allowed_origins(self) -> list[str]:
+        import structlog as _structlog
+        _log = _structlog.get_logger(__name__)
         raw = (self.WEB_API_ALLOWED_ORIGINS or '').split(',')
         origins = [origin.strip() for origin in raw if origin.strip()]
-        return origins or ['*']
+        origins = origins or ['*']
+        if '*' in origins:
+            if len(origins) > 1:
+                _log.warning('CORS allowed_origins contains "*" along with specific origins; using only "*"')
+            return ['*']
+        return origins
 
     def get_web_api_docs_config(self) -> dict[str, str | None]:
         if self.WEB_API_DOCS_ENABLED:
@@ -3450,9 +3457,16 @@ class Settings(BaseSettings):
         return max(1, self.CABINET_REFRESH_TOKEN_EXPIRE_DAYS)
 
     def get_cabinet_allowed_origins(self) -> list[str]:
+        import structlog as _structlog
+        _log = _structlog.get_logger(__name__)
         if not self.CABINET_ALLOWED_ORIGINS:
             return []
-        return [o.strip() for o in self.CABINET_ALLOWED_ORIGINS.split(',') if o.strip()]
+        origins = [o.strip() for o in self.CABINET_ALLOWED_ORIGINS.split(',') if o.strip()]
+        if '*' in origins:
+            if len(origins) > 1:
+                _log.warning('CORS cabinet allowed_origins contains "*" along with specific origins; using only "*"')
+            return ['*']
+        return origins
 
     def is_cabinet_email_verification_enabled(self) -> bool:
         return bool(self.CABINET_EMAIL_VERIFICATION_ENABLED)

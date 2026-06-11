@@ -158,6 +158,12 @@ class AutopayUpdateRequest(BaseModel):
     days_before: int | None = Field(None, ge=1, le=30, description='Days before expiration to charge')
 
 
+class ReduceDevicesRequest(BaseModel):
+    """Request to reduce device limit."""
+
+    new_device_limit: int = Field(ge=1, le=100)
+
+
 class TrialActivateRequest(BaseModel):
     """Optional body for POST /trial — used to forward the Yandex CID for the
     offline-conversion trial-add (and purchase, when TRIAL_PAYMENT_ENABLED)

@@ -37,7 +37,7 @@ from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
-from ...schemas.subscription import DevicePurchaseRequest
+from ...schemas.subscription import DevicePurchaseRequest, ReduceDevicesRequest
 from .helpers import _apply_addon_discount, resolve_subscription
 
 
@@ -1049,6 +1049,12 @@ async def delete_device(
             detail='No subscription found',
         )
 
+    if not await verify_hwid_belongs_to_user(user, hwid):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Device not found on your account',
+        )
+
     _puuid = _resolve_panel_uuid(subscription, user)
     if not _puuid:
         raise HTTPException(
@@ -1224,7 +1230,7 @@ async def get_device_reduction_info(
 
 @router.post('/devices/reduce')
 async def reduce_devices(
-    request: dict[str, int],
+    request: ReduceDevicesRequest,
     subscription_id: int | None = QueryParam(None, description='Subscription ID for multi-tariff'),
     user: User = Depends(get_current_cabinet_user),
     db: AsyncSession = Depends(get_cabinet_db),
@@ -1232,12 +1238,7 @@ async def reduce_devices(
     """Reduce device limit (no refund)."""
     from app.services.remnawave_service import RemnaWaveService
 
-    new_device_limit = request.get('new_device_limit')
-    if not new_device_limit or new_device_limit < 1:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='Invalid new_device_limit',
-        )
+    new_device_limit = request.new_device_limit
 
     # Resolve subscription (ownership validated), then lock the row for concurrent safety
     resolved = await resolve_subscription(db, user, subscription_id)

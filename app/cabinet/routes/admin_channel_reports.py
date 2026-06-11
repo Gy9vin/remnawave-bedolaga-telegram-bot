@@ -48,9 +48,11 @@ async def start_channel_report(
             admin_telegram_id=admin.telegram_id,
         )
     except ReportAlreadyRunning as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+        logger.error('Channel report already running', channel_db_id=channel_db_id, error=str(exc))
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Operation failed. Check logs.')
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        logger.error('Channel report start failed', channel_db_id=channel_db_id, error=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Operation failed. Check logs.')
 
     return ChannelReportStartResponse(report_id=report_id)
 
@@ -80,7 +82,8 @@ async def download_report_csv(
     except ReportNotFound:
         raise HTTPException(status_code=404, detail='Report not found')
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+        logger.error('Channel report CSV failed', report_id=report_id, error=str(exc))
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Operation failed. Check logs.')
 
     return StreamingResponse(
         io.BytesIO(csv_bytes),
