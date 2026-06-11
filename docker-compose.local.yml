@@ -6,13 +6,15 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-remnawave_bot}
       POSTGRES_USER: ${POSTGRES_USER:-remnawave_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password_123}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - bot_network
       - remnawave-network # Подключаем к сети панели
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test:
         [
@@ -34,6 +36,8 @@ services:
     networks:
       - bot_network
       - remnawave-network # Подключаем к сети панели
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 30s
@@ -59,7 +63,7 @@ services:
       POSTGRES_PORT: '5432'
       POSTGRES_DB: '${POSTGRES_DB:-remnawave_bot}'
       POSTGRES_USER: '${POSTGRES_USER:-remnawave_user}'
-      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD:-secure_password_123}'
+      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}'
       REDIS_URL: 'redis://redis:6379/0'
       TZ: 'Europe/Moscow'
       LOCALES_PATH: '${LOCALES_PATH:-/app/locales}'
@@ -72,10 +76,21 @@ services:
       - ./uploads:/app/uploads:rw
       - ./vpn_logo.png:/app/vpn_logo.png:ro
     ports:
-      - '${WEB_API_PORT:-8080}:8080'
+      - '127.0.0.1:${WEB_API_PORT:-8080}:8080'
     networks:
       - bot_network
       - remnawave-network # Подключаем к сети панели
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          pids: 200
     healthcheck:
       test:
         [
