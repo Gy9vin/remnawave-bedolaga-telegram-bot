@@ -12,6 +12,25 @@ from sqlalchemy import inspect, text
 logger = structlog.get_logger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _quote_ident(name: str) -> str:
+    """Quote a PostgreSQL identifier to prevent SQL injection."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+# Whitelist of allowed column types in _ensure_critical_columns.
+# Protects against accidental unsafe DDL if this list is modified in the future.
+_ALLOWED_COL_TYPES = frozenset(
+    {
+        'INTEGER NOT NULL DEFAULT 0',
+        'VARCHAR(255)',
+        'TIMESTAMPTZ',
+        'BOOLEAN NOT NULL DEFAULT FALSE',
+        'BIGINT',
+        'JSONB',
+    }
+)
 _ALEMBIC_INI = _PROJECT_ROOT / 'alembic.ini'
 
 
@@ -187,8 +206,9 @@ async def _ensure_critical_columns() -> None:
                 return  # SQLite: миграция справится сама
 
             for table, column, col_type in critical:
+                assert col_type in _ALLOWED_COL_TYPES, f'Unexpected column type: {col_type!r}'
                 try:
-                    await conn.execute(text(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}'))
+                    await conn.execute(text(f'ALTER TABLE {_quote_ident(table)} ADD COLUMN IF NOT EXISTS {_quote_ident(column)} {col_type}'))
                 except Exception as e:
                     logger.warning(
                         'Не удалось добавить страховочную колонку',

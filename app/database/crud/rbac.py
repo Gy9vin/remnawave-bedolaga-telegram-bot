@@ -10,6 +10,11 @@ from app.database.models import AccessPolicy, AdminAuditLog, AdminRole, User, Us
 
 logger = structlog.get_logger(__name__)
 
+
+def _escape_like(s: str) -> str:
+    """Escape special LIKE wildcard characters to prevent wildcard scan attacks."""
+    return s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
 # Fields allowed for AdminRole.update()
 _ROLE_UPDATABLE_FIELDS = frozenset(
     {
@@ -465,7 +470,7 @@ class AuditLogCRUD:
         if user_id is not None:
             filters.append(AdminAuditLog.user_id == user_id)
         if action is not None:
-            filters.append(AdminAuditLog.action.ilike(f'%{action}%'))
+            filters.append(AdminAuditLog.action.ilike(f'%{_escape_like(action)}%', escape='\\'))
         if resource_type is not None:
             filters.append(AdminAuditLog.resource_type == resource_type)
         if status is not None:

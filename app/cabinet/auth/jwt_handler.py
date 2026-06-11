@@ -58,6 +58,8 @@ def create_access_token(
         'type': 'access',
         'exp': expires,
         'iat': datetime.now(UTC),
+        'iss': 'bedolaga-cabinet',
+        'aud': 'cabinet-api',
     }
 
     # Добавляем telegram_id только если он есть
@@ -94,6 +96,8 @@ def create_refresh_token(user_id: int) -> str:
         'type': 'refresh',
         'exp': expires,
         'iat': datetime.now(UTC),
+        'iss': 'bedolaga-cabinet',
+        'aud': 'cabinet-api',
     }
 
     secret = settings.get_cabinet_jwt_secret()
@@ -112,7 +116,16 @@ def decode_token(token: str) -> dict[str, Any] | None:
     """
     try:
         secret = settings.get_cabinet_jwt_secret()
-        return jwt.decode(token, secret, algorithms=[JWT_ALGORITHM])
+        # TODO(security): once all existing tokens have expired/rotated, enable strict
+        # audience+issuer validation by removing verify_aud/verify_iss overrides and
+        # adding: audience='cabinet-api', issuer='bedolaga-cabinet',
+        # options={'require': ['exp', 'iat', 'iss', 'aud']}
+        return jwt.decode(
+            token,
+            secret,
+            algorithms=[JWT_ALGORITHM],
+            options={'verify_aud': False, 'verify_iss': False},
+        )
     except jwt.ExpiredSignatureError:
         # Логирование причины помогает дебажить 401 на стороне юзера
         # (раньше тихо возвращали None — было невозможно понять, истёк токен
@@ -161,6 +174,8 @@ def create_auto_login_token(user_id: int, ttl_hours: int = 72) -> str:
         'type': 'auto_login',
         'exp': expires,
         'iat': datetime.now(UTC),
+        'iss': 'bedolaga-cabinet',
+        'aud': 'cabinet-api',
     }
     return jwt.encode(payload, settings.get_cabinet_jwt_secret(), algorithm=JWT_ALGORITHM)
 

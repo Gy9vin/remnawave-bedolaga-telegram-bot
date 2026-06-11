@@ -13,13 +13,16 @@ from ..schemas.health import HealthCheckResponse, HealthFeatureFlags
 router = APIRouter()
 
 
-@router.get('/health', tags=['health'], response_model=HealthCheckResponse)
-async def health_check() -> HealthCheckResponse:
-    # Public liveness probe — Docker/LB/monitoring/cabinet healthchecks must reach
-    # it WITHOUT an API token (this endpoint previously 401'd them). Only
-    # non-sensitive status/version/feature flags are returned, consistent with the
-    # already-public /health/unified. The detailed database/pool endpoints below
-    # stay token-gated.
+@router.get('/health', tags=['health'])
+async def health_check() -> dict:
+    # Public liveness probe — returns only {status: ok} to avoid version disclosure.
+    # Detailed version/feature information is available at /health/detailed (token-gated).
+    return {'status': 'ok'}
+
+
+@router.get('/health/detailed', tags=['health'], response_model=HealthCheckResponse)
+async def health_check_detailed(_: object = Security(require_api_token)) -> HealthCheckResponse:
+    """Detailed health info including versions and feature flags. Requires API token."""
     return HealthCheckResponse(
         status='ok',
         api_version=settings.WEB_API_VERSION,

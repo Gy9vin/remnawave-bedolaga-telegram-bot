@@ -30,6 +30,11 @@ from app.database.models import (
 from app.utils.validators import sanitize_telegram_name
 
 
+def _escape_like(s: str) -> str:
+    """Escape special LIKE wildcard characters to prevent wildcard scan attacks."""
+    return s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+
 logger = structlog.get_logger(__name__)
 
 
@@ -928,11 +933,11 @@ async def get_users_list(
         )
 
     if search:
-        search_term = f'%{search}%'
+        search_term = f'%{_escape_like(search)}%'
         conditions = [
-            User.first_name.ilike(search_term),
-            User.last_name.ilike(search_term),
-            User.username.ilike(search_term),
+            User.first_name.ilike(search_term, escape='\\'),
+            User.last_name.ilike(search_term, escape='\\'),
+            User.username.ilike(search_term, escape='\\'),
         ]
 
         if search.isdigit():
@@ -946,7 +951,7 @@ async def get_users_list(
         query = query.where(or_(*conditions))
 
     if email:
-        query = query.where(User.email.ilike(f'%{email}%'))
+        query = query.where(User.email.ilike(f'%{_escape_like(email)}%', escape='\\'))
 
     sort_flags = [
         order_by_balance,
@@ -1062,11 +1067,11 @@ async def get_users_count(
         )
 
     if search:
-        search_term = f'%{search}%'
+        search_term = f'%{_escape_like(search)}%'
         conditions = [
-            User.first_name.ilike(search_term),
-            User.last_name.ilike(search_term),
-            User.username.ilike(search_term),
+            User.first_name.ilike(search_term, escape='\\'),
+            User.last_name.ilike(search_term, escape='\\'),
+            User.username.ilike(search_term, escape='\\'),
         ]
 
         if search.isdigit():
@@ -1080,7 +1085,7 @@ async def get_users_count(
         query = query.where(or_(*conditions))
 
     if email:
-        query = query.where(User.email.ilike(f'%{email}%'))
+        query = query.where(User.email.ilike(f'%{_escape_like(email)}%', escape='\\'))
 
     result = await db.execute(query)
     return result.scalar()

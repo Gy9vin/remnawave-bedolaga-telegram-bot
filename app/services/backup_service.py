@@ -24,7 +24,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.pool import NullPool
 
 from app.config import settings
-from app.database.database import AsyncSessionLocal, engine, sync_postgres_sequences
+from app.database.database import AsyncSessionLocal, _quote_ident, engine, sync_postgres_sequences
 from app.database.models import (
     AccessPolicy,
     AdminAuditLog,
@@ -531,7 +531,7 @@ class BackupService:
 
                 for table_name in table_names:
                     try:
-                        result = await conn.execute(text(f'SELECT COUNT(*) FROM {table_name}'))
+                        result = await conn.execute(text(f'SELECT COUNT(*) FROM {_quote_ident(table_name)}'))
                         count = result.scalar_one()
                     except Exception:
                         count = 0
