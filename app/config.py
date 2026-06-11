@@ -3443,9 +3443,15 @@ class Settings(BaseSettings):
 
     def get_cabinet_jwt_secret(self) -> str:
         secret = (self.CABINET_JWT_SECRET or '').strip()
+        # Если кабинет выключен — секрет не нужен, возвращаем пустую строку.
+        # Cabinet routes недоступны без CABINET_ENABLED, поэтому секрет
+        # никогда не будет использован для подписи токенов.
+        if not self.is_cabinet_enabled():
+            return secret
         if not secret or len(secret) < 32:
             raise RuntimeError(
-                'CABINET_JWT_SECRET must be set to a strong random string (>= 32 chars). '
+                'CABINET_JWT_SECRET must be set to a strong random string (>= 32 chars) '
+                'when CABINET_ENABLED=true. '
                 'Generate with: python -c "import secrets; print(secrets.token_urlsafe(48))"'
             )
         return secret

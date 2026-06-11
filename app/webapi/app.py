@@ -281,6 +281,8 @@ def create_web_api_app(lifespan: Any = None) -> FastAPI:
 
     # Cabinet (Personal Account) routes
     if settings.is_cabinet_enabled():
+        # Fail-fast: validate JWT secret before mounting cabinet routes.
+        settings.get_cabinet_jwt_secret()
         from app.cabinet.routes import router as cabinet_router
 
         app.include_router(cabinet_router)

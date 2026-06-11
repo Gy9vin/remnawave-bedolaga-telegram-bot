@@ -89,6 +89,9 @@ def _create_base_app(lifespan: Any = None) -> FastAPI:
                     allow_headers=['Authorization', 'Content-Type', 'X-CSRF-Token', 'X-Telegram-Init-Data'],
                 )
             if settings.is_cabinet_enabled():
+                # Fail-fast: validate JWT secret before mounting cabinet routes.
+                # Без этого первая попытка /api/cabinet/auth/login упала бы с 500.
+                settings.get_cabinet_jwt_secret()
                 from app.cabinet.routes import router as cabinet_router
 
                 app.include_router(cabinet_router)
