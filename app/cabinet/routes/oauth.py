@@ -392,7 +392,8 @@ async def get_link_authorize_url(
     if not oauth_provider:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Provider {provider} is not enabled')
 
-    state = await generate_oauth_state(provider)
+    # Store linking context in state so the callback can verify it
+    state = await generate_oauth_state(provider, extra_data={'linking': 'true', 'user_id': str(user.id)})
     authorize_url = oauth_provider.get_authorization_url(state)
     return OAuthAuthorizeResponse(authorize_url=authorize_url, state=state)
 
@@ -413,9 +414,22 @@ async def link_oauth_provider(
     if getattr(user, col_name, None):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'{provider} already linked')
 
-    # Validate state
-    if not await validate_oauth_state(request.state, provider):
+    # Validate CSRF state
+    state_data = await validate_oauth_state(request.state, provider)
+    if not state_data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid or expired state')
+
+    # SECURITY: verify state was created for an account-linking flow by this user
+    if state_data.get('linking') != 'true':
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid state (not a linking flow)')
+    if state_data.get('user_id') != str(user.id):
+        logger.warning(
+            'OAuth link state user_id mismatch',
+            state_user_id=state_data.get('user_id'),
+            current_user_id=user.id,
+            provider=provider,
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='State user mismatch')
 
     # Get provider and exchange code
     oauth_provider = get_provider(provider)

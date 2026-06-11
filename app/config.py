@@ -3435,18 +3435,13 @@ class Settings(BaseSettings):
         return bool(self.CABINET_ENABLED)
 
     def get_cabinet_jwt_secret(self) -> str:
-        if self.CABINET_JWT_SECRET:
-            return self.CABINET_JWT_SECRET
-        import warnings
-
-        warnings.warn(
-            'CABINET_JWT_SECRET is not set, falling back to BOT_TOKEN. '
-            'Set CABINET_JWT_SECRET to a unique secret in production: '
-            'python -c "import secrets; print(secrets.token_urlsafe(64))"',
-            UserWarning,
-            stacklevel=2,
-        )
-        return self.BOT_TOKEN
+        secret = (self.CABINET_JWT_SECRET or '').strip()
+        if not secret or len(secret) < 32:
+            raise RuntimeError(
+                'CABINET_JWT_SECRET must be set to a strong random string (>= 32 chars). '
+                'Generate with: python -c "import secrets; print(secrets.token_urlsafe(48))"'
+            )
+        return secret
 
     def get_cabinet_access_token_expire_minutes(self) -> int:
         return max(1, self.CABINET_ACCESS_TOKEN_EXPIRE_MINUTES)

@@ -545,9 +545,16 @@ async def link_telegram(
 
     if request.init_data:
         # Mini App flow: validate initData
-        # Generous max_age: Telegram Desktop/iOS cache initData with stale auth_date
-        user_data = validate_telegram_init_data(request.init_data, max_age_seconds=86400 * 30)
+        user_data = validate_telegram_init_data(request.init_data, max_age_seconds=86400)
         if not user_data or not user_data.get('id'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Invalid or expired Telegram initData',
+            )
+        # SECURITY: replay protection — a captured initData payload must not be
+        # reusable to link a Telegram account to a different session.
+        initdata_link_hash = hashlib.sha256(request.init_data.encode()).hexdigest()
+        if await TokenReplayCache.is_token_replayed(initdata_link_hash, ttl=86400, namespace='telegram_initdata'):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Invalid or expired Telegram initData',

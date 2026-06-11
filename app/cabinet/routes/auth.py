@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -542,13 +542,18 @@ async def auth_telegram(
             detail='Too many requests',
             headers={'Retry-After': '60'},
         )
-    # Telegram Desktop/iOS cache initData with stale auth_date (known Telegram bug:
-    # https://github.com/telegramdesktop/tdesktop/issues/28303).
-    # Use generous max_age: HMAC signature proves authenticity,
-    # JWT tokens handle actual session expiration after login.
-    user_data = validate_telegram_init_data(request.init_data, max_age_seconds=86400 * 30)
+    user_data = validate_telegram_init_data(request.init_data, max_age_seconds=86400)
 
     if not user_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid or expired Telegram authentication data',
+        )
+
+    # SECURITY: replay protection for initData — the signed payload can travel
+    # in browser history / Referer if the miniapp URL contains it.
+    initdata_hash = hashlib.sha256(request.init_data.encode()).hexdigest()
+    if await TokenReplayCache.is_token_replayed(initdata_hash, ttl=86400, namespace='telegram_initdata'):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Invalid or expired Telegram authentication data',
@@ -1839,6 +1844,20 @@ async def auto_login(
             detail='Administrator accounts cannot use auto-login. Please sign in via Telegram.',
         )
 
+    # SECURITY: replay protection — auto_login tokens must be single-use.
+    # The success-page URL containing the token can end up in Referer headers,
+    # browser history, or server logs; without a replay guard a captured token
+    # would be a reusable credential for the full 72-hour window.
+    auto_login_token_hash = hashlib.sha256(request.token.encode()).hexdigest()
+    token_ttl = max(60, int(payload.get('exp', 0) - datetime.now(UTC).timestamp()))
+    if await TokenReplayCache.is_token_replayed(
+        auto_login_token_hash, ttl=token_ttl, namespace='auto_login'
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Token already used',
+        )
+
     response = await _create_auth_response(user, db)
     await _store_refresh_token(db, user.id, response.refresh_token)
     user.cabinet_last_login = datetime.now(UTC)
@@ -1950,6 +1969,17 @@ async def reset_password(
     user.password_hash = hash_password(request.password)
     user.password_reset_token = None
     user.password_reset_expires = None
+
+    # SECURITY: revoke all active refresh tokens so existing sessions are
+    # invalidated immediately after a password reset.
+    await db.execute(
+        update(CabinetRefreshToken)
+        .where(
+            CabinetRefreshToken.user_id == user.id,
+            CabinetRefreshToken.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(UTC))
+    )
 
     await db.commit()
 
