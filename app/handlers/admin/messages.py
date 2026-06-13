@@ -96,6 +96,19 @@ def get_updated_message_buttons_selector_keyboard(
     return get_updated_message_buttons_selector_keyboard_with_media(selected_buttons, False, language)
 
 
+def _resolve_broadcast_button_url(button_key: str) -> str | None:
+    """Возвращает URL для динамической broadcast-кнопки (channel/cabinet) из настроек.
+
+    Без обращения к БД — используется в синхронном построении клавиатуры рассылки.
+    Если URL не настроен, возвращает None (кнопку нужно пропустить).
+    """
+    if button_key == 'channel':
+        return settings.CHANNEL_LINK or None
+    if button_key == 'cabinet':
+        return settings.get_main_menu_miniapp_url() or None
+    return None
+
+
 def create_broadcast_keyboard(
     selected_buttons: list,
     language: str = 'ru',
@@ -111,18 +124,26 @@ def create_broadcast_keyboard(
             if button_key not in selected_buttons:
                 continue
             button_config = button_config_map[button_key]
-            if settings.is_cabinet_mode() and button_key in CABINET_MINIAPP_BUTTON_KEYS:
-                row_buttons.append(
-                    build_miniapp_or_callback_button(
-                        text=button_config['text'],
-                        callback_data=button_config['callback'],
-                        cabinet_path=BUTTON_KEY_TO_CABINET_PATH.get(button_key, ''),
+            callback_data = button_config.get('callback')
+            if callback_data:
+                if settings.is_cabinet_mode() and button_key in CABINET_MINIAPP_BUTTON_KEYS:
+                    row_buttons.append(
+                        build_miniapp_or_callback_button(
+                            text=button_config['text'],
+                            callback_data=callback_data,
+                            cabinet_path=BUTTON_KEY_TO_CABINET_PATH.get(button_key, ''),
+                        )
                     )
-                )
+                else:
+                    row_buttons.append(
+                        types.InlineKeyboardButton(text=button_config['text'], callback_data=callback_data)
+                    )
             else:
-                row_buttons.append(
-                    types.InlineKeyboardButton(text=button_config['text'], callback_data=button_config['callback'])
-                )
+                # URL-кнопки (channel/cabinet): URL берётся динамически из настроек.
+                # Если URL не настроен — кнопку просто пропускаем, а не падаем с KeyError.
+                url = _resolve_broadcast_button_url(button_key)
+                if url:
+                    row_buttons.append(types.InlineKeyboardButton(text=button_config['text'], url=url))
         if row_buttons:
             keyboard.append(row_buttons)
 

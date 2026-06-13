@@ -404,7 +404,7 @@ class BroadcastService:
     ) -> InlineKeyboardMarkup | None:
         if selected_buttons is None:
             selected_buttons = []
-        return await create_broadcast_keyboard(selected_buttons, custom_buttons=custom_buttons)
+        return create_broadcast_keyboard(selected_buttons, custom_buttons=custom_buttons)
 
     async def _deliver_message(
         self,
