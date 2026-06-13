@@ -4,6 +4,7 @@ from typing import Any
 
 import structlog
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from fastapi import APIRouter, Depends, HTTPException, Query, Security, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -710,8 +711,31 @@ async def send_message_to_user(
             message='Message sent successfully',
             telegram_id=user.telegram_id,
         )
+    except TelegramForbiddenError as e:
+        # Юзер заблокировал бота или удалил аккаунт — нормальное состояние,
+        # не ошибка приложения. Логируем warning (не error → не уходит в админ-чат)
+        # и помечаем юзера BLOCKED, чтобы повторные попытки не спамили API.
+        reason = str(e).lower()
+        kind = 'deactivated' if 'deactivated' in reason else 'blocked'
+        logger.warning(
+            'Cannot send message: user %s the bot',
+            kind, user_id=user.id, telegram_id=user.telegram_id,
+        )
+        try:
+            from app.services.blocked_users_service import BlockedUsersService
+            await BlockedUsersService(bot).mark_user_as_blocked(db, user.id)
+        except Exception as mark_err:
+            logger.warning('Failed to mark user blocked', user_id=user.id, error=str(mark_err))
+        raise HTTPException(
+            status.HTTP_410_GONE,
+            f'User {kind} the bot — cannot deliver message',
+        ) from None
+    except TelegramBadRequest as e:
+        # 400 от Telegram — обычно проблема с payload (длина, parse_mode и т.п.).
+        logger.warning('Telegram rejected message', user_id=user.id, error=str(e))
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Telegram rejected the message (bad payload)') from None
     except Exception as e:
         logger.error('Failed to send message via API', user_id=user.id, telegram_id=user.telegram_id, error=str(e))
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f'Failed to send message: {e}') from e
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, 'Failed to send message') from e
     finally:
         await bot.session.close()
