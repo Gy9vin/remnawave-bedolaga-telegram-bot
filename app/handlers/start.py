@@ -1485,7 +1485,17 @@ async def process_rules_accept(callback: types.CallbackQuery, state: FSMContext,
     texts = get_texts(language)
 
     try:
-        await callback.answer()
+        try:
+            await callback.answer()
+        except TelegramBadRequest as _ans_err:
+            _msg = str(_ans_err).lower()
+            if 'query is too old' in _msg or 'query id is invalid' in _msg:
+                logger.debug(
+                    'Callback query истёк (юзер нажал слишком поздно)',
+                    from_user_id=callback.from_user.id,
+                )
+                return
+            raise
 
         data = await state.get_data() or {}
         language = data.get('language', language)

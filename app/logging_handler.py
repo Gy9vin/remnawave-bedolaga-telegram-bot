@@ -53,6 +53,8 @@ IGNORED_LOGGER_PREFIXES: Final[tuple[str, ...]] = (
     # на каждом флуд-контроле получаем петлю усиления. Сервис уже использует
     # logger.warning для транзиентных ошибок, этот фильтр — belt-and-suspenders.
     'app.services.admin_notification_service',
+    # aiogram polling: getUpdates 502/503 — транзиент, aiogram сам ретраит.
+    'aiogram.dispatcher',
     # Payment modules — isolated to payments.log, must not leak to Telegram
     'app.payments',
     'app.services.payment',

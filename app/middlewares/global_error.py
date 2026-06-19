@@ -6,7 +6,7 @@ from typing import Any, Final
 import structlog
 from aiogram import BaseMiddleware, Bot
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, TelegramObject
 from sqlalchemy.exc import InterfaceError, OperationalError
 
@@ -327,6 +327,12 @@ async def send_error_to_admin_chat(
         logger.info('Уведомление об ошибке отправлено в чат', chat_id=chat_id)
         return True
 
+    except (TelegramServerError, TelegramRetryAfter, TelegramNetworkError) as e:
+        # Транзиентная сетевая ошибка (502/503/флуд-контроль) — не логируем как error,
+        # чтобы не создавать рекурсивную лавину уведомлений.
+        logger.debug('Не удалось доставить error-уведомление админу (транзиент)', e=str(e))
+        return False
     except Exception as e:
-        logger.error('Ошибка отправки уведомления об ошибке', e=e, _admin_notified=True)
+        # Нетранзиентная ошибка — warning без _admin_notified, чтобы не зациклить.
+        logger.warning('Ошибка отправки уведомления об ошибке в админ-чат', e=str(e))
         return False
