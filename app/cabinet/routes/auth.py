@@ -1125,6 +1125,9 @@ async def register_email(
             )
         merge_code = generate_email_change_code()
         await store_email_merge_otp(user.id, existing_email_user.id, email_lower, merge_code)
+        # Reset the per-user verify counter so a newly issued OTP is not
+        # immediately blocked by exhausted attempts from a previous code.
+        await RateLimitCache.reset_ip_rate_limit(f'user:{user.id}', 'email_merge_verify')
         lang = user.language or 'ru'
         expire_minutes = settings.get_cabinet_email_change_code_expire_minutes()
         override = await get_rendered_override(
@@ -1140,11 +1143,18 @@ async def register_email(
             required_vars=['code'],
         )
         custom_subject, custom_body = override or (None, None)
+        # Use the existing account's name so the email greets the inbox owner,
+        # not the Telegram user who is initiating the link.
+        recipient_name = (
+            existing_email_user.first_name
+            or existing_email_user.username
+            or 'Пользователь'
+        )
         await asyncio.to_thread(
             email_service.send_email_change_code,
             to_email=email_lower,
             code=merge_code,
-            username=user.first_name,
+            username=recipient_name,
             language=lang,
             custom_subject=custom_subject,
             custom_body_html=custom_body,
@@ -2356,20 +2366,25 @@ async def link_telegram(
     # Check if this telegram_id is already linked to another user
     existing = await get_user_by_telegram_id(db, telegram_id)
     if existing and existing.id != user.id:
-        # Auto-transfer if the other user is empty (no subscription, no balance)
-        is_empty = not existing.remnawave_uuid and (existing.balance_kopeks or 0) == 0
-        if is_empty:
-            logger.info(f'Auto-transferring telegram_id from empty user {existing.id} to user {user.id}')
-            existing.telegram_id = None
-            existing.updated_at = datetime.now(UTC)
-            # Flush to DB BEFORE setting new value — otherwise SQLAlchemy batches
-            # both UPDATEs into one executemany and the unique constraint fails
-            await db.flush()
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail='This Telegram account is already linked to another user',
-            )
+        # Never silently transfer Telegram ID from another user — always require
+        # explicit merge confirmation to protect data of the existing account.
+        logger.info(
+            'Telegram link conflict on legacy endpoint: offering merge',
+            current_user_id=user.id,
+            existing_user_id=existing.id,
+            telegram_id=telegram_id,
+        )
+        merge_token = await create_merge_token(
+            primary_user_id=user.id,
+            secondary_user_id=existing.id,
+            provider='telegram',
+            provider_id=str(telegram_id),
+        )
+        return LinkResponse(
+            success=False,
+            merge_required=True,
+            merge_token=merge_token,
+        )
 
     # Link Telegram
     user.telegram_id = telegram_id
@@ -2421,20 +2436,25 @@ async def link_telegram_widget(
     # Check if this telegram_id is already linked to another user
     existing = await get_user_by_telegram_id(db, telegram_id)
     if existing and existing.id != user.id:
-        # Auto-transfer if the other user is empty (no subscription, no balance)
-        is_empty = not existing.remnawave_uuid and (existing.balance_kopeks or 0) == 0
-        if is_empty:
-            logger.info(f'Auto-transferring telegram_id from empty user {existing.id} to user {user.id}')
-            existing.telegram_id = None
-            existing.updated_at = datetime.now(UTC)
-            # Flush to DB BEFORE setting new value — otherwise SQLAlchemy batches
-            # both UPDATEs into one executemany and the unique constraint fails
-            await db.flush()
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail='This Telegram account is already linked to another user',
-            )
+        # Never silently transfer Telegram ID from another user — always require
+        # explicit merge confirmation to protect data of the existing account.
+        logger.info(
+            'Telegram widget link conflict on legacy endpoint: offering merge',
+            current_user_id=user.id,
+            existing_user_id=existing.id,
+            telegram_id=telegram_id,
+        )
+        merge_token = await create_merge_token(
+            primary_user_id=user.id,
+            secondary_user_id=existing.id,
+            provider='telegram',
+            provider_id=str(telegram_id),
+        )
+        return LinkResponse(
+            success=False,
+            merge_required=True,
+            merge_token=merge_token,
+        )
 
     # Link Telegram
     user.telegram_id = telegram_id

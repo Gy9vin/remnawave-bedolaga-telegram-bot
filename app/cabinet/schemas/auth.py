@@ -230,8 +230,10 @@ class LinkResponse(BaseModel):
     """Response for link/unlink operations."""
 
     success: bool
-    message: str
-    provider: str
+    message: str | None = None
+    provider: str | None = None
+    merge_required: bool = False
+    merge_token: str | None = None
 
 
 class DeepLinkRequestBody(BaseModel):

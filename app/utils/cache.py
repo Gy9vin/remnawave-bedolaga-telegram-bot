@@ -417,6 +417,16 @@ return c
         return await cache.delete(key)
 
     @staticmethod
+    async def reset_ip_rate_limit(ip: str, action: str) -> bool:
+        """Reset IP-based rate limit counter for a given key.
+
+        Used to clear per-user or per-IP counters when a new flow is
+        legitimately started (e.g. new OTP issued replaces old session).
+        """
+        key = cache_key('rate_limit', 'ip', ip, action)
+        return await cache.delete(key)
+
+    @staticmethod
     async def is_ip_rate_limited(ip: str, action: str, limit: int, window: int, *, fail_closed: bool = False) -> bool:
         """IP-based rate limiting for unauthenticated endpoints."""
         key = cache_key('rate_limit', 'ip', ip, action)
