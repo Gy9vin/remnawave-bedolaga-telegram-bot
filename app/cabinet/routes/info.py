@@ -13,6 +13,7 @@ from app.database.models import SystemSetting, User
 from app.services.faq_service import FaqService
 from app.services.privacy_policy_service import PrivacyPolicyService
 from app.services.public_offer_service import PublicOfferService
+from app.utils.display_mode import is_visible_in_web
 
 from ..dependencies import get_cabinet_db, get_current_cabinet_user, require_permission
 
@@ -118,6 +119,13 @@ class SupportHelperConfigUpdate(BaseModel):
     dev_mode: bool | None = None
 
 
+class InfoVisibilityResponse(BaseModel):
+    faq: bool
+    rules: bool
+    privacy: bool
+    offer: bool
+
+
 # ============ Routes ============
 
 
@@ -127,6 +135,8 @@ async def get_faq_pages(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get list of FAQ pages."""
+    if not is_visible_in_web(settings.FAQ_DISPLAY_MODE):
+        return []
     requested_lang = FaqService.normalize_language(language)
     pages = await FaqService.get_pages(
         db,
@@ -153,6 +163,11 @@ async def get_faq_page(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get a specific FAQ page by ID."""
+    if not is_visible_in_web(settings.FAQ_DISPLAY_MODE):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='FAQ is not available',
+        )
     requested_lang = FaqService.normalize_language(language)
     page = await FaqService.get_page(
         db,
@@ -182,6 +197,11 @@ async def get_rules(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get service rules - uses same function as bot."""
+    if not is_visible_in_web(settings.SERVICE_RULES_DISPLAY_MODE):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Rules are not available',
+        )
     requested_lang = language.split('-', maxsplit=1)[0].lower()
 
     # Use the same function as bot to ensure consistent content
@@ -202,6 +222,11 @@ async def get_privacy_policy(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get privacy policy."""
+    if not is_visible_in_web(settings.PRIVACY_POLICY_DISPLAY_MODE):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Privacy policy is not available',
+        )
     requested_lang = PrivacyPolicyService.normalize_language(language)
     policy = await PrivacyPolicyService.get_policy(db, requested_lang, fallback=True)
 
@@ -225,6 +250,11 @@ async def get_public_offer(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get public offer."""
+    if not is_visible_in_web(settings.PUBLIC_OFFER_DISPLAY_MODE):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Public offer is not available',
+        )
     requested_lang = PublicOfferService.normalize_language(language)
     offer = await PublicOfferService.get_offer(db, requested_lang, fallback=True)
 
@@ -387,4 +417,14 @@ async def update_support_helper_config(
     return SupportHelperConfigResponse(
         enabled=enabled_value is not None and enabled_value.lower() == 'true',
         dev_mode=dev_mode_value is None or dev_mode_value.lower() != 'false',
+    )
+
+
+@router.get('/visibility', response_model=InfoVisibilityResponse)
+async def get_info_visibility():
+    return InfoVisibilityResponse(
+        faq=is_visible_in_web(settings.FAQ_DISPLAY_MODE),
+        rules=is_visible_in_web(settings.SERVICE_RULES_DISPLAY_MODE),
+        privacy=is_visible_in_web(settings.PRIVACY_POLICY_DISPLAY_MODE),
+        offer=is_visible_in_web(settings.PUBLIC_OFFER_DISPLAY_MODE),
     )

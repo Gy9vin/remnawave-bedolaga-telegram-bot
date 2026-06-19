@@ -19,11 +19,13 @@ from .admin_expiry_fallback import router as admin_expiry_fallback_router
 from .admin_happ_management import router as admin_happ_management_router
 from .admin_info_pages import router as admin_info_pages_router
 from .admin_landings import router as admin_landings_router
+from .admin_legal_pages import router as admin_legal_pages_router
 from .admin_menu_layout import router as admin_menu_layout_router
 from .admin_news import router as admin_news_router
 from .admin_news_categories import router as admin_news_categories_router
 from .admin_news_media import router as admin_news_media_router
 from .admin_news_tags import router as admin_news_tags_router
+from .admin_overpay_certificate import router as admin_overpay_certificate_router
 from .admin_partners import router as admin_partners_router
 from .admin_payment_methods import router as admin_payment_methods_router
 from .admin_payments import router as admin_payments_router
@@ -166,6 +168,8 @@ router.include_router(admin_news_tags_router)
 router.include_router(admin_news_media_router)
 router.include_router(admin_news_router)
 router.include_router(admin_info_pages_router)
+router.include_router(admin_legal_pages_router)
+router.include_router(admin_overpay_certificate_router)
 
 # WebSocket route
 router.include_router(websocket_router)

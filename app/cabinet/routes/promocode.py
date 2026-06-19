@@ -113,6 +113,8 @@ async def activate_promocode(
         'not_first_purchase': 'This promo code is only available for first purchase',
         'registered_too_late': 'This promo code is not available for your account',
         'daily_limit': 'Too many promo code activations today',
+        'trial_subscription_exists': 'You already have a subscription, so this trial code cannot be applied',
+        'trial_provisioning_failed': 'Could not provision the trial right now, please try again later',
         'user_not_found': 'User not found',
         'server_error': 'Server error occurred',
     }
@@ -120,9 +122,13 @@ async def activate_promocode(
     error_code = result.get('error', 'server_error')
     error_message = error_messages.get(error_code, 'Failed to activate promo code')
 
+    # Structured error so the frontend maps a stable machine code to a localized
+    # message instead of substring-matching English prose (the old contract
+    # silently degraded every unmapped code to «Ошибка сервера»). Mirrors the
+    # maintenance / blacklisted / channel-subscription guards in dependencies.py.
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail=error_message,
+        detail={'code': error_code, 'message': error_message},
     )
 
 
@@ -160,5 +166,5 @@ async def deactivate_discount_promocode(
 
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail=error_message,
+        detail={'code': error_code, 'message': error_message},
     )
