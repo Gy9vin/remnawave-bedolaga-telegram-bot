@@ -849,6 +849,53 @@ async def _find_or_create_user(
     return user, False
 
 
+async def _resolve_existing_telegram_user(db: AsyncSession, username: str) -> 'User | None':
+    """Read-only lookup: return an already-registered User for a Telegram username, or None.
+
+    Does NOT create users, does NOT commit. Safe to call from notification paths.
+    Resolution order mirrors _find_or_create_user:
+      1. bot.get_chat('@username')  → telegram_id  (timeout 5 s, best-effort)
+      2. SELECT by telegram_id
+      3. SELECT by username (case-insensitive)
+    Returns None if the resolved user has no telegram_id (cannot DM them).
+    """
+    username = username.lstrip('@')
+    if not _TELEGRAM_USERNAME_RE.match(username):
+        return None
+    normalized = username.lower()
+
+    resolved_telegram_id: int | None = None
+    try:
+        from app.bot_factory import create_bot
+
+        async with create_bot() as bot:
+            chat = await asyncio.wait_for(
+                bot.get_chat(chat_id=f'@{username}'),
+                timeout=5.0,
+            )
+            resolved_telegram_id = chat.id
+    except Exception as exc:
+        logger.debug(
+            'Could not resolve telegram_id for gift recipient (read-only lookup)',
+            username=username,
+            error=str(exc),
+        )
+
+    user: User | None = None
+    if resolved_telegram_id:
+        result = await db.execute(select(User).where(User.telegram_id == resolved_telegram_id))
+        user = result.scalars().first()
+
+    if not user:
+        result = await db.execute(select(User).where(func.lower(User.username) == normalized))
+        user = result.scalars().first()
+
+    # We can only DM the user if we have their telegram_id
+    if user and not user.telegram_id:
+        return None
+    return user
+
+
 def _get_recipient_contact(purchase: GuestPurchase) -> tuple[str, str]:
     """Return (contact_type, contact_value) for the purchase recipient."""
     if purchase.is_gift and purchase.gift_recipient_type and purchase.gift_recipient_value:
