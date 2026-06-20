@@ -849,7 +849,7 @@ async def _find_or_create_user(
     return user, False
 
 
-async def _resolve_existing_telegram_user(db: AsyncSession, username: str) -> 'User | None':
+async def resolve_existing_telegram_user(db: AsyncSession, username: str) -> 'User | None':
     """Read-only lookup: return an already-registered User for a Telegram username, or None.
 
     Does NOT create users, does NOT commit. Safe to call from notification paths.
@@ -1167,7 +1167,7 @@ async def notify_gift_claim_available(
             from app.database.database import AsyncSessionLocal
 
             async with AsyncSessionLocal() as db:
-                recipient = await _resolve_existing_telegram_user(db, purchase.gift_recipient_value)
+                recipient = await resolve_existing_telegram_user(db, purchase.gift_recipient_value)
 
             if recipient and recipient.telegram_id:
                 # Build "from" line — prefer buyer's display name or contact
