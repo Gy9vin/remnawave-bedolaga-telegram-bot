@@ -68,6 +68,7 @@ from app.handlers.admin import (
 )
 from app.handlers.channel_member import register_handlers as register_channel_member_handlers
 from app.handlers.gift_activation import register_handlers as register_gift_activation_handlers
+from app.handlers.gift_claim_telegram import register_handlers as register_gift_claim_telegram_handlers
 from app.handlers.stars_payments import register_stars_handlers
 from app.middlewares.auth import AuthMiddleware
 from app.middlewares.blacklist import BlacklistMiddleware
@@ -242,6 +243,7 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     admin_overpay_certificate.register_handlers(dp)
     register_channel_member_handlers(dp)
     register_gift_activation_handlers(dp)
+    register_gift_claim_telegram_handlers(dp)
     common.register_handlers(dp)
     register_stars_handlers(dp)
     user_contests.register_handlers(dp)
