@@ -896,6 +896,39 @@ async def resolve_existing_telegram_user(db: AsyncSession, username: str) -> 'Us
     return user
 
 
+async def resolve_live_telegram_id(username: str) -> 'int | None':
+    """Authorization-grade resolution: live Bot API ``get_chat`` ONLY.
+
+    Returns the live ``chat.id`` for ``@username``, or ``None`` on ANY failure
+    (timeout, unresolvable username, network error, invalid format).
+
+    Unlike :func:`resolve_existing_telegram_user`, this NEVER falls back to a
+    stored ``username → telegram_id`` mapping. Telegram usernames are mutable
+    and recyclable, so a stale DB row must never authorize a gift claim. Use
+    this for authorization decisions (Accept/Decline) and fail closed: if the
+    live id cannot be obtained, the caller is not authorized.
+    """
+    username = username.lstrip('@')
+    if not _TELEGRAM_USERNAME_RE.match(username):
+        return None
+    try:
+        from app.bot_factory import create_bot
+
+        async with create_bot() as bot:
+            chat = await asyncio.wait_for(
+                bot.get_chat(chat_id=f'@{username}'),
+                timeout=5.0,
+            )
+            return chat.id
+    except Exception as exc:
+        logger.debug(
+            'Live telegram resolution failed (authorization path) — failing closed',
+            username=username,
+            error=str(exc),
+        )
+        return None
+
+
 def _get_recipient_contact(purchase: GuestPurchase) -> tuple[str, str]:
     """Return (contact_type, contact_value) for the purchase recipient."""
     if purchase.is_gift and purchase.gift_recipient_type and purchase.gift_recipient_value:

@@ -44,7 +44,7 @@ async def handle_gift_accept(callback: types.CallbackQuery) -> None:
     from app.services.guest_purchase_service import (
         GuestPurchaseError,
         fulfill_purchase,
-        resolve_existing_telegram_user,
+        resolve_live_telegram_id,
     )
 
     # ── Phase 1: load purchase scalars (fast DB-only, no Bot API) ───────────
@@ -82,13 +82,14 @@ async def handle_gift_accept(callback: types.CallbackQuery) -> None:
         buyer_telegram_id = purchase.buyer.telegram_id if purchase.buyer else None
         tariff_name = html_mod.escape(purchase.tariff.name) if purchase.tariff and purchase.tariff.name else ''
 
-    # ── Phase 2: resolve recipient — Bot API call here, NO DB connection held ──
-    async with AsyncSessionLocal() as resolve_db:
-        resolved = await resolve_existing_telegram_user(resolve_db, gift_recipient_value)
-        resolved_tg_id = resolved.telegram_id if resolved else None
-
-    # Identity check: caller must be the intended recipient
-    if resolved_tg_id != callback.from_user.id:
+    # ── Phase 2: AUTHORIZATION — strict live resolution, fail closed ─────────
+    # Resolve @username via a fresh Bot API get_chat ONLY. We never trust a
+    # stored username→telegram_id mapping here: Telegram usernames are mutable
+    # and recyclable, so a stale DB row could otherwise authorize an attacker
+    # who acquired a released username. If live resolution fails or does not
+    # match the caller, deny.
+    live_recipient_id = await resolve_live_telegram_id(gift_recipient_value)
+    if live_recipient_id is None or live_recipient_id != callback.from_user.id:
         await callback.answer(_NOT_FOR_YOU, show_alert=True)
         return
 
@@ -166,7 +167,7 @@ async def handle_gift_decline(callback: types.CallbackQuery) -> None:
         return
 
     # Lazy imports to avoid circular imports (same pattern as rest of codebase)
-    from app.services.guest_purchase_service import resolve_existing_telegram_user
+    from app.services.guest_purchase_service import resolve_live_telegram_id
 
     # Verify the purchase exists and check recipient identity
     async with AsyncSessionLocal() as db:
@@ -181,13 +182,11 @@ async def handle_gift_decline(callback: types.CallbackQuery) -> None:
 
         gift_recipient_value = purchase.gift_recipient_value
 
-    # Identity check: caller must be the intended recipient
+    # Identity check: caller must be the intended recipient (strict live resolve,
+    # fail closed — see handle_gift_accept for the rationale).
     if gift_recipient_value:
-        async with AsyncSessionLocal() as resolve_db:
-            resolved = await resolve_existing_telegram_user(resolve_db, gift_recipient_value)
-            resolved_tg_id = resolved.telegram_id if resolved else None
-
-        if resolved_tg_id != callback.from_user.id:
+        live_recipient_id = await resolve_live_telegram_id(gift_recipient_value)
+        if live_recipient_id is None or live_recipient_id != callback.from_user.id:
             await callback.answer(_NOT_FOR_YOU, show_alert=True)
             return
 
