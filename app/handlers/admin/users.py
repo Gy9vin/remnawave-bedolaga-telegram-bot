@@ -7239,7 +7239,7 @@ def register_handlers(dp: Dispatcher):
 
     dp.callback_query.register(activate_user_subscription, F.data.startswith('admin_sub_activate_'))
 
-    dp.callback_query.register(admin_delete_subscription, F.data.startswith('admin_sub_delete_'))
+    dp.callback_query.register(delete_user_subscription, F.data.startswith('admin_sub_delete_'))
 
     dp.callback_query.register(grant_trial_subscription, F.data.startswith('admin_sub_grant_trial_'))
 
