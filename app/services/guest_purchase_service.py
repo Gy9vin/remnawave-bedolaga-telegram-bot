@@ -1155,6 +1155,80 @@ async def notify_gift_claim_available(
     from app.cabinet.services.email_templates import EmailNotificationTemplates
     from app.services.notification_delivery_service import NotificationType
 
+    # Recipient via Telegram: send a DM invite if the user is already registered.
+    # Anti-spoof: we require an existing bot user — spoofed usernames simply get nothing.
+    if purchase.gift_recipient_type == 'telegram' and purchase.gift_recipient_value:
+        try:
+            import html as html_mod
+
+            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+            from app.bot_factory import create_bot
+            from app.database.database import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as db:
+                recipient = await _resolve_existing_telegram_user(db, purchase.gift_recipient_value)
+
+            if recipient and recipient.telegram_id:
+                # Build "from" line — prefer buyer's display name or contact
+                gift_from = ''
+                if purchase.buyer and purchase.buyer.username:
+                    safe_from = html_mod.escape(f'@{purchase.buyer.username}')
+                    gift_from = f'\nОт: {safe_from}'
+                elif purchase.contact_value:
+                    safe_from = html_mod.escape(purchase.contact_value)
+                    gift_from = f'\nОт: {safe_from}'
+
+                gift_msg = ''
+                if purchase.gift_message:
+                    safe_msg = html_mod.escape(purchase.gift_message)
+                    gift_msg = f'\n\n"{safe_msg}"'
+
+                _tariff_name = tariff_name or ''
+                safe_tariff = html_mod.escape(_tariff_name) if _tariff_name else ''
+                _period = period_days if period_days is not None else purchase.period_days
+                period_text = f'{_period} дн.' if _period else ''
+                tariff_text = f'{safe_tariff} — {period_text}' if safe_tariff else period_text
+
+                text = (
+                    f'🎁 <b>Вам подарили VPN подписку!</b>\n{tariff_text}'
+                    f'{gift_from}{gift_msg}'
+                    f'\n\nНажмите «✅ Принять», чтобы активировать подарок,'
+                    f' или «❌ Отклонить», если он вам не нужен.'
+                )
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text='✅ Принять',
+                                callback_data=f'gift_accept:{purchase.id}',
+                            ),
+                            InlineKeyboardButton(
+                                text='❌ Отклонить',
+                                callback_data=f'gift_decline:{purchase.id}',
+                            ),
+                        ]
+                    ]
+                )
+                async with create_bot() as bot:
+                    await bot.send_message(
+                        chat_id=recipient.telegram_id,
+                        text=text,
+                        reply_markup=keyboard,
+                        parse_mode='HTML',
+                    )
+                logger.info(
+                    'Gift DM invite sent to Telegram recipient',
+                    purchase_id=purchase.id,
+                    recipient_telegram_id=recipient.telegram_id,
+                )
+        except Exception:
+            logger.warning(
+                'Failed to send gift DM invite to Telegram recipient',
+                purchase_id=purchase.id,
+                exc_info=True,
+            )
+
     # Recipient: reuse the gift-received template, but its CTA now points at the
     # claim page and it carries no credentials/subscription (none exist yet).
     if purchase.gift_recipient_type == 'email' and purchase.gift_recipient_value:
