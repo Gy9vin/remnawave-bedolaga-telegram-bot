@@ -542,18 +542,15 @@ async def auth_telegram(
             detail='Too many requests',
             headers={'Retry-After': '60'},
         )
-    user_data = validate_telegram_init_data(request.init_data, max_age_seconds=86400)
+    # initData keeps a 30-day window and is NOT one-time-use on purpose: Telegram
+    # (notably iOS/Desktop, tdesktop#28303) caches the WebApp initData and re-serves
+    # the SAME signed blob (identical auth_date/hash) on every Mini App open. A 24h
+    # TTL or a replay guard would 401 every re-login on those clients. Forgery is
+    # already prevented by the HMAC signature (bot token), and initData rides in the
+    # request body — not the URL — so it can't leak via browser history / Referer.
+    user_data = validate_telegram_init_data(request.init_data, max_age_seconds=86400 * 30)
 
     if not user_data:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Invalid or expired Telegram authentication data',
-        )
-
-    # SECURITY: replay protection for initData — the signed payload can travel
-    # in browser history / Referer if the miniapp URL contains it.
-    initdata_hash = hashlib.sha256(request.init_data.encode()).hexdigest()
-    if await TokenReplayCache.is_token_replayed(initdata_hash, ttl=86400, namespace='telegram_initdata'):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Invalid or expired Telegram authentication data',
