@@ -402,6 +402,10 @@ class Settings(BaseSettings):
     EXPIRED_CLEANUP_REQUIRE_ZERO_BALANCE: bool = True
     EXPIRED_CLEANUP_INTERVAL_HOURS: int = 24
 
+    # Синхронизация клиентских приложений из HWID-устройств панели
+    CLIENT_SYNC_ENABLED: bool = True
+    CLIENT_SYNC_INTERVAL_HOURS: int = 24
+
     # Автоматическая принудительная перезагрузка нод Remnawave (для самовосстановления)
     NODES_AUTO_RESTART_ENABLED: bool = False
     # Режим 'interval' — рестарт каждые N часов от последнего рестарта.
