@@ -964,6 +964,34 @@ class PricingEngine:
             user=user,
         )
 
+    async def select_affordable_renewal(
+        self,
+        db: 'AsyncSession',
+        subscription: 'Subscription',
+        user: 'User',
+    ) -> tuple[int, int] | None:
+        """Return (period_days, price_kopeks) for the longest period the user can afford.
+
+        Mode-aware: uses tariff.get_available_periods() for tariff subscriptions,
+        settings.get_available_renewal_periods() for classic ones.
+        Iterates periods descending and returns the first that fits the balance.
+        Returns None if no period is affordable.
+        """
+        if subscription.tariff_id is not None and subscription.tariff is not None:
+            periods = sorted(subscription.tariff.get_available_periods(), reverse=True)
+        else:
+            periods = sorted(settings.get_available_renewal_periods(), reverse=True)
+
+        balance = user.balance_kopeks or 0
+        for period in periods:
+            if not isinstance(period, int) or period <= 0:
+                continue
+            pricing = await self.calculate_renewal_price(db, subscription, period, user=user)
+            price = pricing.final_total
+            if price <= balance:
+                return period, price
+        return None
+
     @staticmethod
     def classic_pricing_to_purchase_details(pricing: RenewalPricing) -> dict[str, Any]:
         """Convert RenewalPricing to the legacy details dict format.
