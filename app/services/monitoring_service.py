@@ -1863,6 +1863,11 @@ class MonitoringService:
                 .where(
                     and_(
                         Subscription.status == SubscriptionStatus.ACTIVE.value,
+                        # CONSENT GATE: только подписки с явно включённым автоплатежом.
+                        # Без этого B списывал бы баланс у любого, кто близок к окончанию,
+                        # включая тех, кто автопродление не включал, а баланс накопился
+                        # (напр. от рефералов) — нельзя трогать чужие деньги без согласия.
+                        Subscription.autopay_enabled == True,
                         Subscription.is_trial == False,
                         Subscription.end_date > current_time,
                         Subscription.end_date <= threshold_time,
