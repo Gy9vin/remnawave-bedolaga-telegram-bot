@@ -1713,6 +1713,23 @@ async def get_target_users_count(db: AsyncSession, target: str) -> int:
         result = await db.execute(query)
         return result.scalar() or 0
 
+    # Client-app filter: client:<app_name>
+    if target.startswith('client:'):
+        from app.database.models import UserClient
+        from sqlalchemy import distinct as sa_distinct
+
+        app_name = target.split(':', 1)[1]
+        query = (
+            select(sql_func.count(sa_distinct(User.id)))
+            .join(UserClient, UserClient.user_id == User.id)
+            .where(
+                base_filter,
+                UserClient.app_name == app_name,
+            )
+        )
+        result = await db.execute(query)
+        return result.scalar() or 0
+
     # Custom filters — быстрый COUNT вместо загрузки всех пользователей
     if target.startswith('custom_'):
         now = datetime.now(UTC)
@@ -1926,6 +1943,23 @@ async def get_target_users(db: AsyncSession, target: str) -> list:
             for user in users
             if any(s.is_active and s.tariff_id == tariff_id for s in (getattr(user, 'subscriptions', None) or []))
         ]
+
+    # Client-app filter: client:<app_name>
+    if target.startswith('client:'):
+        from app.database.models import UserClient
+
+        app_name = target.split(':', 1)[1]
+        stmt = (
+            select(User)
+            .join(UserClient, UserClient.user_id == User.id)
+            .where(
+                User.status == UserStatus.ACTIVE.value,
+                UserClient.app_name == app_name,
+            )
+            .distinct()
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
 
     return []
 

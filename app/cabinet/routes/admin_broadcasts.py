@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import BroadcastHistory, Subscription, SubscriptionStatus, Tariff, User
+from app.database.models import BroadcastHistory, Subscription, SubscriptionStatus, Tariff, User, UserClient
 from app.handlers.admin.messages import get_target_users_count
 from app.keyboards.admin import BROADCAST_BUTTONS, DEFAULT_BROADCAST_BUTTONS
 from app.services.broadcast_service import (
@@ -31,6 +31,7 @@ from ..schemas.broadcasts import (
     BroadcastPreviewResponse,
     BroadcastResponse,
     BroadcastTariffsResponse,
+    ClientFilter,
     CombinedBroadcastCreateRequest,
     EmailFilterItem,
     EmailFiltersResponse,
@@ -226,6 +227,18 @@ async def _get_tariff_user_counts(db: AsyncSession) -> dict:
     return {row.tariff_id: row.count for row in result.all()}
 
 
+async def _get_client_filter_counts(db: AsyncSession) -> list[tuple[str, int]]:
+    """Get count of active users per client app (matching the same base predicate as other filters)."""
+    result = await db.execute(
+        select(UserClient.app_name, func.count(distinct(UserClient.user_id)).label('count'))
+        .join(User, User.id == UserClient.user_id)
+        .where(User.status == 'active')
+        .group_by(UserClient.app_name)
+        .order_by(UserClient.app_name)
+    )
+    return [(row.app_name, row.count) for row in result.all()]
+
+
 def _validate_target(target: str, tariff_ids: set) -> bool:
     """Validate target value."""
     if target in FILTER_LABELS:
@@ -238,6 +251,9 @@ def _validate_target(target: str, tariff_ids: set) -> bool:
             return tariff_id in tariff_ids
         except (ValueError, IndexError):
             return False
+    if target.startswith('client:'):
+        app_name = target.split(':', 1)[1]
+        return bool(app_name)
     return False
 
 
@@ -305,10 +321,25 @@ async def get_filters(
             )
         )
 
+    # Client-app filters
+    from app.services.client_sync_service import get_last_client_sync
+
+    last_sync = get_last_client_sync()
+    client_counts = await _get_client_filter_counts(db)
+    client_filters = [
+        ClientFilter(
+            app_name=app_name,
+            recipient_count=count,
+            last_sync_at=last_sync,
+        )
+        for app_name, count in client_counts
+    ]
+
     return BroadcastFiltersResponse(
         filters=filters,
         tariff_filters=tariff_filters,
         custom_filters=custom_filters,
+        client_filters=client_filters,
     )
 
 

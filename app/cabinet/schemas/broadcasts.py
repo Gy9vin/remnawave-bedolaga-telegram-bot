@@ -32,12 +32,21 @@ class TariffFilter(BaseModel):
     count: int
 
 
+class ClientFilter(BaseModel):
+    """Client-app-based filter (by VPN client application name)."""
+
+    app_name: str  # e.g. "Happ", "v2rayNG", "Streisand"
+    recipient_count: int
+    last_sync_at: datetime | None = None  # from get_last_client_sync(), same value per element
+
+
 class BroadcastFiltersResponse(BaseModel):
     """Response with all available filters."""
 
     filters: list[BroadcastFilter]  # basic filters
     tariff_filters: list[TariffFilter]  # tariff filters
     custom_filters: list[BroadcastFilter]  # custom filters
+    client_filters: list[ClientFilter] = []  # per-client-app filters
 
 
 # ============ Tariffs ============
