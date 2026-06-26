@@ -66,6 +66,11 @@ class UserSubscriptionInfo(BaseModel):
     tariff_id: int | None = None
     tariff_name: str | None = None
     autopay_enabled: bool = False
+    autopay_days_before: int | None = None
+    last_autopay_attempt_at: datetime | None = None
+    last_autopay_status: str | None = None
+    last_autopay_renewed_at: datetime | None = None
+    last_autopay_period_days: int | None = None
     is_active: bool = False
     days_remaining: int = 0
     purchased_traffic_gb: int = 0

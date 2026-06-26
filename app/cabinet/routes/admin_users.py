@@ -235,6 +235,11 @@ def _build_subscription_info(subscription: Subscription, tariff_name: str | None
         tariff_id=subscription.tariff_id,
         tariff_name=tariff_name,
         autopay_enabled=subscription.autopay_enabled,
+        autopay_days_before=getattr(subscription, 'autopay_days_before', None),
+        last_autopay_attempt_at=getattr(subscription, 'last_autopay_attempt_at', None),
+        last_autopay_status=getattr(subscription, 'last_autopay_status', None),
+        last_autopay_renewed_at=getattr(subscription, 'last_autopay_renewed_at', None),
+        last_autopay_period_days=getattr(subscription, 'last_autopay_period_days', None),
         is_active=is_active,
         days_remaining=days_remaining,
     )
