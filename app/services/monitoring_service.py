@@ -1484,8 +1484,8 @@ class MonitoringService:
                         logger.debug('Не удалось уведомить о пропуске autopay для legacy подписки', error=notify_err)
                     continue
 
-                days_before_expiry = (sub.end_date - current_time).days
-                if days_before_expiry <= min(sub.autopay_days_before or 3, 3):
+                hours_left = (sub.end_date - current_time).total_seconds() / 3600
+                if 0 < hours_left <= (min(sub.autopay_days_before or 3, 3) * 24):
                     autopay_subscriptions.append(sub)
 
             processed_count = 0
@@ -1531,24 +1531,18 @@ class MonitoringService:
                     if not user:
                         continue
 
+                    # 3h-троттл: пропускаем подписку если последняя попытка была < 3ч назад
+                    if subscription.last_autopay_attempt_at is not None:
+                        elapsed = current_time - subscription.last_autopay_attempt_at
+                        if elapsed < timedelta(hours=3):
+                            logger.debug(
+                                'Пропуск autopay: последняя попытка была менее 3ч назад',
+                                subscription_id=subscription.id,
+                                elapsed_hours=elapsed.total_seconds() / 3600,
+                            )
+                            continue
+
                     user_identifier = user.telegram_id or f'email:{user.id}'
-
-                    # Период продления выбирается с такой иерархией:
-                    #   1. subscription.autopay_period_days — выбор пользователя/админа
-                    #   2. settings.DEFAULT_AUTOPAY_PERIOD_DAYS — глобальный дефолт из .env
-                    #   3. tariff.get_shortest_period() — самый дешёвый период тарифа (legacy)
-                    #   4. 30 — финальный fallback, если тарифа нет
-                    # resolve_autopay_period_candidate работает fail-closed: пропускает только
-                    # значения из tariff.get_available_periods() или (для классических подписок
-                    # без тарифа) settings.get_available_renewal_periods().
-                    tariff = getattr(subscription, 'tariff', None)
-
-                    autopay_period = (
-                        resolve_autopay_period_candidate(getattr(subscription, 'autopay_period_days', None), tariff)
-                        or resolve_autopay_period_candidate(getattr(settings, 'DEFAULT_AUTOPAY_PERIOD_DAYS', 0), tariff)
-                        or (tariff.get_shortest_period() if tariff else None)
-                        or 30
-                    )
 
                     try:
                         from app.database.crud.user import lock_user_for_pricing
@@ -1556,41 +1550,52 @@ class MonitoringService:
 
                         user = await lock_user_for_pricing(db, user.id)
 
-                        pricing = await pricing_engine.calculate_renewal_price(
-                            db,
-                            subscription,
-                            autopay_period,
-                            user=user,
-                        )
-                        renewal_cost = pricing.final_total
+                        # Гибкий выбор периода: самый длинный, который покрывает баланс
+                        selection = await pricing_engine.select_affordable_renewal(db, subscription, user)
                     except Exception as e:
                         logger.error(
-                            'Ошибка расчёта стоимости автопродления, пропускаем',
+                            'Ошибка выбора периода автопродления, пропускаем',
                             subscription_id=subscription.id,
                             user_id=user.id,
                             error=str(e),
                         )
+                        subscription.last_autopay_attempt_at = current_time
+                        subscription.last_autopay_status = 'error'
+                        subscription.last_autopay_error = str(e)[:512]
+                        try:
+                            await db.commit()
+                        except Exception:
+                            await db.rollback()
                         failed_count += 1
                         continue
 
-                    if renewal_cost <= 0:
+                    if selection is None:
+                        # Недостаточно баланса ни для одного доступного периода
+                        subscription.last_autopay_attempt_at = current_time
+                        subscription.last_autopay_status = 'insufficient_balance'
+                        try:
+                            await db.commit()
+                        except Exception:
+                            await db.rollback()
+                        # Используем 0 как charge_amount для уведомления (баланс не позволяет даже минимальный период)
+                        await self._maybe_notify_autopay_failure(user, 0, subscription, current_time)
                         logger.warning(
-                            'Нулевая стоимость автопродления, пропускаем',
+                            '💳 Недостаточно средств для автопродления (ни один период не доступен)',
+                            user_identifier=user_identifier,
                             subscription_id=subscription.id,
-                            user_id=user.id,
-                            renewal_cost=renewal_cost,
                         )
                         failed_count += 1
                         continue
 
-                    # calculate_renewal_price уже включает promo_group + promo_offer скидки.
-                    # Не применяем promo_offer повторно — только consume-им при успешной оплате.
-                    charge_amount = renewal_cost
+                    autopay_period, charge_amount = selection
                     promo_discount_percent = get_user_active_promo_discount_percent(user)
 
                     autopay_key = f'autopay_{user.id}_{subscription.id}'
                     if autopay_key in self._notified_users:
                         continue
+
+                    # Фиксируем попытку
+                    subscription.last_autopay_attempt_at = current_time
 
                     if user.balance_kopeks >= charge_amount:
                         success = await subtract_user_balance(
@@ -1667,6 +1672,12 @@ class MonitoringService:
                                         charge_amount=charge_amount,
                                         exc=refund_exc,
                                     )
+                                subscription.last_autopay_status = 'error'
+                                subscription.last_autopay_error = str(extend_exc)[:512]
+                                try:
+                                    await db.commit()
+                                except Exception:
+                                    await db.rollback()
                                 failed_count += 1
                                 continue
 
@@ -1739,6 +1750,12 @@ class MonitoringService:
                                     new_expires_at=subscription.end_date,
                                 )
 
+                            # Персистируем успешный результат
+                            subscription.last_autopay_status = 'success'
+                            subscription.last_autopay_renewed_at = current_time
+                            subscription.last_autopay_period_days = autopay_period
+                            subscription.last_autopay_error = None
+
                             processed_count += 1
                             self._notified_users.add(autopay_key)
                             # Коммитим сразу после успешного автопродления:
@@ -1757,6 +1774,11 @@ class MonitoringService:
                                 promo_discount_percent=promo_discount_percent,
                             )
                         else:
+                            subscription.last_autopay_status = 'insufficient_balance'
+                            try:
+                                await db.commit()
+                            except Exception:
+                                await db.rollback()
                             failed_count += 1
                             await self._maybe_notify_autopay_failure(
                                 user, charge_amount, subscription, current_time, cause='charge_error'
@@ -1766,6 +1788,11 @@ class MonitoringService:
                                 user_identifier=user_identifier,
                             )
                     else:
+                        subscription.last_autopay_status = 'insufficient_balance'
+                        try:
+                            await db.commit()
+                        except Exception:
+                            await db.rollback()
                         failed_count += 1
                         await self._maybe_notify_autopay_failure(user, charge_amount, subscription, current_time)
                         logger.warning(
