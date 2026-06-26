@@ -2128,6 +2128,13 @@ class Subscription(Base):
     # Флаг для защиты от повторного автопродления перед истечением
     auto_renewed_before_expiry = Column(Boolean, default=False, nullable=False)
 
+    # Трекинг попыток автопродления
+    last_autopay_attempt_at = Column(AwareDateTime(), nullable=True)
+    last_autopay_status = Column(String(32), nullable=True)  # success|insufficient_balance|error|skipped
+    last_autopay_error = Column(String(512), nullable=True)
+    last_autopay_renewed_at = Column(AwareDateTime(), nullable=True)
+    last_autopay_period_days = Column(Integer, nullable=True)
+
     # Fallback при истечении подписки/исчерпании трафика
     # При активном fallback в Remnawave подменяются externalSquadUuid, expireAt, trafficLimitBytes;
     # оригинальные значения сохраняются в pre_expiry_* для восстановления при продлении.
