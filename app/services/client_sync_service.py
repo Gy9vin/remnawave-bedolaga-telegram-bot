@@ -1,11 +1,13 @@
 """Сервис синхронизации клиентских приложений из HWID-устройств RemnaWave.
 
 Тянет все HWID-устройства из панели одним агрегированным запросом,
-парсит клиентское приложение из поля platform/appVersion, маппит
-устройство на bot-user_id через User.remnawave_uuid (фолбэк:
+парсит клиентское приложение из поля userAgent (формат App/Version/OS/DeviceId),
+маппит устройство на bot-user_id через User.remnawave_uuid (фолбэк:
 Subscription.remnawave_uuid), и делает upsert+prune в таблицу
 user_clients. Используется для таргетирования рассылок по клиентскому
 приложению (Happ, v2rayNG, Streisand …).
+
+Поле platform содержит ОС (Android/iOS) — НЕ является именем клиента.
 """
 
 from __future__ import annotations
@@ -125,11 +127,12 @@ async def sync_user_clients(db: 'AsyncSession') -> dict:
     logger.info('client_sync: получено устройств из панели', count=total_devices)
 
     # ── 4. Собрать wanted: {(user_id, app_name): max last_seen_at} ──────────
-    # Поле userAgent у HWID-записей отсутствует; platform — это «имя приложения»
-    # (Happ, v2rayNG, Streisand …). Передаём его в parse_client_app как суррогат UA,
-    # что даёт тот же prefix-семантики (до '/', '(' или пробела).
+    # Клиентское приложение берём из поля userAgent (формат App/Version/OS/DeviceId).
+    # platform содержит ОС (Android/iOS) — НЕ использовать как источник имени клиента.
     wanted: dict[tuple[int, str], datetime | None] = {}
     users_in_sync: set[int] = set()
+    unknown_count: int = 0
+    _sample_logged = False  # один раз за синк
 
     for device in all_devices:
         puuid = device.get('userUuid')
@@ -141,9 +144,21 @@ async def sync_user_clients(db: 'AsyncSession') -> dict:
         if user_id is None:
             continue
 
-        # Парсим «клиентское приложение» из поля platform (суррогат userAgent)
-        platform_str = device.get('platform') or device.get('appVersion') or device.get('deviceModel')
-        app = parse_client_app(platform_str)
+        # Диагностика структуры первого устройства — один раз за синк
+        if not _sample_logged:
+            logger.info(
+                'client_sync sample device',
+                keys=sorted(d.keys() if (d := device) else []),
+                userAgent=device.get('userAgent'),
+                platform=device.get('platform'),
+            )
+            _sample_logged = True
+
+        # Парсим «клиентское приложение» из userAgent (App/Version/OS/DeviceId)
+        ua = device.get('userAgent') or device.get('app') or device.get('appName')
+        app = parse_client_app(ua)
+        if app == 'Unknown':
+            unknown_count += 1
 
         # Берём best-effort дату последней активности устройства
         raw_dt = device.get('updatedAt') or device.get('lastSeen') or device.get('createdAt')
@@ -164,7 +179,7 @@ async def sync_user_clients(db: 'AsyncSession') -> dict:
     if not wanted:
         # Панель не вернула ни одного устройства с известным юзером
         _last_client_sync = datetime.now(UTC)
-        return {'devices': total_devices, 'users': 0, 'apps': 0}
+        return {'devices': total_devices, 'users': 0, 'apps': 0, 'unknown': unknown_count}
 
     # ── 5. Загрузить существующие UserClient-строки для затронутых юзеров ───
     from sqlalchemy import select as sa_select
@@ -228,5 +243,11 @@ async def sync_user_clients(db: 'AsyncSession') -> dict:
         devices=total_devices,
         users=len(users_in_sync),
         apps=unique_apps,
+        unknown=unknown_count,
     )
-    return {'devices': total_devices, 'users': len(users_in_sync), 'apps': unique_apps}
+    return {
+        'devices': total_devices,
+        'users': len(users_in_sync),
+        'apps': unique_apps,
+        'unknown': unknown_count,
+    }

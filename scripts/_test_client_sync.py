@@ -1,6 +1,6 @@
 """Мини логический тест sync_user_clients с моками.
 
-Проверяет: маппинг uuid→user_id, upsert, prune.
+Проверяет: маппинг uuid→user_id, upsert, prune, счётчик unknown.
 Запуск: PYTHONPATH=. .venv/bin/python scripts/_test_client_sync.py
 """
 
@@ -61,27 +61,45 @@ class FakeSession:
 
 
 # ---------------------------------------------------------------------------
-# Тест 1: логика маппинга и сборки wanted
+# Тест 1: логика маппинга и сборки wanted (источник — userAgent)
 # ---------------------------------------------------------------------------
 
 def test_mapping_and_wanted():
-    """Проверяет что uuid→user_id и сборка wanted работают корректно."""
+    """Проверяет что uuid→user_id и сборка wanted используют userAgent, не platform."""
     from app.utils.client_detect import parse_client_app
 
-    # Данные: 3 устройства
+    # Данные: устройства с userAgent в формате App/Version/OS/DeviceId
     devices = [
-        {'userUuid': 'uuid-1', 'platform': 'Happ', 'updatedAt': '2024-06-01T10:00:00Z'},
-        {'userUuid': 'uuid-1', 'platform': 'v2rayNG/1.9', 'updatedAt': '2024-06-02T10:00:00Z'},
-        {'userUuid': 'uuid-2', 'platform': 'Streisand', 'updatedAt': '2024-05-01T00:00:00Z'},
-        {'userUuid': 'uuid-unknown', 'platform': 'SomeApp', 'updatedAt': None},  # нет маппинга
+        {
+            'userUuid': 'uuid-1',
+            'userAgent': 'Happ/3.24.1/Android/17815953510421845678',
+            'platform': 'Android',  # ОС — НЕ должна использоваться как app
+            'updatedAt': '2024-06-01T10:00:00Z',
+        },
+        {
+            'userUuid': 'uuid-1',
+            'userAgent': 'v2rayNG/1.9.5/Android/99887766554433221100',
+            'platform': 'Android',
+            'updatedAt': '2024-06-02T10:00:00Z',
+        },
+        {
+            'userUuid': 'uuid-2',
+            'userAgent': 'Streisand/2.0.0/iOS/11223344556677889900',
+            'platform': 'iOS',
+            'updatedAt': '2024-05-01T00:00:00Z',
+        },
+        {
+            'userUuid': 'uuid-unknown',
+            'userAgent': 'SomeApp/1.0/Android/000',
+            'platform': 'Android',
+            'updatedAt': None,
+        },  # нет маппинга
     ]
 
     user_uuid_map = {'uuid-1': 101}
     sub_uuid_map = {'uuid-2': 202}
 
-    # Реплицируем логику сборки wanted из service
-    from datetime import datetime
-
+    # Реплицируем логику сборки wanted из service (с новым источником userAgent)
     def parse_dt(value):
         if not value:
             return None
@@ -92,6 +110,7 @@ def test_mapping_and_wanted():
 
     wanted: dict = {}
     users_in_sync: set = set()
+    unknown_count: int = 0
 
     for device in devices:
         puuid = device.get('userUuid')
@@ -100,8 +119,10 @@ def test_mapping_and_wanted():
         user_id = user_uuid_map.get(puuid) or sub_uuid_map.get(puuid)
         if user_id is None:
             continue
-        platform_str = device.get('platform') or device.get('appVersion') or device.get('deviceModel')
-        app = parse_client_app(platform_str)
+        ua = device.get('userAgent') or device.get('app') or device.get('appName')
+        app = parse_client_app(ua)
+        if app == 'Unknown':
+            unknown_count += 1
         raw_dt = device.get('updatedAt') or device.get('lastSeen') or device.get('createdAt')
         seen_at = parse_dt(raw_dt)
 
@@ -111,15 +132,20 @@ def test_mapping_and_wanted():
             wanted[key] = seen_at
         users_in_sync.add(user_id)
 
-    # Ожидания:
-    assert (101, 'Happ') in wanted, "uuid-1 → user 101 → Happ"
-    assert (101, 'v2rayNG') in wanted, "uuid-1 → user 101 → v2rayNG"
-    assert (202, 'Streisand') in wanted, "uuid-2 → user 202 → Streisand"
+    # Ожидания: app должен быть именем клиента, не ОС
+    assert (101, 'Happ') in wanted, "uuid-1 → user 101 → Happ (из userAgent)"
+    assert (101, 'v2rayNG') in wanted, "uuid-1 → user 101 → v2rayNG (из userAgent)"
+    assert (202, 'Streisand') in wanted, "uuid-2 → user 202 → Streisand (из userAgent)"
+
+    # platform='Android' НЕ должен попасть как имя клиента
+    assert (101, 'Android') not in wanted, "platform НЕ должен быть именем клиента"
+    assert (202, 'iOS') not in wanted, "platform НЕ должен быть именем клиента"
+
     assert len([k for k in wanted if k[0] == 101]) == 2, "у user 101 два приложения"
     assert (101, 'SomeApp') not in wanted and (202, 'SomeApp') not in wanted, \
         "uuid-unknown не попал в wanted"
 
-    # Проверяем max(last_seen) для Happ (uuid-1 имеет одно устройство Happ)
+    # Проверяем max(last_seen) для Happ
     happ_seen = wanted[(101, 'Happ')]
     assert happ_seen is not None
     assert happ_seen.year == 2024 and happ_seen.month == 6
@@ -130,12 +156,107 @@ def test_mapping_and_wanted():
 
 
 # ---------------------------------------------------------------------------
-# Тест 2: логика upsert (новая строка vs обновление)
+# Тест 2: parse_client_app правильно разбирает userAgent
+# ---------------------------------------------------------------------------
+
+def test_parse_client_app_from_useragent():
+    """Проверяет что parse_client_app берёт имя до первого '/' из userAgent."""
+    from app.utils.client_detect import parse_client_app
+
+    assert parse_client_app('Happ/3.24.1/Android/17815953510421845678') == 'Happ', \
+        "Happ/... должен давать Happ"
+    assert parse_client_app('v2rayNG/1.9.5/Android/99887766554433221100') == 'v2rayNG', \
+        "v2rayNG/... должен давать v2rayNG"
+    assert parse_client_app('Streisand/2.0.0/iOS/11223344556677889900') == 'Streisand', \
+        "Streisand/... должен давать Streisand"
+
+    # Устройство без userAgent → Unknown
+    result_none = parse_client_app(None)
+    assert result_none == 'Unknown', f"None → Unknown, got {result_none!r}"
+
+    result_empty = parse_client_app('')
+    assert result_empty == 'Unknown', f"'' → Unknown, got {result_empty!r}"
+
+    print("PASS: test_parse_client_app_from_useragent")
+
+
+# ---------------------------------------------------------------------------
+# Тест 3: счётчик unknown считается для устройств без userAgent
+# ---------------------------------------------------------------------------
+
+def test_unknown_counter():
+    """Проверяет что устройства без userAgent дают app=Unknown и счётчик unknown растёт."""
+    from app.utils.client_detect import parse_client_app
+
+    devices = [
+        {
+            'userUuid': 'uuid-1',
+            'userAgent': 'Happ/3.24.1/Android/178159',
+            'platform': 'Android',
+            'updatedAt': '2024-06-01T10:00:00Z',
+        },
+        {
+            'userUuid': 'uuid-1',
+            # Нет userAgent, нет app, нет appName → Unknown
+            'platform': 'Android',
+            'updatedAt': '2024-06-02T10:00:00Z',
+        },
+        {
+            'userUuid': 'uuid-2',
+            # Нет userAgent — другой юзер тоже Unknown
+            'platform': 'iOS',
+            'updatedAt': '2024-05-01T00:00:00Z',
+        },
+    ]
+
+    user_uuid_map = {'uuid-1': 101}
+    sub_uuid_map = {'uuid-2': 202}
+
+    unknown_count = 0
+    wanted = {}
+    users_in_sync = set()
+
+    def parse_dt(value):
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except Exception:
+            return None
+
+    for device in devices:
+        puuid = device.get('userUuid')
+        if not puuid:
+            continue
+        user_id = user_uuid_map.get(puuid) or sub_uuid_map.get(puuid)
+        if user_id is None:
+            continue
+        ua = device.get('userAgent') or device.get('app') or device.get('appName')
+        app = parse_client_app(ua)
+        if app == 'Unknown':
+            unknown_count += 1
+        raw_dt = device.get('updatedAt') or device.get('lastSeen') or device.get('createdAt')
+        seen_at = parse_dt(raw_dt)
+        key = (user_id, app)
+        existing = wanted.get(key)
+        if existing is None or (seen_at is not None and seen_at > existing):
+            wanted[key] = seen_at
+        users_in_sync.add(user_id)
+
+    assert unknown_count == 2, f"2 устройства без userAgent → unknown=2, got {unknown_count}"
+    assert (101, 'Happ') in wanted, "Happ распознан из userAgent"
+    assert (101, 'Unknown') in wanted, "устройство без userAgent → Unknown в wanted"
+    assert (202, 'Unknown') in wanted, "uuid-2 без userAgent → Unknown"
+
+    print("PASS: test_unknown_counter")
+
+
+# ---------------------------------------------------------------------------
+# Тест 4: логика upsert (новая строка vs обновление)
 # ---------------------------------------------------------------------------
 
 def test_upsert_logic():
     """Проверяет что upsert создаёт новые строки и обновляет last_seen_at."""
-    from datetime import datetime
 
     now = datetime(2024, 6, 10, tzinfo=UTC)
     old_dt = datetime(2024, 5, 1, tzinfo=UTC)
@@ -168,11 +289,11 @@ def test_upsert_logic():
 
 
 # ---------------------------------------------------------------------------
-# Тест 3: логика prune
+# Тест 5: логика prune
 # ---------------------------------------------------------------------------
 
 def test_prune_logic():
-    """Проверяет что prune удаляет только стale строки синкнутых юзеров."""
+    """Проверяет что prune удаляет только stale строки синкнутых юзеров."""
     wanted = {
         (101, 'Happ'): None,
         (101, 'v2rayNG'): None,
@@ -207,6 +328,8 @@ def test_prune_logic():
 
 if __name__ == '__main__':
     test_mapping_and_wanted()
+    test_parse_client_app_from_useragent()
+    test_unknown_counter()
     test_upsert_logic()
     test_prune_logic()
     print("\nAll tests PASSED")
