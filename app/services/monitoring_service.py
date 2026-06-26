@@ -66,6 +66,7 @@ from app.utils.promo_offer import get_user_active_promo_discount_percent
 from app.utils.subscription_utils import (
     resolve_hwid_device_limit_for_payload,
 )
+from app.utils.user_utils import is_user_dormant_for_autopay
 from app.utils.timezone import format_local_datetime
 
 
@@ -1544,6 +1545,22 @@ class MonitoringService:
 
                     user_identifier = user.telegram_id or f'email:{user.id}'
 
+                    # Гейт по активности: не трогаем баланс спящих пользователей
+                    if is_user_dormant_for_autopay(user, current_time):
+                        subscription.last_autopay_attempt_at = current_time
+                        subscription.last_autopay_status = 'skipped'
+                        subscription.last_autopay_error = 'inactive'
+                        try:
+                            await db.commit()
+                        except Exception:
+                            await db.rollback()
+                        logger.info(
+                            'Автопродление A: пропуск — пользователь неактивен',
+                            user_identifier=user_identifier,
+                            subscription_id=subscription.id,
+                        )
+                        continue
+
                     try:
                         from app.database.crud.user import lock_user_for_pricing
                         from app.services.pricing_engine import pricing_engine
@@ -1913,6 +1930,20 @@ class MonitoringService:
                     # Устанавливаем флаг чтобы не проверять повторно
                     subscription.auto_renewed_before_expiry = True
                     await db.commit()
+                    continue
+
+                # Гейт по активности: не трогаем баланс спящих пользователей
+                if is_user_dormant_for_autopay(user, current_time):
+                    subscription.last_autopay_attempt_at = current_time
+                    subscription.last_autopay_status = 'skipped'
+                    subscription.last_autopay_error = 'inactive'
+                    subscription.auto_renewed_before_expiry = True  # не долбить каждый тик
+                    await db.commit()
+                    logger.info(
+                        'Автопродление B: пропуск — пользователь неактивен',
+                        user_identifier=user_identifier,
+                        subscription_id=subscription.id,
+                    )
                     continue
 
                 # Выбираем максимальный доступный период, который покрывает баланс

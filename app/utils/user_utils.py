@@ -335,3 +335,24 @@ async def get_referral_analytics(db: AsyncSession, user_id: int) -> dict:
     except Exception as e:
         logger.error('Ошибка получения аналитики рефералов для пользователя', user_id=user_id, error=e)
         return {'earnings_by_period': {'today': 0, 'week': 0, 'month': 0, 'quarter': 0}, 'top_referrals': []}
+
+
+def is_user_dormant_for_autopay(user, now=None) -> bool:
+    """True, если автоплатёж надо пропустить из-за неактивности пользователя.
+
+    Спящий = AUTOPAY_SKIP_INACTIVE_DAYS>0 и последняя активность старше порога
+    (или активности нет вовсе).
+    """
+    from app.config import settings as _settings
+
+    threshold = int(getattr(_settings, 'AUTOPAY_SKIP_INACTIVE_DAYS', 0) or 0)
+    if threshold <= 0:
+        return False
+    if now is None:
+        now = datetime.now(UTC)
+    candidates = [getattr(user, 'last_activity', None), getattr(user, 'cabinet_last_login', None)]
+    candidates = [c for c in candidates if c is not None]
+    if not candidates:
+        return True  # нет данных об активности → считаем спящим (не списываем)
+    last_seen = max(candidates)
+    return (now - last_seen).days > threshold

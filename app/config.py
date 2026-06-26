@@ -466,6 +466,11 @@ class Settings(BaseSettings):
     # Периодические повторы между первым и финальным уведомлением, каждые N часов
     # (legacy-режим). 0 — без повторов (только первое + финальное).
     AUTOPAY_FAIL_REPEAT_INTERVAL_HOURS: int = 0
+    # Гейт по активности для авто-продления. Если > 0 и пользователь не проявлял
+    # активности (last_activity / cabinet_last_login) дольше этого числа дней —
+    # автоплатёж НЕ списывается, даже при включённом autopay_enabled (кейс: уехал
+    # на пару месяцев, баланс от рефералов — трогать нельзя). 0 = гейт выключен.
+    AUTOPAY_SKIP_INACTIVE_DAYS: int = 0
 
     SUBSCRIPTION_RENEWAL_BALANCE_THRESHOLD_KOPEKS: int = 20000
 

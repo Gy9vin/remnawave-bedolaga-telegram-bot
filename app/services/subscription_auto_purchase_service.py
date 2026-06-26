@@ -36,6 +36,7 @@ from app.services.user_cart_service import user_cart_service
 from app.utils.formatters import format_days_declension
 from app.utils.pricing_utils import format_period_description
 from app.utils.timezone import format_email_datetime, format_local_datetime
+from app.utils.user_utils import is_user_dormant_for_autopay
 
 
 logger = structlog.get_logger(__name__)
@@ -2216,6 +2217,15 @@ async def try_auto_extend_expired_after_topup(
     if not bool(getattr(subscription, 'autopay_enabled', False)):
         logger.info(
             '🔄 Автопродление expired: пропуск — автоплатёж пользователем не включён',
+            format_user_id=_format_user_id(user),
+            subscription_id=getattr(subscription, 'id', None),
+        )
+        return False
+
+    # Гейт по активности: не трогаем баланс спящих пользователей
+    if is_user_dormant_for_autopay(user):
+        logger.info(
+            '🔄 Автопродление expired после пополнения: пропуск — пользователь неактивен',
             format_user_id=_format_user_id(user),
             subscription_id=getattr(subscription, 'id', None),
         )
