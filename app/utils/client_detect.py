@@ -5,16 +5,25 @@
 """
 
 
+#: Длина колонки user_clients.app_name — имя клиента обрезаем под неё, иначе
+#: «мусорный» UA без раннего разделителя роняет bulk-insert (varchar(64)).
+MAX_APP_NAME_LEN = 64
+
+
 def parse_client_app(user_agent: str | None) -> str:
-    """Имя клиентского приложения из userAgent (префикс до '/', '(' или пробела).
-    Пусто/None → 'Unknown'."""
+    """Имя клиентского приложения из userAgent.
+
+    Берёт префикс до САМОГО РАННЕГО разделителя ('/', '(', пробел) — формат
+    панели `Happ/3.24.1/Android/<id>` → `Happ`. Пусто/None → 'Unknown'.
+    Результат всегда ≤ MAX_APP_NAME_LEN символов (защита от UA без разделителей).
+    """
     if not user_agent:
         return 'Unknown'
     s = user_agent.strip()
-    for sep in ('/', '(', ' '):
-        i = s.find(sep)
-        if i > 0:
-            s = s[:i]
-            break
+    cuts = [i for i in (s.find('/'), s.find('('), s.find(' ')) if i > 0]
+    if cuts:
+        s = s[: min(cuts)]
     s = s.strip()
-    return s or 'Unknown'
+    if not s:
+        return 'Unknown'
+    return s[:MAX_APP_NAME_LEN]
