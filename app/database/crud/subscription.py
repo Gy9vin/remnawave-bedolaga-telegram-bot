@@ -1180,6 +1180,11 @@ async def extend_subscription(
     if days > 0 and not _housekeeping_done:
         await _housekeep_expired_purchases(db, subscription, now=current_time)
 
+    # Сбрасываем флаг «уже обработан механизмом B» при каждом успешном продлении,
+    # чтобы механизм B мог корректно сработать в следующем цикле жизни подписки.
+    if days > 0 and hasattr(subscription, 'auto_renewed_before_expiry'):
+        subscription.auto_renewed_before_expiry = False
+
     subscription.updated_at = current_time
 
     if commit:

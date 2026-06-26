@@ -447,7 +447,7 @@ class Settings(BaseSettings):
 
     AUTOPAY_WARNING_DAYS: str = '3,1'
 
-    ENABLE_AUTOPAY: bool = False
+    ENABLE_AUTOPAY: bool = True
 
     DEFAULT_AUTOPAY_ENABLED: bool = False
     DEFAULT_AUTOPAY_DAYS_BEFORE: int = 3
