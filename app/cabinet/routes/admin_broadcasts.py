@@ -1,5 +1,6 @@
 """Admin routes for broadcasts in cabinet."""
 
+import asyncio
 from datetime import UTC, datetime
 
 import structlog
@@ -690,6 +691,41 @@ async def create_combined_broadcast(
     )
 
     return _serialize_broadcast(broadcast)
+
+
+# Мьютекс для защиты от параллельного запуска ручной синхронизации клиентов
+_client_sync_lock = asyncio.Lock()
+
+
+@router.post('/clients/sync')
+async def sync_clients_endpoint(
+    admin: 'User' = Depends(require_permission('broadcasts:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> dict:
+    """Запустить синхронизацию клиентских приложений (HWID → user_clients) вручную."""
+    from app.services.client_sync_service import get_last_client_sync, sync_user_clients
+
+    if _client_sync_lock.locked():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Client sync is already running',
+        )
+
+    async with _client_sync_lock:
+        try:
+            result = await sync_user_clients(db)
+        except Exception as e:
+            logger.error('Ошибка ручной синхронизации клиентов', error=e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail='Client sync failed',
+            )
+
+    last_sync = get_last_client_sync()
+    return {
+        'synced': result,
+        'last_sync_at': last_sync.isoformat() if last_sync else None,
+    }
 
 
 @router.get('/{broadcast_id}', response_model=BroadcastResponse)

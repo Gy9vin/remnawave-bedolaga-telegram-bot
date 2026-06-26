@@ -203,6 +203,7 @@ class MonitoringService:
         self._last_cleanup = datetime.now(UTC)
         self._last_inactive_cleanup_date: date | None = None
         self._last_fallback_reconcile_at: datetime | None = None
+        self._last_client_sync: datetime | None = None
         self._sla_task = None
         # In-memory fallback состояния уведомлений об ошибке автоплатежа (на случай
         # недоступности Redis). Ключ — (subscription_id, cycle_token=int(end_date.timestamp())).
@@ -413,6 +414,17 @@ class MonitoringService:
                 db, self._cleanup_expired_refresh_tokens(db), '_cleanup_expired_refresh_tokens'
             )
 
+            # Суточная синхронизация клиентских приложений (раз в CLIENT_SYNC_INTERVAL_HOURS)
+            if settings.CLIENT_SYNC_ENABLED:
+                current_time = datetime.now(UTC)
+                if (
+                    self._last_client_sync is None
+                    or (current_time - self._last_client_sync).total_seconds()
+                    >= settings.CLIENT_SYNC_INTERVAL_HOURS * 3600
+                ):
+                    await self._run_monitoring_task(db, self._sync_clients_task(db), 'client_sync')
+                    self._last_client_sync = current_time
+
             try:
                 await self._log_monitoring_event(
                     db,
@@ -525,6 +537,16 @@ class MonitoringService:
             await maybe_run_periodic()
         except Exception as e:
             logger.error('Ошибка авто-рестарта нод', error=e)
+
+    async def _sync_clients_task(self, db):
+        """Синхронизация клиентских приложений из HWID-устройств панели."""
+        try:
+            from app.services.client_sync_service import sync_user_clients
+
+            stats = await sync_user_clients(db)
+            logger.info('✅ Синхронизация клиентских приложений завершена', **stats)
+        except Exception as e:
+            logger.error('Ошибка синхронизации клиентских приложений', error=e)
 
     async def _maybe_notify_autopay_failure(
         self,
