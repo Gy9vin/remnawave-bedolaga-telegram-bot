@@ -3018,6 +3018,32 @@ class BroadcastHistory(Base):
     admin = relationship('User', back_populates='broadcasts')
 
 
+class UserClient(Base):
+    """Маппинг пользователь → клиентское приложение VPN.
+
+    Заполняется синхронизатором HWID-устройств RemnaWave: один ряд на
+    уникальную пару (user_id, app_name). Используется для таргетирования
+    рассылок по клиентскому приложению (Happ, v2rayNG, …).
+    """
+
+    __tablename__ = 'user_clients'
+    __table_args__ = (
+        UniqueConstraint('user_id', 'app_name', name='uq_user_clients_user_app'),
+        Index('ix_user_clients_app_name', 'app_name'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    app_name = Column(String(64), nullable=False)
+    last_seen_at = Column(AwareDateTime(), nullable=True)
+    updated_at = Column(AwareDateTime(), nullable=False, default=func.now(), onupdate=func.now())
+
+    user = relationship('User', backref='user_clients')
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return f'<UserClient(id={self.id}, user_id={self.user_id}, app_name={self.app_name!r})>'
+
+
 class Poll(Base):
     __tablename__ = 'polls'
 
