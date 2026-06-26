@@ -2223,7 +2223,8 @@ async def try_auto_extend_expired_after_topup(
         return False
 
     # Гейт по активности: не трогаем баланс спящих пользователей
-    if is_user_dormant_for_autopay(user):
+    _svc = SubscriptionService()
+    if await is_user_dormant_for_autopay(db, subscription, user, remnawave_service=_svc):
         logger.info(
             '🔄 Автопродление expired после пополнения: пропуск — пользователь неактивен',
             format_user_id=_format_user_id(user),

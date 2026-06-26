@@ -1546,7 +1546,7 @@ class MonitoringService:
                     user_identifier = user.telegram_id or f'email:{user.id}'
 
                     # Гейт по активности: не трогаем баланс спящих пользователей
-                    if is_user_dormant_for_autopay(user, current_time):
+                    if await is_user_dormant_for_autopay(db, subscription, user, current_time, self.subscription_service):
                         subscription.last_autopay_attempt_at = current_time
                         subscription.last_autopay_status = 'skipped'
                         subscription.last_autopay_error = 'inactive'
@@ -1933,7 +1933,7 @@ class MonitoringService:
                     continue
 
                 # Гейт по активности: не трогаем баланс спящих пользователей
-                if is_user_dormant_for_autopay(user, current_time):
+                if await is_user_dormant_for_autopay(db, subscription, user, current_time, self.subscription_service):
                     subscription.last_autopay_attempt_at = current_time
                     subscription.last_autopay_status = 'skipped'
                     subscription.last_autopay_error = 'inactive'

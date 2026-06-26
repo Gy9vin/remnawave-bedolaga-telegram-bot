@@ -337,22 +337,90 @@ async def get_referral_analytics(db: AsyncSession, user_id: int) -> dict:
         return {'earnings_by_period': {'today': 0, 'week': 0, 'month': 0, 'quarter': 0}, 'top_referrals': []}
 
 
-def is_user_dormant_for_autopay(user, now=None) -> bool:
-    """True, если автоплатёж надо пропустить из-за неактивности пользователя.
+def _is_dormant_by_app_activity(user, now) -> bool:
+    """Проверка спящести по активности в боте/кабинете (fallback).
 
-    Спящий = AUTOPAY_SKIP_INACTIVE_DAYS>0 и последняя активность старше порога
-    (или активности нет вовсе).
+    Возвращает True, если порог задан и последняя активность в приложении старше
+    порога или данных об активности нет вовсе.
     """
     from app.config import settings as _settings
 
     threshold = int(getattr(_settings, 'AUTOPAY_SKIP_INACTIVE_DAYS', 0) or 0)
     if threshold <= 0:
         return False
-    if now is None:
-        now = datetime.now(UTC)
     candidates = [getattr(user, 'last_activity', None), getattr(user, 'cabinet_last_login', None)]
     candidates = [c for c in candidates if c is not None]
     if not candidates:
         return True  # нет данных об активности → считаем спящим (не списываем)
     last_seen = max(candidates)
     return (now - last_seen).days > threshold
+
+
+async def is_user_dormant_for_autopay(db, subscription, user, now=None, remnawave_service=None) -> bool:
+    """True, если автоплатёж надо пропустить из-за неактивности пользователя.
+
+    Основной сигнал: реальный VPN-трафик (поле online_at из панели RemnaWave).
+    Запасной сигнал: активность в боте/кабинете (last_activity / cabinet_last_login).
+
+    Спящий = AUTOPAY_SKIP_INACTIVE_DAYS>0 и последняя активность старше порога.
+    """
+    from app.config import settings as _settings
+
+    threshold = int(getattr(_settings, 'AUTOPAY_SKIP_INACTIVE_DAYS', 0) or 0)
+    if threshold <= 0:
+        return False
+
+    if now is None:
+        now = datetime.now(UTC)
+
+    # Определяем UUID панели для этой подписки/пользователя
+    uuid = None
+    if subscription is not None:
+        uuid = getattr(subscription, 'remnawave_uuid', None)
+    if not uuid:
+        uuid = getattr(user, 'remnawave_uuid', None)
+
+    online_at = None
+
+    if uuid and remnawave_service is not None:
+        try:
+            async with remnawave_service.get_api_client() as api:
+                panel_user = await api.get_user_by_uuid(uuid)
+            if panel_user is not None:
+                online_at = panel_user.online_at
+                # online_at из _parse_optional_datetime всегда tz-aware (UTC+00:00)
+                # Убеждаемся, что now тоже tz-aware для корректного вычитания
+                if online_at is not None and online_at.tzinfo is None:
+                    online_at = online_at.replace(tzinfo=UTC)
+        except Exception as e:
+            logger.debug(
+                'VPN activity check failed, falling back to app activity',
+                uuid=uuid,
+                error=str(e),
+            )
+            online_at = None
+
+    if online_at is not None:
+        days_inactive = (now - online_at).days
+        is_dormant = days_inactive > threshold
+        logger.debug(
+            'Activity gate [VPN signal]',
+            user_id=getattr(user, 'id', None),
+            uuid=uuid,
+            online_at=online_at,
+            days_inactive=days_inactive,
+            threshold=threshold,
+            dormant=is_dormant,
+        )
+        return is_dormant
+
+    # Запасной путь: активность в боте/кабинете
+    result = _is_dormant_by_app_activity(user, now)
+    logger.debug(
+        'Activity gate [app fallback]',
+        user_id=getattr(user, 'id', None),
+        last_activity=getattr(user, 'last_activity', None),
+        cabinet_last_login=getattr(user, 'cabinet_last_login', None),
+        dormant=result,
+    )
+    return result
