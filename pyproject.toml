@@ -37,6 +37,7 @@ dev = [
     'pytest',
     'pytest-asyncio',
     'pytest-cov',
+    'greenlet',  # required by SQLAlchemy async engine in tests/crud real-SQLite harness
 ]
 
 [tool.uv]
