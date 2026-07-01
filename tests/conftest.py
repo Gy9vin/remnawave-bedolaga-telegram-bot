@@ -43,11 +43,19 @@ if 'Crypto' not in sys.modules:
     import importlib.abc
     import importlib.machinery
 
+    # Единственный прод-код, импортирующий pycryptodome, — app/services/antilopay_service.py:
+    #   from Crypto.Hash import SHA256
+    #   from Crypto.PublicKey import RSA
+    #   from Crypto.Signature import pkcs1_15
+    # Заглушаем ТОЛЬКО эти ветки Crypto (и их подмодули), а не весь namespace,
+    # чтобы не маскировать молча возможные будущие реальные crypto-тесты.
+    _CRYPTO_STUB_PREFIXES = ('Crypto.Hash', 'Crypto.PublicKey', 'Crypto.Signature')
+
     class _CryptoStubFinder(importlib.abc.MetaPathFinder):
-        """Автоматически подставляет пустые заглушки для Crypto и Crypto.* ."""
+        """Подставляет пустые заглушки для Crypto и allowlist-веток Crypto.* ."""
 
         def find_spec(self, fullname, path, target=None):
-            if fullname == 'Crypto' or fullname.startswith('Crypto.'):
+            if fullname == 'Crypto' or fullname.startswith(_CRYPTO_STUB_PREFIXES):
                 return importlib.machinery.ModuleSpec(fullname, _CryptoStubLoader(), is_package=True)
             return None
 
