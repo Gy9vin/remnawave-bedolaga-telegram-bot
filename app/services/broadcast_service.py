@@ -197,13 +197,28 @@ class BroadcastService:
                 TG_BATCH_DELAY=_TG_BATCH_DELAY,
             )
 
-            sent_count, failed_count, blocked_count, cancelled_during_run = await self._send_batched(
+            sent_count, failed_count, blocked_count, cancelled_during_run, blocked_telegram_ids = await self._send_batched(
                 broadcast_id,
                 recipient_ids,
                 config,
                 keyboard,
                 cancel_event,
             )
+
+            # Сохраняем список telegram_id заблокировавших бота (best-effort: и при отмене, и при успехе)
+            if blocked_telegram_ids:
+                try:
+                    async with AsyncSessionLocal() as session:
+                        bh = await session.get(BroadcastHistory, broadcast_id)
+                        if bh is not None:
+                            bh.blocked_user_ids = blocked_telegram_ids
+                            await session.commit()
+                except Exception as exc:
+                    logger.warning(
+                        'Не удалось сохранить blocked_user_ids в рассылке',
+                        broadcast_id=broadcast_id,
+                        exc=exc,
+                    )
 
             if cancelled_during_run:
                 logger.info(
@@ -269,7 +284,7 @@ class BroadcastService:
         config: BroadcastConfig,
         keyboard: InlineKeyboardMarkup | None,
         cancel_event: asyncio.Event,
-    ) -> tuple[int, int, int, bool]:
+    ) -> tuple[int, int, int, bool, list[int]]:
         """
         Единый метод рассылки для любого количества получателей.
 
@@ -277,7 +292,7 @@ class BroadcastService:
         Прогресс обновляется каждые _PROGRESS_UPDATE_MESSAGES сообщений.
         Глобальная пауза при FloodWait.
 
-        Returns (sent_count, failed_count, blocked_count, was_cancelled).
+        Returns (sent_count, failed_count, blocked_count, was_cancelled, blocked_telegram_ids).
         """
         sent_count = 0
         failed_count = 0
@@ -360,7 +375,7 @@ class BroadcastService:
         for i in range(0, len(recipient_ids), _TG_BATCH_SIZE):
             if cancel_event.is_set():
                 await self._mark_cancelled(broadcast_id, sent_count, failed_count, blocked_count)
-                return sent_count, failed_count, blocked_count, True
+                return sent_count, failed_count, blocked_count, True, blocked_telegram_ids
 
             batch = recipient_ids[i : i + _TG_BATCH_SIZE]
             results = await asyncio.gather(
@@ -395,7 +410,7 @@ class BroadcastService:
             # Задержка между батчами для rate limiting
             await asyncio.sleep(_TG_BATCH_DELAY)
 
-        return sent_count, failed_count, blocked_count, False
+        return sent_count, failed_count, blocked_count, False, blocked_telegram_ids
 
     async def _build_keyboard(
         self,
