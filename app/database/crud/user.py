@@ -1702,6 +1702,31 @@ async def get_google_linked_users(db: AsyncSession) -> list[User]:
     return list(result.scalars().all())
 
 
+async def get_google_at_risk_users(db: AsyncSession) -> list[dict]:
+    """Google-linked users who have NOT set a password yet (didn't migrate).
+
+    Flags whether they also blocked the bot / lack Telegram — the hard cases
+    unreachable by BOTH email and Telegram.
+    """
+    result = await db.execute(
+        select(User).where(
+            User.google_id.isnot(None),
+            User.email.isnot(None),
+            User.password_hash.is_(None),
+        )
+    )
+    return [
+        {
+            'id': u.id,
+            'email': u.email,
+            'auth_type': u.auth_type,
+            'has_telegram': u.telegram_id is not None,
+            'blocked_bot': u.status == 'blocked',
+        }
+        for u in result.scalars().all()
+    ]
+
+
 async def get_google_migration_stats(db: AsyncSession) -> dict[str, int]:
     """Counts for the Google-sunset migration admin dashboard."""
     base = (User.google_id.isnot(None), User.email.isnot(None))

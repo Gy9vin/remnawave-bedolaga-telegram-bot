@@ -20,6 +20,21 @@ async def test_send_starts_service(monkeypatch):
     assert resp == {'started': True}
 
 
+def test_at_risk_route_registered():
+    from app.cabinet.routes import router
+    paths = {r.path: r.methods for r in router.routes if hasattr(r, 'methods')}
+    assert 'GET' in paths['/cabinet/admin/google-migration/at-risk']
+
+
+@pytest.mark.asyncio
+async def test_at_risk_returns_list(monkeypatch):
+    from app.cabinet.routes import admin_google_migration as mod
+    monkeypatch.setattr(mod, 'get_google_at_risk_users', AsyncMock(return_value=[{'id': 1, 'email': 'a@b.c', 'auth_type': 'google', 'has_telegram': False, 'blocked_bot': True}]))
+    resp = await mod.get_at_risk_users(admin=SimpleNamespace(id=1), db=AsyncMock())
+    assert resp['count'] == 1
+    assert resp['users'][0]['blocked_bot'] is True
+
+
 @pytest.mark.asyncio
 async def test_status_returns_stats(monkeypatch):
     from app.cabinet.routes import admin_google_migration as mod

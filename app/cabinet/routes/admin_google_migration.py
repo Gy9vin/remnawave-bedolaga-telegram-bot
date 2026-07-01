@@ -4,7 +4,7 @@ import structlog
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.crud.user import get_google_migration_stats
+from app.database.crud.user import get_google_at_risk_users, get_google_migration_stats
 from app.database.models import User
 from app.services.google_migration_service import google_migration_service
 
@@ -22,6 +22,15 @@ async def get_migration_status(
 ) -> dict:
     stats = await get_google_migration_stats(db)
     return {'stats': stats, 'run': google_migration_service.get_status()}
+
+
+@router.get('/at-risk')
+async def get_at_risk_users(
+    admin: User = Depends(require_permission('broadcasts:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> dict:
+    users = await get_google_at_risk_users(db)
+    return {'count': len(users), 'users': users}
 
 
 @router.post('/send')

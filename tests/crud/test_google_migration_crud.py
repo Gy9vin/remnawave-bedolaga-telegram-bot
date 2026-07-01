@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.database.models import User
-from app.database.crud.user import get_google_linked_users, get_google_migration_stats
+from app.database.crud.user import get_google_at_risk_users, get_google_linked_users, get_google_migration_stats
 
 
 def _patch_jsonb_for_sqlite():
@@ -57,6 +57,24 @@ async def test_get_google_linked_users_filters(session):
     users = await get_google_linked_users(session)
     emails = {u.email for u in users}
     assert emails == {'a@gmail.com', 'b@gmail.com'}
+
+
+@pytest.mark.asyncio
+async def test_at_risk_users(session):
+    from app.database.crud.user import get_google_at_risk_users
+    # migrated (has password) -> excluded
+    await _add(session, email='ok@gmail.com', google_id='1', auth_type='google', password_hash='x')
+    # at risk, blocked the bot, no telegram
+    await _add(session, email='bad@gmail.com', google_id='2', auth_type='google', status='blocked')
+    # at risk but has telegram
+    await _add(session, email='tg@gmail.com', google_id='3', auth_type='telegram', telegram_id=7)
+
+    rows = await get_google_at_risk_users(session)
+    by_email = {r['email']: r for r in rows}
+    assert 'ok@gmail.com' not in by_email
+    assert by_email['bad@gmail.com']['blocked_bot'] is True
+    assert by_email['bad@gmail.com']['has_telegram'] is False
+    assert by_email['tg@gmail.com']['has_telegram'] is True
 
 
 @pytest.mark.asyncio
