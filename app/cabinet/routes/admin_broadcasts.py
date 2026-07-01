@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.crud.broadcast_reports import get_broadcast_blocked_active_subscribers
 from app.database.models import BroadcastHistory, Subscription, SubscriptionStatus, Tariff, User, UserClient
 from app.handlers.admin.messages import get_target_users_count
 from app.keyboards.admin import BROADCAST_BUTTONS, DEFAULT_BROADCAST_BUTTONS
@@ -757,6 +758,17 @@ async def sync_clients_endpoint(
         'synced': result,
         'last_sync_at': last_sync.isoformat() if last_sync else None,
     }
+
+
+@router.get('/{broadcast_id}/blocked-active')
+async def get_broadcast_blocked_active(
+    broadcast_id: int,
+    admin: User = Depends(require_permission('broadcasts:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> dict:
+    """Get users who blocked the bot in this broadcast but still have an active subscription."""
+    users = await get_broadcast_blocked_active_subscribers(db, broadcast_id)
+    return {'count': len(users), 'users': users}
 
 
 @router.get('/{broadcast_id}', response_model=BroadcastResponse)
