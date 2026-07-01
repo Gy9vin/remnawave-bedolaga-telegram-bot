@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.database.crud.user import get_google_migration_stats
 from app.database.database import AsyncSessionLocal
 from app.services.google_migration_service import google_migration_service
+from app.utils.decorators import admin_required, error_handler
 
 logger = structlog.get_logger(__name__)
 
@@ -20,6 +21,8 @@ def _confirm_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+@admin_required
+@error_handler
 async def show_menu(callback: CallbackQuery) -> None:
     async with AsyncSessionLocal() as session:
         stats = await get_google_migration_stats(session)
@@ -39,6 +42,8 @@ async def show_menu(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@admin_required
+@error_handler
 async def handle_send_invites(callback: CallbackQuery) -> None:
     started = await google_migration_service.start()
     if started:
