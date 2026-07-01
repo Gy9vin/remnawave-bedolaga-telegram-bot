@@ -30,9 +30,10 @@ _DEFAULT_HTML = """\
   <p>Чтобы не остаться без доступа к своему кабинету — привяжите другой способ входа уже сейчас 👇</p>
   <p>✅ Telegram&nbsp;&nbsp;✅ Яндекс ID&nbsp;&nbsp;✅ Обычная почта</p>
   <p>🔐 А можно просто задать пароль для своей почты — и спокойно входить по логину и паролю.</p>
-  <p style="text-align:center;margin:28px 0">
+  <p style="text-align:center;margin:28px 0 12px">
     <a href="{{set_password_url}}" style="background:#4f46e5;color:#fff;text-decoration:none;padding:14px 28px;border-radius:10px;font-weight:bold;display:inline-block">🔐 Задать пароль</a>
   </p>
+  <p style="text-align:center;color:#555;margin:0 0 20px">🔑 Ваш логин для входа — этот email: <b>{{login_email}}</b></p>
   <p>👉 Также всё можно сделать в личном кабинете → раздел «Профиль». Займёт меньше минуты!</p>
   <p>❗️ Если вы входите только через Google или Apple — не тяните! Без привязки после 7 июля войти не получится 🙏</p>
   <p>Позаботьтесь о доступе заранее — и всё будет работать без сбоев! 💪</p>
@@ -40,9 +41,13 @@ _DEFAULT_HTML = """\
 </div>"""
 
 
-def build_invite_email(set_password_url: str, username: str) -> tuple[str, str]:
-    """Render (subject, html) for the set-password invite."""
-    html = _DEFAULT_HTML.replace('{{set_password_url}}', set_password_url).replace('{{username}}', username or '')
+def build_invite_email(set_password_url: str, login_email: str) -> tuple[str, str]:
+    """Render (subject, html) for the set-password invite.
+
+    login_email is shown in the body so the user knows exactly what to type as
+    their login (it's their Google account email, already stored on the account).
+    """
+    html = _DEFAULT_HTML.replace('{{set_password_url}}', set_password_url).replace('{{login_email}}', login_email or '')
     return DEFAULT_SUBJECT, html
 
 
@@ -79,26 +84,30 @@ class GoogleMigrationService:
 
         Reuses the exact per-user logic (long-lived token, email_verified=True,
         invite email). Works for any existing user with that email — so an admin
-        can test on their own account. Returns {'found': bool, 'sent': bool}.
+        can test on their own account. Skips non-ACTIVE accounts (deleted/blocked
+        can't complete email login anyway). Returns {'found', 'sent', 'status'}.
         """
         from sqlalchemy import func, select
 
-        from app.database.models import User
+        from app.database.models import User, UserStatus
 
         normalized = (email or '').strip().lower()
         if not normalized:
-            return {'found': False, 'sent': False}
+            return {'found': False, 'sent': False, 'status': None}
 
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(User).where(func.lower(User.email) == normalized))
             user = result.scalar_one_or_none()
             if user is None:
-                return {'found': False, 'sent': False}
+                return {'found': False, 'sent': False, 'status': None}
+            if user.status != UserStatus.ACTIVE.value:
+                logger.info('Google-migration test skipped: account not active', email=normalized, status=user.status)
+                return {'found': True, 'sent': False, 'status': user.status}
             user_id = user.id
 
         sent = await self._process_user(user_id)
         logger.info('Google-migration test invite sent', email=normalized, sent=sent)
-        return {'found': True, 'sent': bool(sent)}
+        return {'found': True, 'sent': bool(sent), 'status': 'active'}
 
     async def _run(self) -> None:
         try:
@@ -135,9 +144,8 @@ class GoogleMigrationService:
                 user.email_verified_at = datetime.now(UTC)
                 await session.commit()
                 email = user.email
-                username = user.first_name or ''
             set_password_url = f'{settings.CABINET_URL}/reset-password?token={token}'
-            subject, html = build_invite_email(set_password_url, username)
+            subject, html = build_invite_email(set_password_url, email)
             return bool(await asyncio.to_thread(email_service.send_email, email, subject, html))
         except Exception as exc:
             logger.warning('Failed to send Google-migration invite', user_id=user_id, exc=exc)

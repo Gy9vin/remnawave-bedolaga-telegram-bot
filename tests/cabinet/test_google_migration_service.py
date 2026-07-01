@@ -3,13 +3,16 @@ import pytest
 from app.services import google_migration_service as gm
 
 
-def test_build_invite_email_contains_link():
-    subject, html = gm.build_invite_email('https://cab.example/reset-password?token=abc', 'Иван')
+def test_build_invite_email_contains_link_and_login():
+    subject, html = gm.build_invite_email('https://cab.example/reset-password?token=abc', 'user@gmail.com')
     assert subject
     assert 'https://cab.example/reset-password?token=abc' in html
     assert 'Друзья' in html
+    # login email shown so the user knows what to type
+    assert 'user@gmail.com' in html
     # placeholders fully substituted
     assert '{{set_password_url}}' not in html
+    assert '{{login_email}}' not in html
 
 
 @pytest.mark.asyncio
@@ -23,5 +26,5 @@ async def test_start_is_single_flight(monkeypatch):
 @pytest.mark.asyncio
 async def test_send_test_to_email_empty_returns_not_found():
     service = gm.GoogleMigrationService()
-    assert await service.send_test_to_email('') == {'found': False, 'sent': False}
-    assert await service.send_test_to_email('   ') == {'found': False, 'sent': False}
+    assert await service.send_test_to_email('') == {'found': False, 'sent': False, 'status': None}
+    assert await service.send_test_to_email('   ') == {'found': False, 'sent': False, 'status': None}

@@ -85,3 +85,22 @@ async def test_stats_counts(session):
 
     stats = await get_google_migration_stats(session)
     assert stats == {'total': 3, 'google_only': 2, 'with_password': 1}
+
+
+@pytest.mark.asyncio
+async def test_status_filtering(session):
+    # active google user -> in audience, stats, at-risk
+    await _add(session, email='active@gmail.com', google_id='1', auth_type='google')
+    # deleted google user -> excluded everywhere (can't complete login anyway)
+    await _add(session, email='del@gmail.com', google_id='2', auth_type='google', status='deleted')
+    # bot-blocked google user -> excluded from audience/stats, but KEPT in at-risk
+    await _add(session, email='blk@gmail.com', google_id='3', auth_type='google', status='blocked')
+
+    audience = {u.email for u in await get_google_linked_users(session)}
+    assert audience == {'active@gmail.com'}  # only active is emailed
+
+    stats = await get_google_migration_stats(session)
+    assert stats['total'] == 1  # deleted + blocked excluded
+
+    at_risk = {r['email'] for r in await get_google_at_risk_users(session)}
+    assert at_risk == {'active@gmail.com', 'blk@gmail.com'}  # blocked kept, deleted excluded

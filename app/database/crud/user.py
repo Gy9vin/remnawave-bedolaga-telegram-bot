@@ -1695,9 +1695,18 @@ async def lock_user_subscriptions_for_update(db: AsyncSession, user_id: int) -> 
 
 
 async def get_google_linked_users(db: AsyncSession) -> list[User]:
-    """All users with a linked Google account and an email (migration audience)."""
+    """Active users with a linked Google account and an email (migration audience).
+
+    Only ACTIVE users: deleted/bot-blocked accounts can't complete cabinet
+    email+password login (see login_email status guard), so emailing them a
+    set-password link is pointless.
+    """
     result = await db.execute(
-        select(User).where(User.google_id.isnot(None), User.email.isnot(None))
+        select(User).where(
+            User.google_id.isnot(None),
+            User.email.isnot(None),
+            User.status == UserStatus.ACTIVE.value,
+        )
     )
     return list(result.scalars().all())
 
@@ -1708,11 +1717,14 @@ async def get_google_at_risk_users(db: AsyncSession) -> list[dict]:
     Flags whether they also blocked the bot / lack Telegram — the hard cases
     unreachable by BOTH email and Telegram.
     """
+    # Exclude DELETED (gone), but KEEP bot-blocked (status='blocked') — those
+    # are exactly the hard cases this list exists to surface (blocked_bot flag).
     result = await db.execute(
         select(User).where(
             User.google_id.isnot(None),
             User.email.isnot(None),
             User.password_hash.is_(None),
+            User.status != UserStatus.DELETED.value,
         )
     )
     return [
@@ -1721,15 +1733,15 @@ async def get_google_at_risk_users(db: AsyncSession) -> list[dict]:
             'email': u.email,
             'auth_type': u.auth_type,
             'has_telegram': u.telegram_id is not None,
-            'blocked_bot': u.status == 'blocked',
+            'blocked_bot': u.status == UserStatus.BLOCKED.value,
         }
         for u in result.scalars().all()
     ]
 
 
 async def get_google_migration_stats(db: AsyncSession) -> dict[str, int]:
-    """Counts for the Google-sunset migration admin dashboard."""
-    base = (User.google_id.isnot(None), User.email.isnot(None))
+    """Counts for the Google-sunset migration admin dashboard (ACTIVE users only)."""
+    base = (User.google_id.isnot(None), User.email.isnot(None), User.status == UserStatus.ACTIVE.value)
     total = await db.scalar(select(func.count()).select_from(User).where(*base))
     google_only = await db.scalar(
         select(func.count()).select_from(User).where(*base, User.auth_type == 'google')
