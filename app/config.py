@@ -1197,6 +1197,9 @@ class Settings(BaseSettings):
     CABINET_EMAIL_VERIFICATION_ENABLED: bool = True
     CABINET_EMAIL_VERIFICATION_EXPIRE_HOURS: int = 24
     CABINET_PASSWORD_RESET_EXPIRE_HOURS: int = 1
+    # Google auth sunset migration (RF legal requirement, 2026-07-07).
+    GOOGLE_MIGRATION_TOKEN_EXPIRE_DAYS: int = 30
+    GOOGLE_AUTH_ENABLED: bool = True  # Phase 2 kill-switch; not enforced yet.
     CABINET_EMAIL_CHANGE_CODE_EXPIRE_MINUTES: int = 15  # Email change verification code expiration
     CABINET_EMAIL_AUTH_ENABLED: bool = True  # Enable email registration/login in cabinet
     CABINET_URL: str = 'https://example.com/cabinet'  # Base URL for cabinet (used in verification emails)

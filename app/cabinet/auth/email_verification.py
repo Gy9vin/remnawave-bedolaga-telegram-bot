@@ -69,6 +69,12 @@ def get_password_reset_expires_at() -> datetime:
     return datetime.now(UTC) + timedelta(hours=hours)
 
 
+def get_google_migration_token_expires_at() -> datetime:
+    """Long-lived expiry for the Google-sunset set-password invite token."""
+    days = max(1, settings.GOOGLE_MIGRATION_TOKEN_EXPIRE_DAYS)
+    return datetime.now(UTC) + timedelta(days=days)
+
+
 def is_token_expired(expires_at: datetime | None) -> bool:
     """
     Check if a token has expired.
