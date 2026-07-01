@@ -949,6 +949,9 @@ def get_admin_messages_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
                     callback_data='admin_pinned_message',
                 )
             ],
+            [
+                InlineKeyboardButton(text='📧 Миграция Google', callback_data='admin_google_migration')
+            ],
             [InlineKeyboardButton(text=texts.BACK, callback_data='admin_submenu_communications')],
         ]
     )
