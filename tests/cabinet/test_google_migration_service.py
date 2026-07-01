@@ -3,14 +3,13 @@ import pytest
 from app.services import google_migration_service as gm
 
 
-def test_build_invite_email_contains_link_and_username():
+def test_build_invite_email_contains_link():
     subject, html = gm.build_invite_email('https://cab.example/reset-password?token=abc', 'Иван')
     assert subject
     assert 'https://cab.example/reset-password?token=abc' in html
-    assert 'Иван' in html
+    assert 'Друзья' in html
     # placeholders fully substituted
     assert '{{set_password_url}}' not in html
-    assert '{{username}}' not in html
 
 
 @pytest.mark.asyncio

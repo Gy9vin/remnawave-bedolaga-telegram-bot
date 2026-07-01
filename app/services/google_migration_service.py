@@ -25,8 +25,7 @@ DEFAULT_SUBJECT = '⚠️ Важно: вход через Google скоро от
 
 _DEFAULT_HTML = """\
 <div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;color:#222;max-width:560px;margin:0 auto">
-  <p>Привет, {{username}}!</p>
-  <p>⚠️ <b>Важное — не пропустите!</b></p>
+  <p>⚠️ <b>Друзья, важное — не пропустите!</b></p>
   <p>С 7 июля вход через <b>Google ID</b> и <b>Apple ID</b> больше не будет работать — такие теперь ограничения 😔</p>
   <p>Чтобы не остаться без доступа к своему кабинету — привяжите другой способ входа уже сейчас 👇</p>
   <p>✅ Telegram&nbsp;&nbsp;✅ Яндекс ID&nbsp;&nbsp;✅ Обычная почта</p>
@@ -81,13 +80,14 @@ class GoogleMigrationService:
                 users = await get_google_linked_users(session)
                 user_ids = [u.id for u in users]
             self._status.total = len(user_ids)
-            for user_id in user_ids:
+            for i, user_id in enumerate(user_ids):
                 ok = await self._process_user(user_id)
                 if ok:
                     self._status.sent += 1
                 else:
                     self._status.failed += 1
-                await asyncio.sleep(_SEND_INTERVAL)
+                if i < len(user_ids) - 1:
+                    await asyncio.sleep(_SEND_INTERVAL)
         except Exception as exc:  # never leave status stuck as running
             logger.exception('Google migration run crashed', exc=exc)
         finally:
