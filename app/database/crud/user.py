@@ -1692,3 +1692,28 @@ async def lock_user_subscriptions_for_update(db: AsyncSession, user_id: int) -> 
         .order_by(Subscription.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+async def get_google_linked_users(db: AsyncSession) -> list[User]:
+    """All users with a linked Google account and an email (migration audience)."""
+    result = await db.execute(
+        select(User).where(User.google_id.isnot(None), User.email.isnot(None))
+    )
+    return list(result.scalars().all())
+
+
+async def get_google_migration_stats(db: AsyncSession) -> dict[str, int]:
+    """Counts for the Google-sunset migration admin dashboard."""
+    base = (User.google_id.isnot(None), User.email.isnot(None))
+    total = await db.scalar(select(func.count()).select_from(User).where(*base))
+    google_only = await db.scalar(
+        select(func.count()).select_from(User).where(*base, User.auth_type == 'google')
+    )
+    with_password = await db.scalar(
+        select(func.count()).select_from(User).where(*base, User.password_hash.isnot(None))
+    )
+    return {
+        'total': int(total or 0),
+        'google_only': int(google_only or 0),
+        'with_password': int(with_password or 0),
+    }
