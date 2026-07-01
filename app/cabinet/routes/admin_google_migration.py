@@ -2,6 +2,7 @@
 
 import structlog
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.crud.user import get_google_at_risk_users, get_google_migration_stats
@@ -41,3 +42,24 @@ async def send_invites(
     started = await google_migration_service.start()
     logger.info('Google migration invites triggered', admin_id=getattr(admin, 'id', None), started=started)
     return {'started': started}
+
+
+class SendTestRequest(BaseModel):
+    email: str
+
+
+@router.post('/send-test')
+async def send_test_invite(
+    request: SendTestRequest,
+    admin: User = Depends(require_permission('broadcasts:send')),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> dict:
+    """Send one invite to a single email (pre-campaign test)."""
+    result = await google_migration_service.send_test_to_email(request.email)
+    logger.info(
+        'Google migration test invite triggered',
+        admin_id=getattr(admin, 'id', None),
+        found=result.get('found'),
+        sent=result.get('sent'),
+    )
+    return result

@@ -10,6 +10,7 @@ def test_routes_registered():
     assert '/cabinet/admin/google-migration/status' in paths
     assert 'GET' in paths['/cabinet/admin/google-migration/status']
     assert 'POST' in paths['/cabinet/admin/google-migration/send']
+    assert 'POST' in paths['/cabinet/admin/google-migration/send-test']
 
 
 @pytest.mark.asyncio
@@ -33,6 +34,19 @@ async def test_at_risk_returns_list(monkeypatch):
     resp = await mod.get_at_risk_users(admin=SimpleNamespace(id=1), db=AsyncMock())
     assert resp['count'] == 1
     assert resp['users'][0]['blocked_bot'] is True
+
+
+@pytest.mark.asyncio
+async def test_send_test_invoke(monkeypatch):
+    from app.cabinet.routes import admin_google_migration as mod
+    monkeypatch.setattr(
+        mod.google_migration_service, 'send_test_to_email', AsyncMock(return_value={'found': True, 'sent': True})
+    )
+    resp = await mod.send_test_invite(
+        request=mod.SendTestRequest(email='me@example.com'), admin=SimpleNamespace(id=1), db=AsyncMock()
+    )
+    assert resp == {'found': True, 'sent': True}
+    mod.google_migration_service.send_test_to_email.assert_awaited_once_with('me@example.com')
 
 
 @pytest.mark.asyncio

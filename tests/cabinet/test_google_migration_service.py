@@ -18,3 +18,10 @@ async def test_start_is_single_flight(monkeypatch):
     service._status.running = True  # simulate in-progress run
     started = await service.start()
     assert started is False
+
+
+@pytest.mark.asyncio
+async def test_send_test_to_email_empty_returns_not_found():
+    service = gm.GoogleMigrationService()
+    assert await service.send_test_to_email('') == {'found': False, 'sent': False}
+    assert await service.send_test_to_email('   ') == {'found': False, 'sent': False}

@@ -74,6 +74,32 @@ class GoogleMigrationService:
     def get_status(self) -> dict:
         return asdict(self._status)
 
+    async def send_test_to_email(self, email: str) -> dict:
+        """Send ONE invite to a single user by email (pre-campaign test).
+
+        Reuses the exact per-user logic (long-lived token, email_verified=True,
+        invite email). Works for any existing user with that email — so an admin
+        can test on their own account. Returns {'found': bool, 'sent': bool}.
+        """
+        from sqlalchemy import func, select
+
+        from app.database.models import User
+
+        normalized = (email or '').strip().lower()
+        if not normalized:
+            return {'found': False, 'sent': False}
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(User).where(func.lower(User.email) == normalized))
+            user = result.scalar_one_or_none()
+            if user is None:
+                return {'found': False, 'sent': False}
+            user_id = user.id
+
+        sent = await self._process_user(user_id)
+        logger.info('Google-migration test invite sent', email=normalized, sent=sent)
+        return {'found': True, 'sent': bool(sent)}
+
     async def _run(self) -> None:
         try:
             async with AsyncSessionLocal() as session:
