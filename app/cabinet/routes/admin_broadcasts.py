@@ -766,9 +766,16 @@ async def get_broadcast_blocked_active(
     admin: User = Depends(require_permission('broadcasts:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ) -> dict:
-    """Get users who blocked the bot in this broadcast but still have an active subscription."""
+    """Get users who blocked the bot in this broadcast but still have an active subscription.
+
+    `recorded` tells the UI whether the blocker list was saved for this broadcast:
+    broadcasts run before this feature shipped have blocked_user_ids=NULL, so an
+    empty list there means "not recorded", not "no active subscribers".
+    """
+    bh = await db.get(BroadcastHistory, broadcast_id)
+    recorded = bh is not None and bh.blocked_user_ids is not None
     users = await get_broadcast_blocked_active_subscribers(db, broadcast_id)
-    return {'count': len(users), 'users': users}
+    return {'count': len(users), 'users': users, 'recorded': recorded}
 
 
 @router.get('/{broadcast_id}', response_model=BroadcastResponse)
