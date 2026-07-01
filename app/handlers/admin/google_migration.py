@@ -27,11 +27,13 @@ async def show_menu(callback: CallbackQuery) -> None:
     async with AsyncSessionLocal() as session:
         stats = await get_google_migration_stats(session)
     status = google_migration_service.get_status()
+    at_risk = stats['total'] - stats['with_password']
     text = (
         '📧 <b>Миграция Google-пользователей</b>\n\n'
         f'Всего с Google: <b>{stats["total"]}</b>\n'
         f'Только через Google: <b>{stats["google_only"]}</b>\n'
-        f'Уже задали пароль: <b>{stats["with_password"]}</b>\n\n'
+        f'Уже задали пароль: <b>{stats["with_password"]}</b>\n'
+        f'❗️ Не задали пароль: <b>{at_risk}</b>\n\n'
     )
     if status['running']:
         text += f'⏳ Идёт рассылка: {status["sent"]}/{status["total"]} (ошибок {status["failed"]})'
