@@ -513,7 +513,7 @@ async def get_migration_status(
 
 @router.post('/send')
 async def send_invites(
-    admin: User = Depends(require_permission('broadcasts:write')),
+    admin: User = Depends(require_permission('broadcasts:send')),
     db: AsyncSession = Depends(get_cabinet_db),
 ) -> dict:
     started = await google_migration_service.start()
@@ -539,7 +539,7 @@ git add app/cabinet/routes/admin_google_migration.py app/cabinet/routes/__init__
 git commit -m "feat(google-migration): admin-эндпоинты кабинета status/send
 
 GET /cabinet/admin/google-migration/status — счётчики + статус рассылки,
-POST .../send — запуск рассылки инвайтов. Под RBAC broadcasts:read/write."
+POST .../send — запуск рассылки инвайтов. Под RBAC broadcasts:read/send."
 ```
 
 ---
