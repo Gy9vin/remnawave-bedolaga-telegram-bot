@@ -34,6 +34,77 @@ os.environ.setdefault('BACKUP_LOCATION', _tempfile.mkdtemp(prefix='bedolaga_test
 sys.modules.setdefault('asyncpg', types.ModuleType('asyncpg'))
 sys.modules.setdefault('aiosqlite', types.ModuleType('aiosqlite'))
 
+# Заглушка для пакета «Crypto» (pycryptodome). В нашем окружении установлен
+# pycryptodomex (namespace «Cryptodome»), а некоторый код импортирует «Crypto».
+# Используем мета-импортёр, который авто-создаёт заглушки для любых Crypto.*
+# без загрузки нативных расширений (что вызывало cffi-конфликты).
+if 'Crypto' not in sys.modules:
+    import importlib
+    import importlib.abc
+    import importlib.machinery
+
+    class _CryptoStubFinder(importlib.abc.MetaPathFinder):
+        """Автоматически подставляет пустые заглушки для Crypto и Crypto.* ."""
+
+        def find_spec(self, fullname, path, target=None):
+            if fullname == 'Crypto' or fullname.startswith('Crypto.'):
+                return importlib.machinery.ModuleSpec(fullname, _CryptoStubLoader(), is_package=True)
+            return None
+
+    class _CryptoStubLoader(importlib.abc.Loader):
+        def create_module(self, spec):
+            mod = types.ModuleType(spec.name)
+            mod.__path__ = []
+            return mod
+
+        def exec_module(self, module):
+            pass  # Заглушка — ничего не делает
+
+    sys.meta_path.insert(0, _CryptoStubFinder())
+
+# Заглушка для Apple App Store Server Library (опциональная зависимость).
+if 'appstoreserverlibrary' not in sys.modules:
+    _apple_pkg = types.ModuleType('appstoreserverlibrary')
+    _apple_pkg.__path__ = []
+
+    _apple_api = types.ModuleType('appstoreserverlibrary.api_client')
+
+    class _FakeAPIException(Exception):
+        pass
+
+    class _FakeAsyncAppStoreServerAPIClient:
+        pass
+
+    _apple_api.APIException = _FakeAPIException
+    _apple_api.AsyncAppStoreServerAPIClient = _FakeAsyncAppStoreServerAPIClient
+
+    _apple_models = types.ModuleType('appstoreserverlibrary.models')
+    _apple_models.__path__ = []
+    _apple_env = types.ModuleType('appstoreserverlibrary.models.Environment')
+
+    class _FakeEnvironment:
+        PRODUCTION = 'Production'
+        SANDBOX = 'Sandbox'
+
+    _apple_env.Environment = _FakeEnvironment
+
+    _apple_verifier = types.ModuleType('appstoreserverlibrary.signed_data_verifier')
+
+    class _FakeVerificationException(Exception):
+        pass
+
+    class _FakeSignedDataVerifier:
+        pass
+
+    _apple_verifier.SignedDataVerifier = _FakeSignedDataVerifier
+    _apple_verifier.VerificationException = _FakeVerificationException
+
+    sys.modules['appstoreserverlibrary'] = _apple_pkg
+    sys.modules['appstoreserverlibrary.api_client'] = _apple_api
+    sys.modules['appstoreserverlibrary.models'] = _apple_models
+    sys.modules['appstoreserverlibrary.models.Environment'] = _apple_env
+    sys.modules['appstoreserverlibrary.signed_data_verifier'] = _apple_verifier
+
 # Эмуляция redis.asyncio, чтобы модуль кеша мог импортироваться.
 if 'redis.asyncio' not in sys.modules:
     redis_module = types.ModuleType('redis')
