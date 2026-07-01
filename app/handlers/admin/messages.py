@@ -11,6 +11,7 @@ from sqlalchemy.exc import InterfaceError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database.crud.broadcast_reports import get_broadcast_blocked_active_subscribers
 from app.database.crud.subscription import get_expiring_subscriptions
 from app.database.crud.tariff import get_all_tariffs
 from app.database.crud.user import get_users_list
@@ -167,12 +168,34 @@ def create_broadcast_keyboard(
     return types.InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+def _format_blocked_active_summary(blocked_active: list[dict]) -> str:
+    """Build the '…with active subscription' block for the broadcast result message.
+
+    blocked_active: list of dicts from get_broadcast_blocked_active_subscribers
+    (sorted by days_left asc). Shows a count line + top 10; notes truncation.
+    Returns '' when the list is empty.
+    """
+    import html as _html
+    if not blocked_active:
+        return ''
+    lines = [f'🚫 <b>Из них с активной подпиской: {len(blocked_active)}</b>']
+    for u in blocked_active[:10]:
+        username = u.get('username')
+        who = f'@{_html.escape(username)}' if username else f'id{u["telegram_id"]}'
+        tariff = _html.escape(str(u.get('tariff_name') or '—'))
+        lines.append(f'  • {who} — {tariff}, ещё {u["days_left"]} дн.')
+    if len(blocked_active) > 10:
+        lines.append('  …полный список в кабинете')
+    return '\n'.join(lines) + '\n'
+
+
 async def _persist_broadcast_result(
     broadcast_id: int,
     sent_count: int,
     failed_count: int,
     status: str,
     blocked_count: int = 0,
+    blocked_user_ids: list[int] | None = None,
 ) -> None:
     """
     Сохраняет результаты рассылки в НОВОЙ сессии.
@@ -205,6 +228,7 @@ async def _persist_broadcast_result(
                 broadcast_history.sent_count = sent_count
                 broadcast_history.failed_count = failed_count
                 broadcast_history.blocked_count = blocked_count
+                broadcast_history.blocked_user_ids = blocked_user_ids
                 broadcast_history.status = status
                 broadcast_history.completed_at = completed_at
                 await session.commit()
@@ -1484,7 +1508,17 @@ async def confirm_broadcast(callback: types.CallbackQuery, db_user: User, state:
         failed_count=failed_count,
         status=status,
         blocked_count=blocked_count,
+        blocked_user_ids=blocked_telegram_ids,
     )
+
+    active_sub_summary = ''
+    if blocked_telegram_ids:
+        try:
+            async with AsyncSessionLocal() as session:
+                blocked_active = await get_broadcast_blocked_active_subscribers(session, broadcast_id)
+            active_sub_summary = _format_blocked_active_summary(blocked_active)
+        except Exception as exc:
+            logger.warning('Не удалось посчитать заблокировавших с активной подпиской', broadcast_id=broadcast_id, exc=exc)
 
     success_rate = round(sent_count / total_users_count * 100, 1) if total_users_count else 0
     media_info = f'\n🖼️ <b>Медиафайл:</b> {media_type}' if has_media else ''
@@ -1495,6 +1529,7 @@ async def confirm_broadcast(callback: types.CallbackQuery, db_user: User, state:
         f'📊 <b>Результат:</b>\n'
         f'• Отправлено: {sent_count}\n'
         f'{blocked_line}'
+        f'{active_sub_summary}'
         f'• Не доставлено: {failed_count}\n'
         f'• Всего пользователей: {total_users_count}\n'
         f'• Успешность: {success_rate}%{media_info}\n\n'
