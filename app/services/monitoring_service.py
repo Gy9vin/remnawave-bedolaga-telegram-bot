@@ -239,15 +239,30 @@ class MonitoringService:
             try:
                 from app.utils.message_patch import _cache_logo_file_id, get_logo_media
 
-                result = await self.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=get_logo_media(),
-                    caption=text,
-                    reply_markup=reply_markup,
-                    parse_mode=parse_mode,
+                # Жёсткий per-send таймаут: без него залипший send_photo (на медленном
+                # канале это особенно вероятно на ПЕРВОЙ отправке цикла, где грузится
+                # файл логотипа ~700КБ — file_id кешируется только после успеха) держит
+                # await до session timeout (60s) на каждого получателя и блокирует хвост
+                # цикла мониторинга. На TimeoutError пропускаем получателя.
+                result = await asyncio.wait_for(
+                    self.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=get_logo_media(),
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode=parse_mode,
+                    ),
+                    timeout=settings.MONITORING_NOTIFICATION_SEND_TIMEOUT,
                 )
                 _cache_logo_file_id(result)
                 return result
+            except TimeoutError:
+                logger.warning(
+                    'send_photo завис дольше таймаута — пропускаем получателя, цикл продолжается',
+                    chat_id=chat_id,
+                    timeout=settings.MONITORING_NOTIFICATION_SEND_TIMEOUT,
+                )
+                return None
             except TelegramBadRequest as exc:
                 if self._is_unreachable_error(exc):
                     raise
@@ -257,12 +272,23 @@ class MonitoringService:
                     exc=str(exc),
                 )
 
-        return await self.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode,
-        )
+        try:
+            return await asyncio.wait_for(
+                self.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                ),
+                timeout=settings.MONITORING_NOTIFICATION_SEND_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                'send_message завис дольше таймаута — пропускаем получателя, цикл продолжается',
+                chat_id=chat_id,
+                timeout=settings.MONITORING_NOTIFICATION_SEND_TIMEOUT,
+            )
+            return None
 
     @staticmethod
     def _is_unreachable_error(error: TelegramBadRequest) -> bool:
@@ -398,6 +424,7 @@ class MonitoringService:
             )
             await self._run_monitoring_task(db, self._retry_stuck_guest_purchases(db), '_retry_stuck_guest_purchases')
             await self._run_monitoring_task(db, self._cleanup_inactive_users(db), '_cleanup_inactive_users')
+            await self._run_monitoring_task(db, self._cleanup_button_click_logs(db), '_cleanup_button_click_logs')
             await self._run_monitoring_task(db, self._sync_with_remnawave(db), '_sync_with_remnawave')
             await self._run_monitoring_task(
                 db, self._reconcile_expiry_fallback(db), '_reconcile_expiry_fallback'
@@ -2285,6 +2312,9 @@ class MonitoringService:
                 '💳 <b>Автоплатеж:</b> {autopay_status}\n\n'
                 '{action_text}\n',
             ).format(
+                # Кастомные/старые локали используют {days} вместо {days_text} —
+                # передаём оба, иначе .format() падает с KeyError('days') (#2737).
+                days=days,
                 days_text=days_text,
                 end_date=end_date,
                 autopay_status=autopay_status,
@@ -3035,6 +3065,34 @@ class MonitoringService:
                 logger.info('Cleaned up expired/revoked refresh tokens', deleted_count=deleted)
         except Exception as error:
             logger.error('Error cleaning up refresh tokens', error=error)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+
+    async def _cleanup_button_click_logs(self, db: AsyncSession):
+        """Чистит старые записи лога действий юзеров (USER_ACTION_LOG_RETENTION_DAYS)."""
+        try:
+            retention_days = settings.USER_ACTION_LOG_RETENTION_DAYS
+            if retention_days <= 0:
+                return
+
+            now = datetime.now(UTC)
+            if now.hour != 4:
+                return
+
+            from sqlalchemy import delete
+
+            from app.database.models import ButtonClickLog
+
+            stmt = delete(ButtonClickLog).where(ButtonClickLog.clicked_at < now - timedelta(days=retention_days))
+            result = await db.execute(stmt)
+            deleted = result.rowcount
+            if deleted > 0:
+                await db.commit()
+                logger.info('Очищены старые записи лога действий', deleted_count=deleted)
+        except Exception as error:
+            logger.error('Ошибка очистки лога действий', error=error)
             try:
                 await db.rollback()
             except Exception:

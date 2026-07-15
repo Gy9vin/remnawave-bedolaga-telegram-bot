@@ -37,6 +37,35 @@ def _escape_like(s: str) -> str:
 
 logger = structlog.get_logger(__name__)
 
+# PostgreSQL BIGINT upper bound. A numeric search term larger than this fits a
+# Python int but overflows the telegram_id BigInteger column, so comparing against
+# it raises a DB error instead of returning no rows.
+_BIGINT_MAX = 9223372036854775807
+
+
+def _user_search_conditions(search: str) -> list:
+    """Build the OR-conditions for the admin user search box (id/name/username).
+
+    Always matches the text columns; matches telegram_id only when the term is an
+    in-range BIGINT number. A digit string that overflows BIGINT (or a non-ASCII
+    "digit" that int() rejects) would otherwise crash the query, so it falls back
+    to text-only matching instead.
+    """
+    search_term = f'%{_escape_like(search)}%'
+    conditions = [
+        User.first_name.ilike(search_term, escape='\\'),
+        User.last_name.ilike(search_term, escape='\\'),
+        User.username.ilike(search_term, escape='\\'),
+    ]
+    if search.isdigit():
+        try:
+            search_int = int(search)
+        except ValueError:
+            search_int = None
+        if search_int is not None and 0 <= search_int <= _BIGINT_MAX:
+            conditions.append(User.telegram_id == search_int)
+    return conditions
+
 
 def _normalize_language_code(language: str | None, fallback: str = 'ru') -> str:
     normalized = (language or '').strip().lower()
@@ -965,22 +994,7 @@ async def get_users_list(
         )
 
     if search:
-        search_term = f'%{_escape_like(search)}%'
-        conditions = [
-            User.first_name.ilike(search_term, escape='\\'),
-            User.last_name.ilike(search_term, escape='\\'),
-            User.username.ilike(search_term, escape='\\'),
-        ]
-
-        if search.isdigit():
-            try:
-                search_int = int(search)
-                conditions.append(User.telegram_id == search_int)
-
-            except ValueError:
-                pass
-
-        query = query.where(or_(*conditions))
+        query = query.where(or_(*_user_search_conditions(search)))
 
     if email:
         query = query.where(User.email.ilike(f'%{_escape_like(email)}%', escape='\\'))
@@ -1099,22 +1113,7 @@ async def get_users_count(
         )
 
     if search:
-        search_term = f'%{_escape_like(search)}%'
-        conditions = [
-            User.first_name.ilike(search_term, escape='\\'),
-            User.last_name.ilike(search_term, escape='\\'),
-            User.username.ilike(search_term, escape='\\'),
-        ]
-
-        if search.isdigit():
-            try:
-                search_int = int(search)
-                conditions.append(User.telegram_id == search_int)
-
-            except ValueError:
-                pass
-
-        query = query.where(or_(*conditions))
+        query = query.where(or_(*_user_search_conditions(search)))
 
     if email:
         query = query.where(User.email.ilike(f'%{_escape_like(email)}%', escape='\\'))

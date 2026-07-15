@@ -49,7 +49,7 @@ if 'Crypto' not in sys.modules:
     #   from Crypto.Signature import pkcs1_15
     # Заглушаем ТОЛЬКО эти ветки Crypto (и их подмодули), а не весь namespace,
     # чтобы не маскировать молча возможные будущие реальные crypto-тесты.
-    _CRYPTO_STUB_PREFIXES = ('Crypto.Hash', 'Crypto.PublicKey', 'Crypto.Signature')
+    _CRYPTO_STUB_PREFIXES = ('Crypto.Hash', 'Crypto.PublicKey', 'Crypto.Signature', 'Crypto.Cipher')
 
     class _CryptoStubFinder(importlib.abc.MetaPathFinder):
         """Подставляет пустые заглушки для Crypto и allowlist-веток Crypto.* ."""

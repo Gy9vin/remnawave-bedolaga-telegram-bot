@@ -70,6 +70,12 @@ class AdminStates(StatesGroup):
     setting_promocode_registered_before = State()  # Ввод даты регистрации (ограничение по дате)
     selecting_promo_group = State()
 
+    creating_coupon_batch_days = State()
+    creating_coupon_batch_count = State()
+    creating_coupon_batch_name = State()
+    creating_coupon_batch_price = State()
+    creating_coupon_batch_expiry = State()
+
     creating_campaign_name = State()
     creating_campaign_start = State()
     creating_campaign_bonus = State()
