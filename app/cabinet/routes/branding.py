@@ -265,6 +265,12 @@ class EmailAuthEnabledUpdate(BaseModel):
     enabled: bool
 
 
+class SubscriptionRevokeEnabledResponse(BaseModel):
+    """Whether the subscription reissue (revoke) button is enabled."""
+
+    enabled: bool = True
+
+
 class TelegramWidgetConfigResponse(BaseModel):
     """Public Telegram Login Widget configuration."""
 
@@ -921,6 +927,16 @@ async def get_email_auth_enabled(
         enabled=settings.is_cabinet_email_auth_enabled(),
         verification_enabled=settings.is_cabinet_email_verification_enabled(),
     )
+
+
+@router.get('/subscription-revoke', response_model=SubscriptionRevokeEnabledResponse)
+async def get_subscription_revoke_enabled():
+    """Whether the subscription reissue (revoke) button should be shown.
+
+    Public endpoint — controlled by the SUBSCRIPTION_REVOKE_ENABLED env flag
+    (the same one that gates the bot buttons and the /subscription/revoke endpoint).
+    """
+    return SubscriptionRevokeEnabledResponse(enabled=settings.is_subscription_revoke_enabled())
 
 
 @router.patch('/email-auth', response_model=EmailAuthEnabledResponse)
