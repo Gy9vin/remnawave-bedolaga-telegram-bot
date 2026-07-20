@@ -752,6 +752,9 @@ class Settings(BaseSettings):
 
     # KassaAI (api.fk.life) - отдельная платёжка
     KASSA_AI_ENABLED: bool = False
+    # Базовый URL API KassaAI. Вынесен в env, чтобы при блокировках РКН можно было
+    # переключить домен без правок кода (напр. https://api.duckgo.io/v1). Без /orders в конце.
+    KASSA_AI_API_URL: str = 'https://api.fk.life/v1'
     KASSA_AI_SHOP_ID: int | None = None
     KASSA_AI_API_KEY: str | None = None
     KASSA_AI_SECRET_WORD_2: str | None = None  # Для webhook

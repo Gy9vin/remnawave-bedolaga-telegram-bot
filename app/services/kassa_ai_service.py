@@ -25,7 +25,9 @@ KASSA_AI_SUB_METHODS = {
 _cached_public_ip: str | None = None
 _ip_fetch_lock = asyncio.Lock()
 
-API_BASE_URL = 'https://api.fk.life/v1'
+# Базовый URL берётся из настроек (env KASSA_AI_API_URL) — чтобы переключать
+# домен при блокировках РКН без правок кода. Дефолт — api.fk.life.
+API_BASE_URL = (settings.KASSA_AI_API_URL or 'https://api.fk.life/v1').rstrip('/')
 
 # Сервисы для определения публичного IP
 IP_SERVICES = [
