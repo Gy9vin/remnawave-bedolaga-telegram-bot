@@ -26,6 +26,7 @@ from .subscription_modules import (
     traffic_router,
 )
 from .subscription_modules.status import get_subscription as _get_subscription_handler
+from app.database.crud.subscription_event import get_subscription_purchase_timeline
 
 
 router = APIRouter(prefix='/subscription', tags=['Cabinet Subscription'])
@@ -39,6 +40,16 @@ async def get_subscription(
     subscription_id: int | None = Query(None, description='Subscription ID for multi-tariff'),
 ):
     return await _get_subscription_handler(user=user, db=db, subscription_id=subscription_id)
+
+
+@router.get('/timeline')
+async def get_subscription_timeline(
+    user=Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> dict:
+    """История покупок/продлений текущего пользователя."""
+    events = await get_subscription_purchase_timeline(db, user.id)
+    return {'events': events, 'since': events[0]['date'] if events else None}
 
 
 # Include all sub-routers
