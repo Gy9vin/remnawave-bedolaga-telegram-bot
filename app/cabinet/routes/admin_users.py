@@ -15,6 +15,7 @@ from app.database.crud.campaign import get_campaign_registration_by_user
 from app.database.crud.subscription import (
     extend_subscription,
 )
+from app.database.crud.subscription_event import get_subscription_purchase_timeline
 from app.database.crud.tariff import get_tariff_by_id
 from app.database.crud.user import (
     add_user_balance,
@@ -981,6 +982,17 @@ async def get_subscription_request_history(
     except Exception as e:
         logger.error('Error getting subscription request history', user_id=user_id, error=e)
         return {'total': 0, 'records': []}
+
+
+@router.get('/{user_id}/subscription-timeline')
+async def get_user_subscription_timeline(
+    user_id: int,
+    admin: User = Depends(require_permission('users:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> dict:
+    """История покупок/продлений подписки пользователя (для админа)."""
+    events = await get_subscription_purchase_timeline(db, user_id)
+    return {'events': events, 'since': events[0]['date'] if events else None}
 
 
 @router.get('/{user_id}/node-usage', response_model=UserNodeUsageResponse)
