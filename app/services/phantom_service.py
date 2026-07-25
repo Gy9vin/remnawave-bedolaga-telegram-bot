@@ -8,7 +8,6 @@ we match by username and either claim or merge the phantom into their active acc
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Literal
 
 import structlog
 from sqlalchemy.exc import IntegrityError
@@ -142,27 +141,32 @@ async def merge_phantom_into_user(
     Returns True if a subscription was transferred from phantom (caller should sync
     Remnawave panel AFTER commit via ``sync_remnawave_after_phantom_merge``).
     """
-    # Determine which subscription to keep: phantom's if active user has none, otherwise active's
+    # Refresh subscriptions to inspect what the phantom had before merge.
     await db.refresh(phantom, ['subscriptions'])
     await db.refresh(active_user, ['subscriptions'])
     phantom_subs = getattr(phantom, 'subscriptions', None) or []
-    active_subs = getattr(active_user, 'subscriptions', None) or []
-    keep_from: Literal['primary', 'secondary'] = 'secondary' if phantom_subs and not active_subs else 'primary'
+
+    # Determine whether the phantom had an active (non-expired) subscription that
+    # contributes to the merge. This is used as the return value so callers know
+    # whether a Remnawave panel sync is needed after commit.
+    now = datetime.now(UTC)
+    phantom_had_active_sub = any(
+        s.status in ('active', 'trial', 'limited') and (s.end_date is None or s.end_date > now)
+        for s in phantom_subs
+    )
 
     logger.warning(
         'Merging phantom user into active user via execute_merge',
         phantom_id=phantom.id,
         active_user_id=active_user.id,
-        keep_subscription_from=keep_from,
-        phantom_has_sub=phantom.subscription is not None,
-        active_has_sub=active_user.subscription is not None,
+        phantom_had_active_sub=phantom_had_active_sub,
+        phantom_has_sub=bool(phantom_subs),
     )
 
     await execute_merge(
         db,
         primary_user_id=active_user.id,
         secondary_user_id=phantom.id,
-        keep_subscription_from=keep_from,
         provider='phantom_merge',
     )
 
@@ -178,7 +182,7 @@ async def merge_phantom_into_user(
                 details={
                     'phantom_id': phantom.id,
                     'active_user_id': active_user.id,
-                    'keep_subscription_from': keep_from,
+                    'phantom_had_active_sub': phantom_had_active_sub,
                     'phantom_username': phantom.username,
                 },
                 status='success',
@@ -191,7 +195,7 @@ async def merge_phantom_into_user(
             exc_info=True,
         )
 
-    return keep_from == 'secondary'
+    return phantom_had_active_sub
 
 
 async def sync_remnawave_after_phantom_merge(db: AsyncSession, user: User) -> None:

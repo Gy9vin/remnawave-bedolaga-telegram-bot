@@ -28,6 +28,7 @@ from app.database.crud.user import (
 )
 from app.database.models import User
 from app.services.account_merge_service import (
+    _resolve_merge_roles,
     compute_auth_methods,
     execute_merge,
     flush_remnawave_deletions,
@@ -178,6 +179,8 @@ class MergePreviewUser(BaseModel):
     balance_kopeks: int = 0
     subscription: MergePreviewSubscription | None = None
     created_at: datetime | None = None
+    referrals_count: int = 0
+    recommended: bool = False
 
 
 class MergePreviewResponse(BaseModel):
@@ -187,7 +190,7 @@ class MergePreviewResponse(BaseModel):
 
 
 class MergeRequest(BaseModel):
-    keep_subscription_from: int = Field(..., description='User ID whose subscription to keep')
+    keep_account: int = Field(..., description='User ID of the account that should survive (become primary)')
 
 
 class MergeResponse(BaseModel):
@@ -961,30 +964,34 @@ async def execute_merge_endpoint(
             detail='This merge can only be completed by the account that started it.',
         )
 
-    # 2. Validate keep_subscription_from — restore token if invalid
-    if request.keep_subscription_from not in (primary_user_id, secondary_user_id):
+    # 2. Validate keep_account and resolve merge roles in one step.
+    # Role-swap: the chosen account plays 'primary' (survivor) in execute_merge.
+    # If the user chose the secondary, we swap roles so the secondary is absorbed-into
+    # and the initiator is absorbed.
+    # _resolve_merge_roles raises ValueError when keep_account is not one of the two ids.
+    try:
+        survivor_id, absorbed_id = _resolve_merge_roles(
+            keep_account=request.keep_account,
+            primary_user_id=primary_user_id,
+            secondary_user_id=secondary_user_id,
+        )
+    except ValueError:
         await restore_merge_token(merge_token, consumed)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail='keep_subscription_from must be one of the two user IDs being merged',
+            detail='keep_account must be one of the two user IDs being merged',
         )
 
-    # Convert user_id to 'primary'/'secondary' string for execute_merge()
-    keep_from: Literal['primary', 'secondary'] = (
-        'primary' if request.keep_subscription_from == primary_user_id else 'secondary'
-    )
-
-    # 3. Execute merge.
+    # 3. Execute merge (survivor plays 'primary' role).
     # RemnaWave user deletions are DEFERRED until after commit: an external delete
     # can't be rolled back with the DB, so deleting before commit would (on a
     # failed merge) leave a deleted panel user while the DB merge is rolled back.
     deferred_deletions: list[str] = []
     try:
-        merged_user = await execute_merge(
+        await execute_merge(
             db=db,
-            primary_user_id=primary_user_id,
-            secondary_user_id=secondary_user_id,
-            keep_subscription_from=keep_from,
+            primary_user_id=survivor_id,
+            secondary_user_id=absorbed_id,
             provider=provider,
             provider_id=provider_id,
             deferred_remnawave_deletions=deferred_deletions,
@@ -992,8 +999,6 @@ async def execute_merge_endpoint(
         await db.commit()
     except ValueError as exc:
         await db.rollback()
-        # ValueError = пользователь не найден/удалён — это пользовательский сценарий (двойной клик / повтор),
-        # не системная ошибка. Логируем как warning.
         logger.warning('Merge execution skipped (user already merged/deleted)', reason=str(exc))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1002,8 +1007,6 @@ async def execute_merge_endpoint(
     except Exception as exc:
         await db.rollback()
         from sqlalchemy.exc import IntegrityError
-
-        # IntegrityError (UniqueViolation и пр.) — не временная ошибка, повтор не поможет
         if not isinstance(exc, IntegrityError):
             await restore_merge_token(merge_token, consumed)
         logger.exception('Merge execution failed')
@@ -1012,11 +1015,11 @@ async def execute_merge_endpoint(
             detail='Account merge failed due to an internal error',
         ) from exc
 
-    # Commit succeeded — only now drop the discarded subscription's panel user.
+    # Commit succeeded — now drop the discarded subscription's panel user.
     await flush_remnawave_deletions(deferred_deletions)
 
-    # 4. Re-fetch merged user with full relationships for auth response
-    merged_user = await get_user_by_id(db, primary_user_id)
+    # 4. Re-fetch the SURVIVOR with full relationships for auth response
+    merged_user = await get_user_by_id(db, survivor_id)
     if not merged_user:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1026,23 +1029,18 @@ async def execute_merge_endpoint(
     # BUG-7 fix: Resync merged user's subscriptions with RemnaWave panel
     try:
         from app.services.remnawave_resync_service import resync_user_subscriptions_with_panel
-
         resync_result = await resync_user_subscriptions_with_panel(db, merged_user)
         logger.info(
             'Post-merge resync completed',
-            primary_user_id=primary_user_id,
-            secondary_user_id=secondary_user_id,
+            survivor_id=survivor_id,
+            absorbed_id=absorbed_id,
             synced=resync_result['synced'],
             failed=resync_result['failed'],
         )
     except Exception as resync_error:
-        logger.error(
-            'Post-merge resync failed (non-fatal)',
-            primary_user_id=primary_user_id,
-            error=resync_error,
-        )
+        logger.error('Post-merge resync failed (non-fatal)', survivor_id=survivor_id, error=resync_error)
 
-    # 5. Create auth tokens for the merged user
+    # 5. Create auth tokens for the SURVIVOR
     try:
         auth_response = await _create_auth_response(merged_user, db)
         await _store_refresh_token(db, merged_user.id, auth_response.refresh_token, device_info='merge')
@@ -1055,8 +1053,9 @@ async def execute_merge_endpoint(
 
     logger.info(
         'Account merge completed successfully',
-        primary_user_id=primary_user_id,
-        secondary_user_id=secondary_user_id,
+        survivor_id=survivor_id,
+        absorbed_id=absorbed_id,
+        keep_account=request.keep_account,
         provider=provider,
     )
 

@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -10,6 +10,7 @@ from app.services import account_merge_service
 from app.services.account_merge_service import (
     _build_subscription_preview,
     _build_user_preview,
+    _resolve_merge_roles,
     compute_auth_methods,
     execute_merge,
     get_merge_preview,
@@ -135,6 +136,7 @@ def _make_db() -> SimpleNamespace:
         execute=AsyncMock(),
         delete=AsyncMock(),
         flush=AsyncMock(),
+        add=MagicMock(),
     )
 
 
@@ -260,6 +262,8 @@ class TestGetMergePreview:
             'get_user_by_id',
             AsyncMock(side_effect=[primary, secondary]),
         )
+        async def _fake_count(db, user_id): return 0
+        monkeypatch.setattr(account_merge_service, '_count_active_referrals', _fake_count)
         result = await get_merge_preview(db, 1, 2)
         assert result['primary']['id'] == 1
         assert result['secondary']['id'] == 2
@@ -318,12 +322,6 @@ class TestExecuteMergeValidation:
         )
         with pytest.raises(ValueError, match='удалён'):
             await execute_merge(db, 1, 2)
-
-    async def test_invalid_keep_subscription_from_raises(self):
-        db = _make_db()
-        with pytest.raises(ValueError, match=r'primary.*secondary'):
-            await execute_merge(db, 1, 2, keep_subscription_from='invalid')
-
 
 # ---------------------------------------------------------------------------
 # execute_merge — data transfer
@@ -718,9 +716,13 @@ class TestExecuteMergeSubscription:
         assert secondary.remnawave_uuid is None
 
     async def test_both_have_subscription_keep_primary(self, monkeypatch):
+        """When both have subscriptions, the later-ending sub (or primary's if equal) wins.
+        The loser sub is marked expired and deferred for RemnaWave deletion — NOT hard-deleted.
+        Both subs have the same default end_date (2025-01-01), so primary's wins; loser's
+        remnawave_uuid is deferred for deletion."""
         db = _make_db()
-        sub_p = _make_subscription(user_id=1)
-        sub_s = _make_subscription(user_id=2)
+        sub_p = _make_subscription(user_id=1, remnawave_uuid='rw-sub-p')
+        sub_s = _make_subscription(user_id=2, remnawave_uuid='rw-sub-s')
         primary = _make_user(id=1, subscription=sub_p, remnawave_uuid='rw-primary')
         secondary = _make_user(id=2, subscription=sub_s, remnawave_uuid='rw-secondary')
         monkeypatch.setattr(
@@ -729,30 +731,39 @@ class TestExecuteMergeSubscription:
             AsyncMock(side_effect=[primary, secondary]),
         )
         with _patch_remnawave_delete() as mock_del:
-            await execute_merge(db, 1, 2, keep_subscription_from='primary')
+            await execute_merge(db, 1, 2)
+            # Loser (secondary) remnawave_uuid deferred for deletion
             mock_del.assert_awaited_once_with('rw-secondary')
 
-        db.delete.assert_awaited_once_with(sub_s)
+        # Combine: loser is expired, NOT hard-deleted
+        db.delete.assert_not_awaited()
+        assert sub_s.status == 'expired'
+        assert sub_s.user_id == 1  # transferred to primary
 
     async def test_both_have_subscription_keep_secondary(self, monkeypatch):
+        """When both have subscriptions and secondary becomes survivor via role-swap,
+        the survivor (now in primary slot) sub wins. Loser sub is marked expired, NOT deleted.
+        Both subs have the same default end_date (2025-01-01), so primary (=ex-secondary) wins."""
         db = _make_db()
-        sub_p = _make_subscription(user_id=1)
-        sub_s = _make_subscription(user_id=2)
-        primary = _make_user(id=1, subscription=sub_p, remnawave_uuid='rw-primary')
-        secondary = _make_user(id=2, subscription=sub_s, remnawave_uuid='rw-secondary')
+        sub_p = _make_subscription(user_id=2, remnawave_uuid='rw-sub-p')
+        sub_s = _make_subscription(user_id=1, remnawave_uuid='rw-sub-s')
+        # Swap: caller (endpoint) already resolved roles; secondary is now primary_user_id=2
+        primary = _make_user(id=2, subscription=sub_p, remnawave_uuid='rw-primary')
+        secondary = _make_user(id=1, subscription=sub_s, remnawave_uuid='rw-secondary')
         monkeypatch.setattr(
             account_merge_service,
             'get_user_by_id',
             AsyncMock(side_effect=[primary, secondary]),
         )
         with _patch_remnawave_delete() as mock_del:
-            await execute_merge(db, 1, 2, keep_subscription_from='secondary')
-            mock_del.assert_awaited_once_with('rw-primary')
+            await execute_merge(db, 2, 1)
+            # Loser (secondary) remnawave_uuid deferred for deletion
+            mock_del.assert_awaited_once_with('rw-secondary')
 
-        db.delete.assert_awaited_once_with(sub_p)
-        # Secondary subscription transferred
-        assert sub_s.user_id == 1
-        assert primary.remnawave_uuid == 'rw-secondary'
+        # Combine: loser is expired, NOT hard-deleted
+        db.delete.assert_not_awaited()
+        assert sub_s.status == 'expired'
+        assert sub_s.user_id == 2  # transferred to primary (id=2)
 
     async def test_deferred_deletions_not_executed_during_merge(self, monkeypatch):
         """When the caller passes a deletions list, the discarded panel user is NOT
@@ -903,3 +914,158 @@ class TestExecuteMergeSelfReferralPrevention:
             result = await execute_merge(db, 1, 2)
 
         assert result.referred_by_id is None
+
+
+# ---------------------------------------------------------------------------
+# Role-swap: keep_account determines survivor
+# ---------------------------------------------------------------------------
+
+
+class TestRoleSwapLogic:
+    """Tests the handler-level role-swap logic via the real _resolve_merge_roles helper."""
+
+    def test_keep_primary_no_swap(self):
+        """When keep_account == primary_user_id, survivor is primary and absorbed is secondary."""
+        survivor_id, absorbed_id = _resolve_merge_roles(
+            keep_account=10, primary_user_id=10, secondary_user_id=20
+        )
+        assert survivor_id == 10
+        assert absorbed_id == 20
+
+    def test_keep_secondary_swaps_roles(self):
+        """When keep_account == secondary_user_id, secondary becomes survivor and primary is absorbed."""
+        survivor_id, absorbed_id = _resolve_merge_roles(
+            keep_account=20, primary_user_id=10, secondary_user_id=20
+        )
+        assert survivor_id == 20
+        assert absorbed_id == 10
+
+    def test_keep_unknown_id_rejected(self):
+        """keep_account not in {primary_id, secondary_id} must raise ValueError."""
+        with pytest.raises(ValueError, match='keep_account'):
+            _resolve_merge_roles(keep_account=99, primary_user_id=10, secondary_user_id=20)
+
+
+# ---------------------------------------------------------------------------
+# Preview: referrals_count and recommended
+# ---------------------------------------------------------------------------
+
+from app.services.account_merge_service import _compute_recommended
+
+
+class TestComputeRecommended:
+    """Priority: (1) has active sub; (2) more referrals; (3) higher balance; (4) older created_at."""
+
+    def _preview(self, has_sub=False, referrals_count=0, balance_kopeks=0, created_at=None):
+        from datetime import UTC, datetime
+        return {
+            'subscription': {'status': 'active', 'is_active': True} if has_sub else None,
+            'referrals_count': referrals_count,
+            'balance_kopeks': balance_kopeks,
+            'created_at': created_at or datetime(2024, 6, 1, tzinfo=UTC),
+        }
+
+    def test_primary_has_sub_secondary_does_not(self):
+        p = self._preview(has_sub=True)
+        s = self._preview(has_sub=False)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is True and s_rec is False
+
+    def test_secondary_has_sub_primary_does_not(self):
+        p = self._preview(has_sub=False)
+        s = self._preview(has_sub=True)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is False and s_rec is True
+
+    def test_both_have_sub_more_referrals_wins(self):
+        p = self._preview(has_sub=True, referrals_count=5)
+        s = self._preview(has_sub=True, referrals_count=10)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is False and s_rec is True
+
+    def test_equal_sub_equal_referrals_higher_balance_wins(self):
+        p = self._preview(has_sub=True, referrals_count=3, balance_kopeks=500)
+        s = self._preview(has_sub=True, referrals_count=3, balance_kopeks=1000)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is False and s_rec is True
+
+    def test_all_equal_older_account_wins(self):
+        from datetime import UTC, datetime
+        older  = datetime(2023, 1, 1, tzinfo=UTC)
+        newer  = datetime(2024, 6, 1, tzinfo=UTC)
+        p = self._preview(has_sub=True, referrals_count=3, balance_kopeks=500, created_at=older)
+        s = self._preview(has_sub=True, referrals_count=3, balance_kopeks=500, created_at=newer)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is True and s_rec is False   # older = primary wins
+
+    def test_neither_has_sub_more_referrals_wins(self):
+        p = self._preview(has_sub=False, referrals_count=2)
+        s = self._preview(has_sub=False, referrals_count=7)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is False and s_rec is True
+
+    def test_exactly_one_recommended(self):
+        """Invariant: exactly one of the two flags is True."""
+        p = self._preview(has_sub=True, referrals_count=3, balance_kopeks=1000)
+        s = self._preview(has_sub=True, referrals_count=3, balance_kopeks=1000)
+        # Tiebreaker: older created_at — both are equal here → primary wins (tiebreak)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert (p_rec + s_rec) == 1  # exactly one True
+
+    def test_recommended_prefers_active_over_expired(self):
+        """An EXPIRED subscription must not count as active when ranking accounts."""
+        from datetime import UTC, datetime, timedelta
+        yesterday = datetime.now(UTC) - timedelta(days=1)
+        tomorrow = datetime.now(UTC) + timedelta(days=1)
+        # primary: expired subscription (status='expired', end_date=yesterday)
+        p = {
+            'subscription': {'status': 'expired', 'is_active': False, 'end_date': yesterday},
+            'referrals_count': 0,
+            'balance_kopeks': 0,
+            'created_at': datetime(2024, 1, 1, tzinfo=UTC),
+        }
+        # secondary: active subscription (status='active', end_date=tomorrow)
+        s = {
+            'subscription': {'status': 'active', 'is_active': True, 'end_date': tomorrow},
+            'referrals_count': 0,
+            'balance_kopeks': 0,
+            'created_at': datetime(2024, 1, 1, tzinfo=UTC),
+        }
+        p_rec, s_rec = _compute_recommended(p, s)
+        # secondary has active sub → secondary must be recommended
+        assert p_rec is False and s_rec is True
+
+
+class TestGetMergePreviewWithReferrals:
+    async def test_preview_includes_referrals_count(self, monkeypatch):
+        db = _make_db()
+        primary   = _make_user(id=1, telegram_id=111)
+        secondary = _make_user(id=2, google_id='g123')
+        monkeypatch.setattr(account_merge_service, 'get_user_by_id', AsyncMock(side_effect=[primary, secondary]))
+        # Patch the referral count queries: primary has 3 referrals, secondary has 1
+        call_count = [0]
+        async def _fake_count(db, user_id):
+            call_count[0] += 1
+            return 3 if user_id == 1 else 1
+        monkeypatch.setattr(account_merge_service, '_count_active_referrals', _fake_count)
+
+        result = await account_merge_service.get_merge_preview(db, 1, 2)
+        assert result['primary']['referrals_count'] == 3
+        assert result['secondary']['referrals_count'] == 1
+
+    async def test_preview_recommended_flag_set(self, monkeypatch):
+        from datetime import timedelta
+        db = _make_db()
+        primary   = _make_user(id=1)  # no sub
+        # Use a future end_date so the sub is treated as active by _build_subscription_preview
+        secondary = _make_user(id=2, subscription=_make_subscription(
+            end_date=datetime.now(UTC) + timedelta(days=30),
+        ))  # has active sub
+        monkeypatch.setattr(account_merge_service, 'get_user_by_id', AsyncMock(side_effect=[primary, secondary]))
+        async def _fake_count(db, user_id): return 0
+        monkeypatch.setattr(account_merge_service, '_count_active_referrals', _fake_count)
+
+        result = await account_merge_service.get_merge_preview(db, 1, 2)
+        # secondary has active sub → secondary is recommended
+        assert result['secondary']['recommended'] is True
+        assert result['primary']['recommended'] is False

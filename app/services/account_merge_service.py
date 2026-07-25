@@ -1,10 +1,10 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
-from typing import Any, Literal
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import structlog
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -99,6 +99,34 @@ _PARTNER_STATUS_PRIORITY: dict[str, int] = {
 }
 
 
+def _resolve_merge_roles(
+    keep_account: int,
+    primary_user_id: int,
+    secondary_user_id: int,
+) -> tuple[int, int]:
+    """Determine (survivor_id, absorbed_id) based on which account the user wants to keep.
+
+    Args:
+        keep_account: The user_id that should survive the merge.
+        primary_user_id: The initiating account's id.
+        secondary_user_id: The account being merged in.
+
+    Returns:
+        (survivor_id, absorbed_id) — survivor is passed as primary_user_id to execute_merge.
+
+    Raises:
+        ValueError: If keep_account is not one of the two merging user ids.
+    """
+    if keep_account not in (primary_user_id, secondary_user_id):
+        raise ValueError(
+            f'keep_account ({keep_account}) must be one of the two user IDs being merged '
+            f'({primary_user_id}, {secondary_user_id})'
+        )
+    if keep_account == primary_user_id:
+        return primary_user_id, secondary_user_id
+    return secondary_user_id, primary_user_id
+
+
 def compute_auth_methods(user: User) -> list[str]:
     """Вычисляет список методов авторизации пользователя."""
     methods: list[str] = []
@@ -112,6 +140,57 @@ def compute_auth_methods(user: User) -> list[str]:
     return methods
 
 
+def _compute_recommended(
+    primary_preview: dict[str, Any],
+    secondary_preview: dict[str, Any],
+) -> tuple[bool, bool]:
+    """Returns (primary_recommended, secondary_recommended) with exactly one True.
+
+    Priority (higher = wins):
+    1. Has an active/non-expired subscription (subscription is not None and is_active)
+    2. More active referrals (referrals_count)
+    3. Higher balance (balance_kopeks)
+    4. Older account (smaller created_at — earlier creation wins)
+    """
+    p_sub = primary_preview.get('subscription')
+    s_sub = secondary_preview.get('subscription')
+    p_has_sub = 1 if (p_sub is not None and p_sub.get('is_active')) else 0
+    s_has_sub = 1 if (s_sub is not None and s_sub.get('is_active')) else 0
+
+    if p_has_sub != s_has_sub:
+        return (p_has_sub > s_has_sub, s_has_sub > p_has_sub)
+
+    p_refs = primary_preview.get('referrals_count', 0)
+    s_refs = secondary_preview.get('referrals_count', 0)
+    if p_refs != s_refs:
+        return (p_refs > s_refs, s_refs > p_refs)
+
+    p_bal = primary_preview.get('balance_kopeks', 0)
+    s_bal = secondary_preview.get('balance_kopeks', 0)
+    if p_bal != s_bal:
+        return (p_bal > s_bal, s_bal > p_bal)
+
+    p_created = primary_preview.get('created_at') or datetime.max.replace(tzinfo=UTC)
+    s_created = secondary_preview.get('created_at') or datetime.max.replace(tzinfo=UTC)
+    if p_created != s_created:
+        # Older (earlier) created_at wins
+        return (p_created < s_created, s_created < p_created)
+
+    # Complete tie — primary wins by default
+    return (True, False)
+
+
+async def _count_active_referrals(db: AsyncSession, user_id: int) -> int:
+    """Count users actively referred by this account (referred_by_id == user_id, status='active')."""
+    result = await db.execute(
+        select(func.count()).select_from(User).where(
+            User.referred_by_id == user_id,
+            User.status == 'active',
+        )
+    )
+    return result.scalar_one()
+
+
 def _build_subscription_preview(sub: Subscription | None) -> dict[str, Any] | None:
     """Формирует превью данных подписки."""
     if sub is None:
@@ -119,19 +198,48 @@ def _build_subscription_preview(sub: Subscription | None) -> dict[str, Any] | No
     tariff_name: str | None = None
     if sub.tariff:
         tariff_name = sub.tariff.name
+    now = datetime.now(UTC)
+    end_date = sub.end_date
+    is_active = sub.status in ('active', 'trial', 'limited') and (
+        end_date is None or end_date > now
+    )
     return {
         'status': sub.status,
         'is_trial': sub.is_trial,
-        'end_date': sub.end_date,
+        'end_date': end_date,
         'traffic_limit_gb': sub.traffic_limit_gb,
         'traffic_used_gb': sub.traffic_used_gb,
         'device_limit': sub.device_limit,
         'tariff_name': tariff_name,
         'autopay_enabled': sub.autopay_enabled,
+        'is_active': is_active,
     }
 
 
-def _build_user_preview(user: User) -> dict[str, Any]:
+def _combine_subscription_end_dates(
+    winner_sub: Any,
+    loser_sub: Any,
+    now: datetime,
+) -> timedelta:
+    """Returns the timedelta to add to winner's end_date from loser's remaining days.
+
+    Rules:
+    - If winner has end_date=None (lifetime), return timedelta(0) — no extension needed.
+    - If loser has end_date=None (caller should never pass this, but guard anyway),
+      return timedelta(0) — loser is also lifetime, nothing to add.
+    - Otherwise: remaining = max(0, loser.end_date - now); return remaining.
+    """
+    winner_end = getattr(winner_sub, 'end_date', None)
+    loser_end = getattr(loser_sub, 'end_date', None)
+
+    if winner_end is None or loser_end is None:
+        return timedelta(0)
+
+    remaining = loser_end - now
+    return max(timedelta(0), remaining)
+
+
+def _build_user_preview(user: User, referrals_count: int = 0) -> dict[str, Any]:
     """Формирует превью данных пользователя для предварительного просмотра мержа."""
     subs = getattr(user, 'subscriptions', None) or []
     return {
@@ -143,6 +251,7 @@ def _build_user_preview(user: User) -> dict[str, Any]:
         'balance_kopeks': user.balance_kopeks,
         'subscription': _build_subscription_preview(subs[0] if subs else None),
         'subscriptions_count': len(subs),
+        'referrals_count': referrals_count,
         'created_at': user.created_at,
     }
 
@@ -176,9 +285,19 @@ async def get_merge_preview(
     if not secondary:
         raise ValueError(f'Вторичный пользователь (id={secondary_user_id}) не найден')
 
+    primary_refs = await _count_active_referrals(db, primary_user_id)
+    secondary_refs = await _count_active_referrals(db, secondary_user_id)
+
+    primary_preview = _build_user_preview(primary, referrals_count=primary_refs)
+    secondary_preview = _build_user_preview(secondary, referrals_count=secondary_refs)
+
+    primary_rec, secondary_rec = _compute_recommended(primary_preview, secondary_preview)
+    primary_preview['recommended'] = primary_rec
+    secondary_preview['recommended'] = secondary_rec
+
     return {
-        'primary': _build_user_preview(primary),
-        'secondary': _build_user_preview(secondary),
+        'primary': primary_preview,
+        'secondary': secondary_preview,
     }
 
 
@@ -335,28 +454,28 @@ async def _handle_subscription_merge(
     db: AsyncSession,
     primary: User,
     secondary: User,
-    keep_subscription_from: Literal['primary', 'secondary'],
     deferred_remnawave_deletions: list[str],
 ) -> None:
     """Обрабатывает мерж подписок между двумя аккаунтами.
 
     Args:
         db: Сессия БД.
-        primary: Основной пользователь.
-        secondary: Вторичный пользователь.
-        keep_subscription_from: 'primary' или 'secondary' — чью подписку оставить.
+        primary: Основной пользователь (survivor).
+        secondary: Вторичный пользователь (absorbed).
     """
-    # Multi-tariff mode: transfer ALL subscriptions from secondary to primary
+    # Multi-tariff mode: transfer ALL subscriptions from secondary to primary,
+    # combining overlapping (same tariff_id) active subscriptions.
     if settings.is_multi_tariff_enabled():
+        now = datetime.now(UTC)
         secondary_subs = list(getattr(secondary, 'subscriptions', None) or [])
         primary_subs = list(getattr(primary, 'subscriptions', None) or [])
         secondary_legacy_uuid = secondary.remnawave_uuid
 
-        # Build set of primary's active tariff_ids for conflict detection
-        primary_active_tariff_ids: set[int] = set()
+        # Build map of primary's active tariff_id → subscription
+        primary_active: dict[int, Any] = {}
         for ps in primary_subs:
             if ps.tariff_id is not None and ps.status in ('active', 'trial'):
-                primary_active_tariff_ids.add(ps.tariff_id)
+                primary_active[ps.tariff_id] = ps
 
         transferred: list[Subscription] = []
         if secondary_subs:
@@ -368,57 +487,75 @@ async def _handle_subscription_merge(
                 if (
                     sub_tariff_id is not None
                     and sub.status in ('active', 'trial')
-                    and sub_tariff_id in primary_active_tariff_ids
+                    and sub_tariff_id in primary_active
                 ):
-                    # Resolve conflict: keep the subscription with the later end_date
-                    primary_conflict = next(
-                        (
-                            ps
-                            for ps in primary_subs
-                            if ps.tariff_id == sub_tariff_id and ps.status in ('active', 'trial')
-                        ),
-                        None,
-                    )
-                    if primary_conflict:
-                        primary_end = getattr(primary_conflict, 'end_date', None)
-                        secondary_end = getattr(sub, 'end_date', None)
-                        # None end_date = lifetime/unlimited → always wins over a finite date
-                        secondary_wins = (secondary_end is None and primary_end is not None) or (
-                            secondary_end is not None and primary_end is not None and secondary_end > primary_end
-                        )
-                        if secondary_wins:
-                            # Secondary sub is better — expire primary's, transfer secondary's
-                            logger.info(
-                                'Tariff conflict resolved: secondary sub wins, expiring primary sub',
-                                tariff_id=sub_tariff_id,
-                                primary_sub_id=primary_conflict.id,
-                                primary_end=str(primary_end),
-                                secondary_sub_id=sub.id,
-                                secondary_end=str(secondary_end),
-                            )
-                            primary_conflict.status = 'expired'
-                            primary_conflict.autopay_enabled = False
-                            await db.flush()
-                            sub.user_id = primary.id
-                            transferred.append(sub)
-                        else:
-                            # Primary sub is equal or better — expire secondary's, then transfer it as expired
-                            logger.info(
-                                'Tariff conflict resolved: primary sub kept, expiring secondary sub before transfer',
-                                tariff_id=sub_tariff_id,
-                                primary_sub_id=primary_conflict.id,
-                                secondary_sub_id=sub.id,
-                            )
-                            sub.status = 'expired'
-                            sub.autopay_enabled = False
-                            sub.user_id = primary.id
-                            transferred.append(sub)
-                        continue
+                    primary_conflict = primary_active[sub_tariff_id]
+                    primary_end = getattr(primary_conflict, 'end_date', None)
+                    secondary_end = getattr(sub, 'end_date', None)
 
+                    # Determine winner (later end_date; None = lifetime wins)
+                    secondary_wins = (secondary_end is None and primary_end is not None) or (
+                        secondary_end is not None and primary_end is not None and secondary_end > primary_end
+                    )
+
+                    if secondary_wins:
+                        winner_sub, loser_sub = sub, primary_conflict
+                    else:
+                        winner_sub, loser_sub = primary_conflict, sub
+
+                    # Combine: extend winner by loser's remaining days
+                    extension = _combine_subscription_end_dates(winner_sub, loser_sub, now)
+                    if extension.total_seconds() > 0 and winner_sub.end_date is not None:
+                        previous_end = winner_sub.end_date
+                        winner_sub.end_date = previous_end + extension
+                        extended_days = int(extension.total_seconds() / 86400)  # fractional days truncated intentionally (timeline display value)
+                        db.add(SubscriptionEvent(
+                            event_type='renewal',
+                            user_id=primary.id,
+                            subscription_id=winner_sub.id,
+                            occurred_at=now,
+                            extra={
+                                'extended_days': extended_days,
+                                'previous_end_date': previous_end.isoformat(),
+                                'new_end_date': winner_sub.end_date.isoformat(),
+                                'reason': 'account_merge',
+                            },
+                        ))
+                        logger.info(
+                            'Multi-tariff combine: extended winner end_date',
+                            tariff_id=sub_tariff_id,
+                            winner_sub_id=winner_sub.id,
+                            extended_days=extended_days,
+                            new_end_date=str(winner_sub.end_date),
+                        )
+
+                    # Loser is expired, then transferred to primary (as expired record)
+                    loser_sub.status = 'expired'
+                    loser_sub.autopay_enabled = False
+
+                    if secondary_wins:
+                        # Secondary sub wins → expire primary conflict, transfer secondary sub
+                        if primary_conflict.remnawave_uuid:
+                            deferred_remnawave_deletions.append(primary_conflict.remnawave_uuid)
+                            primary_conflict.remnawave_uuid = None
+                        await db.flush()
+                        sub.user_id = primary.id
+                        transferred.append(sub)
+                    else:
+                        # Primary sub wins → expire secondary sub, transfer it as expired
+                        if sub.remnawave_uuid:
+                            deferred_remnawave_deletions.append(sub.remnawave_uuid)
+                            sub.remnawave_uuid = None
+                        sub.user_id = primary.id
+                        transferred.append(sub)
+                    await db.flush()
+                    continue
+
+                # No conflict — simple transfer
                 sub.user_id = primary.id
                 transferred.append(sub)
                 logger.info(
-                    'Transferred subscription during account merge',
+                    'Transferred subscription during account merge (multi-tariff)',
                     subscription_id=sub.id,
                     tariff_id=sub_tariff_id,
                     from_user=secondary.id,
@@ -495,58 +632,87 @@ async def _handle_subscription_merge(
         )
         return
 
-    # Обе подписки есть — выбираем по keep_subscription_from
+    # Обе подписки есть — COMBINE: продлеваем победителя на остаток проигравшего.
     assert primary_sub is not None
     assert secondary_sub is not None
 
-    if keep_subscription_from == 'secondary':
-        # Удаляем подписку primary из RemnaWave
-        if primary.remnawave_uuid:
-            deferred_remnawave_deletions.append(primary.remnawave_uuid)
-            primary.remnawave_uuid = None
-        # Явно удаляем subscription_servers перед подпиской (CASCADE настроен, но делаем явно для ясности)
-        await db.execute(delete(SubscriptionServer).where(SubscriptionServer.subscription_id == primary_sub.id))
-        # Удаляем запись подписки primary
-        await db.delete(primary_sub)
-        await db.flush()
-        # Переносим подписку secondary на primary
-        secondary_sub.user_id = primary.id
-        # Переносим remnawave_uuid (clear→flush→assign — unique constraint safety)
-        if secondary.remnawave_uuid:
-            uuid_to_transfer = secondary.remnawave_uuid
-            secondary.remnawave_uuid = None
-            await db.flush()
-            primary.remnawave_uuid = uuid_to_transfer
-        # Flush сразу — гарантируем, что DELETE предшествует UPDATE (unique constraint на subscription.user_id)
-        await db.flush()
-        logger.info(
-            'Мерж подписок: оставлена подписка secondary, подписка primary удалена',
-            primary_id=primary.id,
-            secondary_id=secondary.id,
+    now = datetime.now(UTC)
+    primary_end = getattr(primary_sub, 'end_date', None)
+    secondary_end = getattr(secondary_sub, 'end_date', None)
+
+    # Определяем победителя (более поздняя дата; None=lifetime всегда побеждает)
+    secondary_wins = (secondary_end is None and primary_end is not None) or (
+        secondary_end is not None
+        and primary_end is not None
+        and secondary_end > primary_end
+    )
+
+    if secondary_wins:
+        winner_sub, loser_sub, winner_remnawave, loser_remnawave = (
+            secondary_sub, primary_sub, secondary.remnawave_uuid, primary.remnawave_uuid
         )
     else:
-        # keep_subscription_from == 'primary' (по умолчанию)
-        # Удаляем подписку secondary из RemnaWave
-        if secondary.remnawave_uuid:
-            deferred_remnawave_deletions.append(secondary.remnawave_uuid)
-            secondary.remnawave_uuid = None
-        # Явно удаляем subscription_servers перед подпиской (CASCADE настроен, но делаем явно для ясности)
-        await db.execute(delete(SubscriptionServer).where(SubscriptionServer.subscription_id == secondary_sub.id))
-        # Удаляем запись подписки secondary
-        await db.delete(secondary_sub)
-        await db.flush()
+        winner_sub, loser_sub, winner_remnawave, loser_remnawave = (
+            primary_sub, secondary_sub, primary.remnawave_uuid, secondary.remnawave_uuid
+        )
+
+    # Продлеваем победителя на остаток проигравшего
+    extension = _combine_subscription_end_dates(winner_sub, loser_sub, now)
+    if extension.total_seconds() > 0 and winner_sub.end_date is not None:
+        previous_end = winner_sub.end_date
+        winner_sub.end_date = previous_end + extension
+        extended_days = int(extension.total_seconds() / 86400)  # fractional days truncated intentionally (timeline display value)
+        db.add(SubscriptionEvent(
+            event_type='renewal',
+            user_id=primary.id,
+            subscription_id=winner_sub.id,
+            occurred_at=now,
+            extra={
+                'extended_days': extended_days,
+                'previous_end_date': previous_end.isoformat(),
+                'new_end_date': winner_sub.end_date.isoformat(),
+                'reason': 'account_merge',
+            },
+        ))
         logger.info(
-            'Мерж подписок: оставлена подписка primary, подписка secondary удалена',
+            'Мерж подписок: дата окончания победителя продлена на остаток проигравшего',
             primary_id=primary.id,
             secondary_id=secondary.id,
+            extended_days=extended_days,
+            new_end_date=str(winner_sub.end_date),
         )
+
+    # Проигравший — деактивируем и дефеируем удаление из RemnaWave
+    loser_sub.status = 'expired'
+    loser_sub.autopay_enabled = False
+    if loser_remnawave:
+        deferred_remnawave_deletions.append(loser_remnawave)
+
+    if secondary_wins:
+        # Победитель — secondary_sub → переносим на primary, передаём remnawave_uuid
+        winner_sub.user_id = primary.id
+        secondary.remnawave_uuid = None
+        await db.flush()
+        primary.remnawave_uuid = winner_remnawave
+        loser_sub.user_id = primary.id  # loser (primary_sub) уже у primary
+    else:
+        # Победитель — primary_sub → он уже у primary; переносим loser и чистим secondary
+        loser_sub.user_id = primary.id
+        secondary.remnawave_uuid = None
+
+    await db.flush()
+    logger.info(
+        'Мерж подписок: обе подписки объединены, дата победителя продлена',
+        primary_id=primary.id,
+        secondary_id=secondary.id,
+        secondary_wins=secondary_wins,
+    )
 
 
 async def execute_merge(
     db: AsyncSession,
     primary_user_id: int,
     secondary_user_id: int,
-    keep_subscription_from: Literal['primary', 'secondary'] = 'primary',
     provider: str | None = None,
     provider_id: str | None = None,
     deferred_remnawave_deletions: list[str] | None = None,
@@ -554,23 +720,22 @@ async def execute_merge(
     """Выполняет атомарный мерж двух аккаунтов. Caller отвечает за commit/rollback.
 
     Переносит все данные с secondary на primary, помечает secondary как deleted.
+    Survivor всегда передаётся как primary_user_id — роль-своп выполняется на
+    уровне эндпоинта с помощью _resolve_merge_roles.
 
     Args:
         db: Сессия БД (caller управляет транзакцией).
-        primary_user_id: ID основного аккаунта.
-        secondary_user_id: ID вторичного аккаунта.
-        keep_subscription_from: 'primary' или 'secondary' — чью подписку оставить.
+        primary_user_id: ID аккаунта-survivor (основной).
+        secondary_user_id: ID аккаунта-absorbed (вторичный).
         provider: OAuth-провайдер, инициировавший мерж (для логирования).
         provider_id: ID провайдера (для логирования).
 
     Returns:
-        Обновлённый объект primary User.
+        Обновлённый объект primary User (survivor).
 
     Raises:
         ValueError: Если пользователь не найден, совпадают ID, или secondary уже удалён.
     """
-    if keep_subscription_from not in ('primary', 'secondary'):
-        raise ValueError("keep_subscription_from должен быть 'primary' или 'secondary'")
 
     if primary_user_id == secondary_user_id:
         raise ValueError('primary_user_id и secondary_user_id не могут совпадать')
@@ -591,7 +756,6 @@ async def execute_merge(
         'Начинаем мерж аккаунтов',
         primary_id=primary.id,
         secondary_id=secondary.id,
-        keep_subscription_from=keep_subscription_from,
         provider=provider,
         provider_id=provider_id,
     )
@@ -700,7 +864,7 @@ async def execute_merge(
     )
 
     # 5. Мерж подписок
-    await _handle_subscription_merge(db, primary, secondary, keep_subscription_from, pending_remnawave_deletions)
+    await _handle_subscription_merge(db, primary, secondary, pending_remnawave_deletions)
 
     # 6. Переназначение транзакций
     await db.execute(update(Transaction).where(Transaction.user_id == secondary.id).values(user_id=primary.id))
