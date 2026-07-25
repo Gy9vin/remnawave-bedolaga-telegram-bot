@@ -118,7 +118,10 @@ async def get_subscription_purchase_timeline(db: AsyncSession, user_id: int) -> 
     running_end = None
     for idx, ev in enumerate(events, start=1):
         extra = ev.extra or {}
+        # renewal-события пишут число дней как 'extended_days', а не 'period_days'
         period_days = extra.get('period_days')
+        if period_days is None:
+            period_days = extra.get('extended_days')
         if period_days is None and ev.event_type == 'activation':
             period_days = extra.get('trial_duration_days')
 

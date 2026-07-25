@@ -51,9 +51,10 @@ async def test_timeline_downtime_and_carry(session):
     await _ev(s, 1, 'purchase', base, period_days=30)
     # 2) покупка через ~33 дня (после конца) -> простой, отсчёт заново
     await _ev(s, 1, 'purchase', base + timedelta(days=33, hours=10), period_days=30)
-    # 3) покупка ДО конца (renewal с авторитетными датами) -> остаток учтён
+    # 3) покупка ДО конца (renewal с авторитетными датами) -> остаток учтён.
+    #    renewal пишет число дней как 'extended_days', а не 'period_days'.
     p_end = (base + timedelta(days=33, hours=10) + timedelta(days=30))
-    await _ev(s, 1, 'renewal', p_end - timedelta(days=2, hours=13), period_days=30,
+    await _ev(s, 1, 'renewal', p_end - timedelta(days=2, hours=13), extended_days=30,
               previous_end_date=p_end.isoformat(),
               new_end_date=(p_end + timedelta(days=30)).isoformat())
 
@@ -64,9 +65,11 @@ async def test_timeline_downtime_and_carry(session):
     # событие 2 — простой (>0), отсчёт от даты покупки
     assert rows[1]['downtime_seconds'] and rows[1]['downtime_seconds'] > 0
     assert rows[1]['carried_seconds'] is None
-    # событие 3 — остаток (carried>0), новая дата из авторитетного new_end_date
+    # событие 3 — остаток (carried>0), новая дата из авторитетного new_end_date,
+    # число дней взято из extended_days (не period_days)
     assert rows[2]['carried_seconds'] and rows[2]['carried_seconds'] > 0
     assert rows[2]['new_end'] == (p_end + timedelta(days=30)).isoformat()
+    assert rows[2]['period_days'] == 30
 
 
 @pytest.mark.asyncio
