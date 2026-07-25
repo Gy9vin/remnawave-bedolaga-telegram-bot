@@ -179,6 +179,8 @@ class MergePreviewUser(BaseModel):
     balance_kopeks: int = 0
     subscription: MergePreviewSubscription | None = None
     created_at: datetime | None = None
+    referrals_count: int = 0
+    recommended: bool = False
 
 
 class MergePreviewResponse(BaseModel):

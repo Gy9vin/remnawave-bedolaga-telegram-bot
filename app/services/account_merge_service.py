@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -140,6 +140,55 @@ def compute_auth_methods(user: User) -> list[str]:
     return methods
 
 
+def _compute_recommended(
+    primary_preview: dict[str, Any],
+    secondary_preview: dict[str, Any],
+) -> tuple[bool, bool]:
+    """Returns (primary_recommended, secondary_recommended) with exactly one True.
+
+    Priority (higher = wins):
+    1. Has active/non-expired subscription (subscription is not None)
+    2. More active referrals (referrals_count)
+    3. Higher balance (balance_kopeks)
+    4. Older account (smaller created_at — earlier creation wins)
+    """
+    p_has_sub = 1 if primary_preview.get('subscription') is not None else 0
+    s_has_sub = 1 if secondary_preview.get('subscription') is not None else 0
+
+    if p_has_sub != s_has_sub:
+        return (p_has_sub > s_has_sub, s_has_sub > p_has_sub)
+
+    p_refs = primary_preview.get('referrals_count', 0)
+    s_refs = secondary_preview.get('referrals_count', 0)
+    if p_refs != s_refs:
+        return (p_refs > s_refs, s_refs > p_refs)
+
+    p_bal = primary_preview.get('balance_kopeks', 0)
+    s_bal = secondary_preview.get('balance_kopeks', 0)
+    if p_bal != s_bal:
+        return (p_bal > s_bal, s_bal > p_bal)
+
+    p_created = primary_preview.get('created_at') or datetime.max.replace(tzinfo=UTC)
+    s_created = secondary_preview.get('created_at') or datetime.max.replace(tzinfo=UTC)
+    if p_created != s_created:
+        # Older (earlier) created_at wins
+        return (p_created < s_created, s_created < p_created)
+
+    # Complete tie — primary wins by default
+    return (True, False)
+
+
+async def _count_active_referrals(db: AsyncSession, user_id: int) -> int:
+    """Count users actively referred by this account (referred_by_id == user_id, status='active')."""
+    result = await db.execute(
+        select(func.count()).select_from(User).where(
+            User.referred_by_id == user_id,
+            User.status == 'active',
+        )
+    )
+    return result.scalar_one()
+
+
 def _build_subscription_preview(sub: Subscription | None) -> dict[str, Any] | None:
     """Формирует превью данных подписки."""
     if sub is None:
@@ -182,7 +231,7 @@ def _combine_subscription_end_dates(
     return max(timedelta(0), remaining)
 
 
-def _build_user_preview(user: User) -> dict[str, Any]:
+def _build_user_preview(user: User, referrals_count: int = 0) -> dict[str, Any]:
     """Формирует превью данных пользователя для предварительного просмотра мержа."""
     subs = getattr(user, 'subscriptions', None) or []
     return {
@@ -194,6 +243,7 @@ def _build_user_preview(user: User) -> dict[str, Any]:
         'balance_kopeks': user.balance_kopeks,
         'subscription': _build_subscription_preview(subs[0] if subs else None),
         'subscriptions_count': len(subs),
+        'referrals_count': referrals_count,
         'created_at': user.created_at,
     }
 
@@ -227,9 +277,19 @@ async def get_merge_preview(
     if not secondary:
         raise ValueError(f'Вторичный пользователь (id={secondary_user_id}) не найден')
 
+    primary_refs = await _count_active_referrals(db, primary_user_id)
+    secondary_refs = await _count_active_referrals(db, secondary_user_id)
+
+    primary_preview = _build_user_preview(primary, referrals_count=primary_refs)
+    secondary_preview = _build_user_preview(secondary, referrals_count=secondary_refs)
+
+    primary_rec, secondary_rec = _compute_recommended(primary_preview, secondary_preview)
+    primary_preview['recommended'] = primary_rec
+    secondary_preview['recommended'] = secondary_rec
+
     return {
-        'primary': _build_user_preview(primary),
-        'secondary': _build_user_preview(secondary),
+        'primary': primary_preview,
+        'secondary': secondary_preview,
     }
 
 

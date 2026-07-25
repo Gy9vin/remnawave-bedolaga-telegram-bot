@@ -261,6 +261,8 @@ class TestGetMergePreview:
             'get_user_by_id',
             AsyncMock(side_effect=[primary, secondary]),
         )
+        async def _fake_count(db, user_id): return 0
+        monkeypatch.setattr(account_merge_service, '_count_active_referrals', _fake_count)
         result = await get_merge_preview(db, 1, 2)
         assert result['primary']['id'] == 1
         assert result['secondary']['id'] == 2
@@ -949,3 +951,101 @@ class TestRoleSwapLogic:
         """keep_account not in {primary_id, secondary_id} must raise ValueError."""
         with pytest.raises(ValueError, match='keep_account'):
             _resolve_merge_roles(keep_account=99, primary_user_id=10, secondary_user_id=20)
+
+
+# ---------------------------------------------------------------------------
+# Preview: referrals_count and recommended
+# ---------------------------------------------------------------------------
+
+from app.services.account_merge_service import _compute_recommended
+
+
+class TestComputeRecommended:
+    """Priority: (1) has active sub; (2) more referrals; (3) higher balance; (4) older created_at."""
+
+    def _preview(self, has_sub=False, referrals_count=0, balance_kopeks=0, created_at=None):
+        from datetime import UTC, datetime
+        return {
+            'subscription': {'status': 'active'} if has_sub else None,
+            'referrals_count': referrals_count,
+            'balance_kopeks': balance_kopeks,
+            'created_at': created_at or datetime(2024, 6, 1, tzinfo=UTC),
+        }
+
+    def test_primary_has_sub_secondary_does_not(self):
+        p = self._preview(has_sub=True)
+        s = self._preview(has_sub=False)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is True and s_rec is False
+
+    def test_secondary_has_sub_primary_does_not(self):
+        p = self._preview(has_sub=False)
+        s = self._preview(has_sub=True)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is False and s_rec is True
+
+    def test_both_have_sub_more_referrals_wins(self):
+        p = self._preview(has_sub=True, referrals_count=5)
+        s = self._preview(has_sub=True, referrals_count=10)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is False and s_rec is True
+
+    def test_equal_sub_equal_referrals_higher_balance_wins(self):
+        p = self._preview(has_sub=True, referrals_count=3, balance_kopeks=500)
+        s = self._preview(has_sub=True, referrals_count=3, balance_kopeks=1000)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is False and s_rec is True
+
+    def test_all_equal_older_account_wins(self):
+        from datetime import UTC, datetime
+        older  = datetime(2023, 1, 1, tzinfo=UTC)
+        newer  = datetime(2024, 6, 1, tzinfo=UTC)
+        p = self._preview(has_sub=True, referrals_count=3, balance_kopeks=500, created_at=older)
+        s = self._preview(has_sub=True, referrals_count=3, balance_kopeks=500, created_at=newer)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is True and s_rec is False   # older = primary wins
+
+    def test_neither_has_sub_more_referrals_wins(self):
+        p = self._preview(has_sub=False, referrals_count=2)
+        s = self._preview(has_sub=False, referrals_count=7)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert p_rec is False and s_rec is True
+
+    def test_exactly_one_recommended(self):
+        """Invariant: exactly one of the two flags is True."""
+        p = self._preview(has_sub=True, referrals_count=3, balance_kopeks=1000)
+        s = self._preview(has_sub=True, referrals_count=3, balance_kopeks=1000)
+        # Tiebreaker: older created_at — both are equal here → primary wins (tiebreak)
+        p_rec, s_rec = _compute_recommended(p, s)
+        assert (p_rec + s_rec) == 1  # exactly one True
+
+
+class TestGetMergePreviewWithReferrals:
+    async def test_preview_includes_referrals_count(self, monkeypatch):
+        db = _make_db()
+        primary   = _make_user(id=1, telegram_id=111)
+        secondary = _make_user(id=2, google_id='g123')
+        monkeypatch.setattr(account_merge_service, 'get_user_by_id', AsyncMock(side_effect=[primary, secondary]))
+        # Patch the referral count queries: primary has 3 referrals, secondary has 1
+        call_count = [0]
+        async def _fake_count(db, user_id):
+            call_count[0] += 1
+            return 3 if user_id == 1 else 1
+        monkeypatch.setattr(account_merge_service, '_count_active_referrals', _fake_count)
+
+        result = await account_merge_service.get_merge_preview(db, 1, 2)
+        assert result['primary']['referrals_count'] == 3
+        assert result['secondary']['referrals_count'] == 1
+
+    async def test_preview_recommended_flag_set(self, monkeypatch):
+        db = _make_db()
+        primary   = _make_user(id=1)  # no sub
+        secondary = _make_user(id=2, subscription=_make_subscription())  # has sub
+        monkeypatch.setattr(account_merge_service, 'get_user_by_id', AsyncMock(side_effect=[primary, secondary]))
+        async def _fake_count(db, user_id): return 0
+        monkeypatch.setattr(account_merge_service, '_count_active_referrals', _fake_count)
+
+        result = await account_merge_service.get_merge_preview(db, 1, 2)
+        # secondary has sub → secondary is recommended
+        assert result['secondary']['recommended'] is True
+        assert result['primary']['recommended'] is False
