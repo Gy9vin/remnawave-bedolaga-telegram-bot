@@ -147,13 +147,15 @@ def _compute_recommended(
     """Returns (primary_recommended, secondary_recommended) with exactly one True.
 
     Priority (higher = wins):
-    1. Has active/non-expired subscription (subscription is not None)
+    1. Has an active/non-expired subscription (subscription is not None and is_active)
     2. More active referrals (referrals_count)
     3. Higher balance (balance_kopeks)
     4. Older account (smaller created_at — earlier creation wins)
     """
-    p_has_sub = 1 if primary_preview.get('subscription') is not None else 0
-    s_has_sub = 1 if secondary_preview.get('subscription') is not None else 0
+    p_sub = primary_preview.get('subscription')
+    s_sub = secondary_preview.get('subscription')
+    p_has_sub = 1 if (p_sub is not None and p_sub.get('is_active')) else 0
+    s_has_sub = 1 if (s_sub is not None and s_sub.get('is_active')) else 0
 
     if p_has_sub != s_has_sub:
         return (p_has_sub > s_has_sub, s_has_sub > p_has_sub)
@@ -196,15 +198,21 @@ def _build_subscription_preview(sub: Subscription | None) -> dict[str, Any] | No
     tariff_name: str | None = None
     if sub.tariff:
         tariff_name = sub.tariff.name
+    now = datetime.now(UTC)
+    end_date = sub.end_date
+    is_active = sub.status in ('active', 'trial', 'limited') and (
+        end_date is None or end_date > now
+    )
     return {
         'status': sub.status,
         'is_trial': sub.is_trial,
-        'end_date': sub.end_date,
+        'end_date': end_date,
         'traffic_limit_gb': sub.traffic_limit_gb,
         'traffic_used_gb': sub.traffic_used_gb,
         'device_limit': sub.device_limit,
         'tariff_name': tariff_name,
         'autopay_enabled': sub.autopay_enabled,
+        'is_active': is_active,
     }
 
 

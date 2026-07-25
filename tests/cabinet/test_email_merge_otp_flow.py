@@ -128,7 +128,7 @@ async def test_execute_rejects_non_initiator() -> None:
         s.enter_context(patch('app.cabinet.routes.account_linking.restore_merge_token', restore))
         with pytest.raises(HTTPException) as exc:
             await execute_merge_endpoint(
-                request=MergeRequest(keep_subscription_from=1),
+                request=MergeRequest(keep_account=1),
                 raw_request=MagicMock(),
                 merge_token='x' * 40,
                 user=SimpleNamespace(id=99),  # NOT the initiator (primary=1)

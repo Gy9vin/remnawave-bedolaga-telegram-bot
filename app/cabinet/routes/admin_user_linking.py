@@ -394,7 +394,6 @@ async def admin_merge_users(
             db=db,
             primary_user_id=request.primary_user_id,
             secondary_user_id=request.secondary_user_id,
-            keep_subscription_from='primary',
             provider='admin_manual',
             provider_id=str(admin.id),
             deferred_remnawave_deletions=deferred_deletions,

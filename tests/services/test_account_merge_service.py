@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -136,6 +136,7 @@ def _make_db() -> SimpleNamespace:
         execute=AsyncMock(),
         delete=AsyncMock(),
         flush=AsyncMock(),
+        add=MagicMock(),
     )
 
 
@@ -321,14 +322,6 @@ class TestExecuteMergeValidation:
         )
         with pytest.raises(ValueError, match='удалён'):
             await execute_merge(db, 1, 2)
-
-    async def test_invalid_keep_account_in_endpoint_rejected(self):
-        """keep_account outside the pair must be rejected at endpoint validation level.
-        execute_merge itself no longer validates this — endpoint does."""
-        # This is now endpoint-layer validation; service-level validation
-        # only checks same-id, not-found, and deleted.
-        pass  # Covered by endpoint integration test in future tasks
-
 
 # ---------------------------------------------------------------------------
 # execute_merge — data transfer
@@ -966,7 +959,7 @@ class TestComputeRecommended:
     def _preview(self, has_sub=False, referrals_count=0, balance_kopeks=0, created_at=None):
         from datetime import UTC, datetime
         return {
-            'subscription': {'status': 'active'} if has_sub else None,
+            'subscription': {'status': 'active', 'is_active': True} if has_sub else None,
             'referrals_count': referrals_count,
             'balance_kopeks': balance_kopeks,
             'created_at': created_at or datetime(2024, 6, 1, tzinfo=UTC),
@@ -1019,6 +1012,29 @@ class TestComputeRecommended:
         p_rec, s_rec = _compute_recommended(p, s)
         assert (p_rec + s_rec) == 1  # exactly one True
 
+    def test_recommended_prefers_active_over_expired(self):
+        """An EXPIRED subscription must not count as active when ranking accounts."""
+        from datetime import UTC, datetime, timedelta
+        yesterday = datetime.now(UTC) - timedelta(days=1)
+        tomorrow = datetime.now(UTC) + timedelta(days=1)
+        # primary: expired subscription (status='expired', end_date=yesterday)
+        p = {
+            'subscription': {'status': 'expired', 'is_active': False, 'end_date': yesterday},
+            'referrals_count': 0,
+            'balance_kopeks': 0,
+            'created_at': datetime(2024, 1, 1, tzinfo=UTC),
+        }
+        # secondary: active subscription (status='active', end_date=tomorrow)
+        s = {
+            'subscription': {'status': 'active', 'is_active': True, 'end_date': tomorrow},
+            'referrals_count': 0,
+            'balance_kopeks': 0,
+            'created_at': datetime(2024, 1, 1, tzinfo=UTC),
+        }
+        p_rec, s_rec = _compute_recommended(p, s)
+        # secondary has active sub → secondary must be recommended
+        assert p_rec is False and s_rec is True
+
 
 class TestGetMergePreviewWithReferrals:
     async def test_preview_includes_referrals_count(self, monkeypatch):
@@ -1038,14 +1054,18 @@ class TestGetMergePreviewWithReferrals:
         assert result['secondary']['referrals_count'] == 1
 
     async def test_preview_recommended_flag_set(self, monkeypatch):
+        from datetime import timedelta
         db = _make_db()
         primary   = _make_user(id=1)  # no sub
-        secondary = _make_user(id=2, subscription=_make_subscription())  # has sub
+        # Use a future end_date so the sub is treated as active by _build_subscription_preview
+        secondary = _make_user(id=2, subscription=_make_subscription(
+            end_date=datetime.now(UTC) + timedelta(days=30),
+        ))  # has active sub
         monkeypatch.setattr(account_merge_service, 'get_user_by_id', AsyncMock(side_effect=[primary, secondary]))
         async def _fake_count(db, user_id): return 0
         monkeypatch.setattr(account_merge_service, '_count_active_referrals', _fake_count)
 
         result = await account_merge_service.get_merge_preview(db, 1, 2)
-        # secondary has sub → secondary is recommended
+        # secondary has active sub → secondary is recommended
         assert result['secondary']['recommended'] is True
         assert result['primary']['recommended'] is False
