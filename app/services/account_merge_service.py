@@ -440,7 +440,7 @@ async def _handle_subscription_merge(
                     if extension.total_seconds() > 0 and winner_sub.end_date is not None:
                         previous_end = winner_sub.end_date
                         winner_sub.end_date = previous_end + extension
-                        extended_days = int(extension.total_seconds() / 86400)
+                        extended_days = int(extension.total_seconds() / 86400)  # fractional days truncated intentionally (timeline display value)
                         db.add(SubscriptionEvent(
                             event_type='renewal',
                             user_id=primary.id,
@@ -593,7 +593,7 @@ async def _handle_subscription_merge(
     if extension.total_seconds() > 0 and winner_sub.end_date is not None:
         previous_end = winner_sub.end_date
         winner_sub.end_date = previous_end + extension
-        extended_days = int(extension.total_seconds() / 86400)
+        extended_days = int(extension.total_seconds() / 86400)  # fractional days truncated intentionally (timeline display value)
         db.add(SubscriptionEvent(
             event_type='renewal',
             user_id=primary.id,

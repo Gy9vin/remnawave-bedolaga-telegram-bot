@@ -231,3 +231,92 @@ class TestSingleTariffCombine:
         assert loser_sub.user_id == 1
         assert primary.remnawave_uuid == 'rw-s'
         assert secondary.remnawave_uuid is None
+
+    async def test_secondary_wins_sub_reassigned_to_primary(self):
+        """Secondary has the later end_date → secondary_sub becomes winner,
+        extended by primary's remaining days, then reassigned to primary.id."""
+        # primary ends earlier (loser), secondary ends later (winner)
+        primary_end  = datetime(2026, 8, 10, 0, 0, 0, tzinfo=UTC)   # earlier — loser
+        secondary_end = datetime(2026, 9, 1,  0, 0, 0, tzinfo=UTC)  # later   — winner
+        # primary remaining: Aug 10 - Jul 25 = 16 days
+        primary_sub   = _make_sub(1, 1, primary_end,   remnawave_uuid='rw-p')
+        secondary_sub = _make_sub(2, 2, secondary_end, remnawave_uuid='rw-s')
+        primary   = _make_user(1, remnawave_uuid='rw-p', subscriptions=[primary_sub])
+        secondary = _make_user(2, remnawave_uuid='rw-s', subscriptions=[secondary_sub])
+        db = _make_db()
+        deferred: list[str] = []
+
+        with _patch_single_tariff(), \
+             patch('app.services.account_merge_service.datetime') as mock_dt:
+            mock_dt.now.return_value = _NOW
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            await _handle_subscription_merge(db, primary, secondary, deferred)
+
+        # Secondary won → extended by primary's 16 remaining days
+        expected_new_end = secondary_end + timedelta(days=16)
+        assert secondary_sub.end_date == expected_new_end, (
+            f"Winner end_date should be {expected_new_end}, got {secondary_sub.end_date}"
+        )
+        # Winner reassigned to primary
+        assert secondary_sub.user_id == primary.id, (
+            f"winner_sub.user_id should be primary.id={primary.id}, got {secondary_sub.user_id}"
+        )
+        # Loser (primary_sub) expired
+        assert primary_sub.status == 'expired', (
+            f"primary_sub.status should be 'expired', got {primary_sub.status!r}"
+        )
+        # Primary's remnawave_uuid now holds winner's (secondary's) old remnawave uuid
+        assert primary.remnawave_uuid == 'rw-s', (
+            f"primary.remnawave_uuid should be 'rw-s', got {primary.remnawave_uuid!r}"
+        )
+        # Secondary's remnawave_uuid cleared
+        assert secondary.remnawave_uuid is None, (
+            f"secondary.remnawave_uuid should be None, got {secondary.remnawave_uuid!r}"
+        )
+
+
+def _patch_multi_tariff():
+    """Patch Settings.is_multi_tariff_enabled to return True (multi-tariff mode)."""
+    from app.config import Settings
+    return patch.object(Settings, 'is_multi_tariff_enabled', return_value=True)
+
+
+class TestMultiTariffCombine:
+    async def test_same_tariff_conflict_winner_extended_and_event_written(self):
+        """Multi-tariff: two active subs with same tariff_id → winner extended,
+        SubscriptionEvent with event_type='renewal' and reason='account_merge' written."""
+        TARIFF_ID = 42
+        primary_end   = datetime(2026, 9, 1, 0, 0, 0, tzinfo=UTC)   # winner (later)
+        secondary_end = datetime(2026, 8, 10, 0, 0, 0, tzinfo=UTC)  # loser (earlier)
+        # secondary remaining: Aug 10 - Jul 25 = 16 days
+        primary_sub   = _make_sub(1, 1, primary_end,   tariff_id=TARIFF_ID, remnawave_uuid='rw-p')
+        secondary_sub = _make_sub(2, 2, secondary_end, tariff_id=TARIFF_ID, remnawave_uuid='rw-s')
+        primary   = _make_user(1, remnawave_uuid='rw-p', subscriptions=[primary_sub])
+        secondary = _make_user(2, remnawave_uuid='rw-s', subscriptions=[secondary_sub])
+        db = _make_db()
+        deferred: list[str] = []
+        added_objects = []
+        db.add = lambda obj: added_objects.append(obj)
+
+        with _patch_multi_tariff(), \
+             patch('app.services.account_merge_service.datetime') as mock_dt:
+            mock_dt.now.return_value = _NOW
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            await _handle_subscription_merge(db, primary, secondary, deferred)
+
+        # Winner (primary_sub) extended by loser's 16 remaining days
+        expected_new_end = primary_end + timedelta(days=16)
+        assert primary_sub.end_date == expected_new_end, (
+            f"Winner end_date should be {expected_new_end}, got {primary_sub.end_date}"
+        )
+
+        # A SubscriptionEvent row exists with event_type='renewal'
+        from app.database.models import SubscriptionEvent
+        events = [o for o in added_objects if isinstance(o, SubscriptionEvent)]
+        assert len(events) >= 1, "Expected at least one SubscriptionEvent"
+        ev = events[0]
+        assert ev.event_type == 'renewal'
+        assert ev.extra.get('reason') == 'account_merge'
+        assert ev.extra.get('extended_days') == 16
+        assert 'previous_end_date' in ev.extra
+        assert 'new_end_date' in ev.extra
