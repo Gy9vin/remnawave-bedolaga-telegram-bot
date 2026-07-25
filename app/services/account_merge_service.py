@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any
 
 import structlog
 from sqlalchemy import and_, delete, or_, select, update
@@ -97,6 +97,34 @@ _PARTNER_STATUS_PRIORITY: dict[str, int] = {
     PartnerStatus.PENDING.value: 2,
     PartnerStatus.APPROVED.value: 3,
 }
+
+
+def _resolve_merge_roles(
+    keep_account: int,
+    primary_user_id: int,
+    secondary_user_id: int,
+) -> tuple[int, int]:
+    """Determine (survivor_id, absorbed_id) based on which account the user wants to keep.
+
+    Args:
+        keep_account: The user_id that should survive the merge.
+        primary_user_id: The initiating account's id.
+        secondary_user_id: The account being merged in.
+
+    Returns:
+        (survivor_id, absorbed_id) — survivor is passed as primary_user_id to execute_merge.
+
+    Raises:
+        ValueError: If keep_account is not one of the two merging user ids.
+    """
+    if keep_account not in (primary_user_id, secondary_user_id):
+        raise ValueError(
+            f'keep_account ({keep_account}) must be one of the two user IDs being merged '
+            f'({primary_user_id}, {secondary_user_id})'
+        )
+    if keep_account == primary_user_id:
+        return primary_user_id, secondary_user_id
+    return secondary_user_id, primary_user_id
 
 
 def compute_auth_methods(user: User) -> list[str]:
@@ -335,16 +363,14 @@ async def _handle_subscription_merge(
     db: AsyncSession,
     primary: User,
     secondary: User,
-    keep_subscription_from: Literal['primary', 'secondary'],
     deferred_remnawave_deletions: list[str],
 ) -> None:
     """Обрабатывает мерж подписок между двумя аккаунтами.
 
     Args:
         db: Сессия БД.
-        primary: Основной пользователь.
-        secondary: Вторичный пользователь.
-        keep_subscription_from: 'primary' или 'secondary' — чью подписку оставить.
+        primary: Основной пользователь (survivor).
+        secondary: Вторичный пользователь (absorbed).
     """
     # Multi-tariff mode: transfer ALL subscriptions from secondary to primary
     if settings.is_multi_tariff_enabled():
@@ -495,58 +521,33 @@ async def _handle_subscription_merge(
         )
         return
 
-    # Обе подписки есть — выбираем по keep_subscription_from
+    # Обе подписки есть — survivor (primary) всегда побеждает.
+    # Роль-своп выполняется на уровне эндпоинта (Task 1): survivor передаётся как
+    # primary_user_id, поэтому здесь всегда оставляем подписку primary.
+    # Task 2 добавит логику объединения подписок вместо удаления.
     assert primary_sub is not None
     assert secondary_sub is not None
 
-    if keep_subscription_from == 'secondary':
-        # Удаляем подписку primary из RemnaWave
-        if primary.remnawave_uuid:
-            deferred_remnawave_deletions.append(primary.remnawave_uuid)
-            primary.remnawave_uuid = None
-        # Явно удаляем subscription_servers перед подпиской (CASCADE настроен, но делаем явно для ясности)
-        await db.execute(delete(SubscriptionServer).where(SubscriptionServer.subscription_id == primary_sub.id))
-        # Удаляем запись подписки primary
-        await db.delete(primary_sub)
-        await db.flush()
-        # Переносим подписку secondary на primary
-        secondary_sub.user_id = primary.id
-        # Переносим remnawave_uuid (clear→flush→assign — unique constraint safety)
-        if secondary.remnawave_uuid:
-            uuid_to_transfer = secondary.remnawave_uuid
-            secondary.remnawave_uuid = None
-            await db.flush()
-            primary.remnawave_uuid = uuid_to_transfer
-        # Flush сразу — гарантируем, что DELETE предшествует UPDATE (unique constraint на subscription.user_id)
-        await db.flush()
-        logger.info(
-            'Мерж подписок: оставлена подписка secondary, подписка primary удалена',
-            primary_id=primary.id,
-            secondary_id=secondary.id,
-        )
-    else:
-        # keep_subscription_from == 'primary' (по умолчанию)
-        # Удаляем подписку secondary из RemnaWave
-        if secondary.remnawave_uuid:
-            deferred_remnawave_deletions.append(secondary.remnawave_uuid)
-            secondary.remnawave_uuid = None
-        # Явно удаляем subscription_servers перед подпиской (CASCADE настроен, но делаем явно для ясности)
-        await db.execute(delete(SubscriptionServer).where(SubscriptionServer.subscription_id == secondary_sub.id))
-        # Удаляем запись подписки secondary
-        await db.delete(secondary_sub)
-        await db.flush()
-        logger.info(
-            'Мерж подписок: оставлена подписка primary, подписка secondary удалена',
-            primary_id=primary.id,
-            secondary_id=secondary.id,
-        )
+    # Удаляем подписку secondary из RemnaWave
+    if secondary.remnawave_uuid:
+        deferred_remnawave_deletions.append(secondary.remnawave_uuid)
+        secondary.remnawave_uuid = None
+    # Явно удаляем subscription_servers перед подпиской (CASCADE настроен, но делаем явно для ясности)
+    await db.execute(delete(SubscriptionServer).where(SubscriptionServer.subscription_id == secondary_sub.id))
+    # Удаляем запись подписки secondary
+    await db.delete(secondary_sub)
+    await db.flush()
+    logger.info(
+        'Мерж подписок: оставлена подписка primary (survivor), подписка secondary (absorbed) удалена',
+        primary_id=primary.id,
+        secondary_id=secondary.id,
+    )
 
 
 async def execute_merge(
     db: AsyncSession,
     primary_user_id: int,
     secondary_user_id: int,
-    keep_subscription_from: Literal['primary', 'secondary'] = 'primary',
     provider: str | None = None,
     provider_id: str | None = None,
     deferred_remnawave_deletions: list[str] | None = None,
@@ -554,23 +555,22 @@ async def execute_merge(
     """Выполняет атомарный мерж двух аккаунтов. Caller отвечает за commit/rollback.
 
     Переносит все данные с secondary на primary, помечает secondary как deleted.
+    Survivor всегда передаётся как primary_user_id — роль-своп выполняется на
+    уровне эндпоинта с помощью _resolve_merge_roles.
 
     Args:
         db: Сессия БД (caller управляет транзакцией).
-        primary_user_id: ID основного аккаунта.
-        secondary_user_id: ID вторичного аккаунта.
-        keep_subscription_from: 'primary' или 'secondary' — чью подписку оставить.
+        primary_user_id: ID аккаунта-survivor (основной).
+        secondary_user_id: ID аккаунта-absorbed (вторичный).
         provider: OAuth-провайдер, инициировавший мерж (для логирования).
         provider_id: ID провайдера (для логирования).
 
     Returns:
-        Обновлённый объект primary User.
+        Обновлённый объект primary User (survivor).
 
     Raises:
         ValueError: Если пользователь не найден, совпадают ID, или secondary уже удалён.
     """
-    if keep_subscription_from not in ('primary', 'secondary'):
-        raise ValueError("keep_subscription_from должен быть 'primary' или 'secondary'")
 
     if primary_user_id == secondary_user_id:
         raise ValueError('primary_user_id и secondary_user_id не могут совпадать')
@@ -591,7 +591,6 @@ async def execute_merge(
         'Начинаем мерж аккаунтов',
         primary_id=primary.id,
         secondary_id=secondary.id,
-        keep_subscription_from=keep_subscription_from,
         provider=provider,
         provider_id=provider_id,
     )
@@ -700,7 +699,7 @@ async def execute_merge(
     )
 
     # 5. Мерж подписок
-    await _handle_subscription_merge(db, primary, secondary, keep_subscription_from, pending_remnawave_deletions)
+    await _handle_subscription_merge(db, primary, secondary, pending_remnawave_deletions)
 
     # 6. Переназначение транзакций
     await db.execute(update(Transaction).where(Transaction.user_id == secondary.id).values(user_id=primary.id))

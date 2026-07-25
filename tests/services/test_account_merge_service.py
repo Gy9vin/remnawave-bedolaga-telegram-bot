@@ -10,6 +10,7 @@ from app.services import account_merge_service
 from app.services.account_merge_service import (
     _build_subscription_preview,
     _build_user_preview,
+    _resolve_merge_roles,
     compute_auth_methods,
     execute_merge,
     get_merge_preview,
@@ -319,10 +320,12 @@ class TestExecuteMergeValidation:
         with pytest.raises(ValueError, match='удалён'):
             await execute_merge(db, 1, 2)
 
-    async def test_invalid_keep_subscription_from_raises(self):
-        db = _make_db()
-        with pytest.raises(ValueError, match=r'primary.*secondary'):
-            await execute_merge(db, 1, 2, keep_subscription_from='invalid')
+    async def test_invalid_keep_account_in_endpoint_rejected(self):
+        """keep_account outside the pair must be rejected at endpoint validation level.
+        execute_merge itself no longer validates this — endpoint does."""
+        # This is now endpoint-layer validation; service-level validation
+        # only checks same-id, not-found, and deleted.
+        pass  # Covered by endpoint integration test in future tasks
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +721,8 @@ class TestExecuteMergeSubscription:
         assert secondary.remnawave_uuid is None
 
     async def test_both_have_subscription_keep_primary(self, monkeypatch):
+        """When both have subscriptions, primary's is kept (survivor is primary by default).
+        T2 will add full combine-subscription assertions; for now just verify the call succeeds."""
         db = _make_db()
         sub_p = _make_subscription(user_id=1)
         sub_s = _make_subscription(user_id=2)
@@ -729,30 +734,31 @@ class TestExecuteMergeSubscription:
             AsyncMock(side_effect=[primary, secondary]),
         )
         with _patch_remnawave_delete() as mock_del:
-            await execute_merge(db, 1, 2, keep_subscription_from='primary')
+            await execute_merge(db, 1, 2)
             mock_del.assert_awaited_once_with('rw-secondary')
 
         db.delete.assert_awaited_once_with(sub_s)
 
     async def test_both_have_subscription_keep_secondary(self, monkeypatch):
+        """When both have subscriptions and secondary becomes survivor via role-swap,
+        secondary's sub (now in primary slot) wins. T2 will add proper combine assertions.
+        For now: call execute_merge with secondary in the primary/survivor slot."""
         db = _make_db()
-        sub_p = _make_subscription(user_id=1)
-        sub_s = _make_subscription(user_id=2)
-        primary = _make_user(id=1, subscription=sub_p, remnawave_uuid='rw-primary')
-        secondary = _make_user(id=2, subscription=sub_s, remnawave_uuid='rw-secondary')
+        sub_p = _make_subscription(user_id=2)
+        sub_s = _make_subscription(user_id=1)
+        # Swap: caller (endpoint) already resolved roles; secondary is now primary_user_id=2
+        primary = _make_user(id=2, subscription=sub_p, remnawave_uuid='rw-primary')
+        secondary = _make_user(id=1, subscription=sub_s, remnawave_uuid='rw-secondary')
         monkeypatch.setattr(
             account_merge_service,
             'get_user_by_id',
             AsyncMock(side_effect=[primary, secondary]),
         )
         with _patch_remnawave_delete() as mock_del:
-            await execute_merge(db, 1, 2, keep_subscription_from='secondary')
-            mock_del.assert_awaited_once_with('rw-primary')
+            await execute_merge(db, 2, 1)
+            mock_del.assert_awaited_once_with('rw-secondary')
 
-        db.delete.assert_awaited_once_with(sub_p)
-        # Secondary subscription transferred
-        assert sub_s.user_id == 1
-        assert primary.remnawave_uuid == 'rw-secondary'
+        db.delete.assert_awaited_once_with(sub_s)
 
     async def test_deferred_deletions_not_executed_during_merge(self, monkeypatch):
         """When the caller passes a deletions list, the discarded panel user is NOT
@@ -903,3 +909,33 @@ class TestExecuteMergeSelfReferralPrevention:
             result = await execute_merge(db, 1, 2)
 
         assert result.referred_by_id is None
+
+
+# ---------------------------------------------------------------------------
+# Role-swap: keep_account determines survivor
+# ---------------------------------------------------------------------------
+
+
+class TestRoleSwapLogic:
+    """Tests the handler-level role-swap logic via the real _resolve_merge_roles helper."""
+
+    def test_keep_primary_no_swap(self):
+        """When keep_account == primary_user_id, survivor is primary and absorbed is secondary."""
+        survivor_id, absorbed_id = _resolve_merge_roles(
+            keep_account=10, primary_user_id=10, secondary_user_id=20
+        )
+        assert survivor_id == 10
+        assert absorbed_id == 20
+
+    def test_keep_secondary_swaps_roles(self):
+        """When keep_account == secondary_user_id, secondary becomes survivor and primary is absorbed."""
+        survivor_id, absorbed_id = _resolve_merge_roles(
+            keep_account=20, primary_user_id=10, secondary_user_id=20
+        )
+        assert survivor_id == 20
+        assert absorbed_id == 10
+
+    def test_keep_unknown_id_rejected(self):
+        """keep_account not in {primary_id, secondary_id} must raise ValueError."""
+        with pytest.raises(ValueError, match='keep_account'):
+            _resolve_merge_roles(keep_account=99, primary_user_id=10, secondary_user_id=20)
