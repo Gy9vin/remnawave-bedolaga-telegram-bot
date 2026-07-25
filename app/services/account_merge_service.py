@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -157,6 +157,29 @@ def _build_subscription_preview(sub: Subscription | None) -> dict[str, Any] | No
         'tariff_name': tariff_name,
         'autopay_enabled': sub.autopay_enabled,
     }
+
+
+def _combine_subscription_end_dates(
+    winner_sub: Any,
+    loser_sub: Any,
+    now: datetime,
+) -> timedelta:
+    """Returns the timedelta to add to winner's end_date from loser's remaining days.
+
+    Rules:
+    - If winner has end_date=None (lifetime), return timedelta(0) — no extension needed.
+    - If loser has end_date=None (caller should never pass this, but guard anyway),
+      return timedelta(0) — loser is also lifetime, nothing to add.
+    - Otherwise: remaining = max(0, loser.end_date - now); return remaining.
+    """
+    winner_end = getattr(winner_sub, 'end_date', None)
+    loser_end = getattr(loser_sub, 'end_date', None)
+
+    if winner_end is None or loser_end is None:
+        return timedelta(0)
+
+    remaining = loser_end - now
+    return max(timedelta(0), remaining)
 
 
 def _build_user_preview(user: User) -> dict[str, Any]:
@@ -372,17 +395,19 @@ async def _handle_subscription_merge(
         primary: Основной пользователь (survivor).
         secondary: Вторичный пользователь (absorbed).
     """
-    # Multi-tariff mode: transfer ALL subscriptions from secondary to primary
+    # Multi-tariff mode: transfer ALL subscriptions from secondary to primary,
+    # combining overlapping (same tariff_id) active subscriptions.
     if settings.is_multi_tariff_enabled():
+        now = datetime.now(UTC)
         secondary_subs = list(getattr(secondary, 'subscriptions', None) or [])
         primary_subs = list(getattr(primary, 'subscriptions', None) or [])
         secondary_legacy_uuid = secondary.remnawave_uuid
 
-        # Build set of primary's active tariff_ids for conflict detection
-        primary_active_tariff_ids: set[int] = set()
+        # Build map of primary's active tariff_id → subscription
+        primary_active: dict[int, Any] = {}
         for ps in primary_subs:
             if ps.tariff_id is not None and ps.status in ('active', 'trial'):
-                primary_active_tariff_ids.add(ps.tariff_id)
+                primary_active[ps.tariff_id] = ps
 
         transferred: list[Subscription] = []
         if secondary_subs:
@@ -394,57 +419,75 @@ async def _handle_subscription_merge(
                 if (
                     sub_tariff_id is not None
                     and sub.status in ('active', 'trial')
-                    and sub_tariff_id in primary_active_tariff_ids
+                    and sub_tariff_id in primary_active
                 ):
-                    # Resolve conflict: keep the subscription with the later end_date
-                    primary_conflict = next(
-                        (
-                            ps
-                            for ps in primary_subs
-                            if ps.tariff_id == sub_tariff_id and ps.status in ('active', 'trial')
-                        ),
-                        None,
-                    )
-                    if primary_conflict:
-                        primary_end = getattr(primary_conflict, 'end_date', None)
-                        secondary_end = getattr(sub, 'end_date', None)
-                        # None end_date = lifetime/unlimited → always wins over a finite date
-                        secondary_wins = (secondary_end is None and primary_end is not None) or (
-                            secondary_end is not None and primary_end is not None and secondary_end > primary_end
-                        )
-                        if secondary_wins:
-                            # Secondary sub is better — expire primary's, transfer secondary's
-                            logger.info(
-                                'Tariff conflict resolved: secondary sub wins, expiring primary sub',
-                                tariff_id=sub_tariff_id,
-                                primary_sub_id=primary_conflict.id,
-                                primary_end=str(primary_end),
-                                secondary_sub_id=sub.id,
-                                secondary_end=str(secondary_end),
-                            )
-                            primary_conflict.status = 'expired'
-                            primary_conflict.autopay_enabled = False
-                            await db.flush()
-                            sub.user_id = primary.id
-                            transferred.append(sub)
-                        else:
-                            # Primary sub is equal or better — expire secondary's, then transfer it as expired
-                            logger.info(
-                                'Tariff conflict resolved: primary sub kept, expiring secondary sub before transfer',
-                                tariff_id=sub_tariff_id,
-                                primary_sub_id=primary_conflict.id,
-                                secondary_sub_id=sub.id,
-                            )
-                            sub.status = 'expired'
-                            sub.autopay_enabled = False
-                            sub.user_id = primary.id
-                            transferred.append(sub)
-                        continue
+                    primary_conflict = primary_active[sub_tariff_id]
+                    primary_end = getattr(primary_conflict, 'end_date', None)
+                    secondary_end = getattr(sub, 'end_date', None)
 
+                    # Determine winner (later end_date; None = lifetime wins)
+                    secondary_wins = (secondary_end is None and primary_end is not None) or (
+                        secondary_end is not None and primary_end is not None and secondary_end > primary_end
+                    )
+
+                    if secondary_wins:
+                        winner_sub, loser_sub = sub, primary_conflict
+                    else:
+                        winner_sub, loser_sub = primary_conflict, sub
+
+                    # Combine: extend winner by loser's remaining days
+                    extension = _combine_subscription_end_dates(winner_sub, loser_sub, now)
+                    if extension.total_seconds() > 0 and winner_sub.end_date is not None:
+                        previous_end = winner_sub.end_date
+                        winner_sub.end_date = previous_end + extension
+                        extended_days = int(extension.total_seconds() / 86400)
+                        db.add(SubscriptionEvent(
+                            event_type='renewal',
+                            user_id=primary.id,
+                            subscription_id=winner_sub.id,
+                            occurred_at=now,
+                            extra={
+                                'extended_days': extended_days,
+                                'previous_end_date': previous_end.isoformat(),
+                                'new_end_date': winner_sub.end_date.isoformat(),
+                                'reason': 'account_merge',
+                            },
+                        ))
+                        logger.info(
+                            'Multi-tariff combine: extended winner end_date',
+                            tariff_id=sub_tariff_id,
+                            winner_sub_id=winner_sub.id,
+                            extended_days=extended_days,
+                            new_end_date=str(winner_sub.end_date),
+                        )
+
+                    # Loser is expired, then transferred to primary (as expired record)
+                    loser_sub.status = 'expired'
+                    loser_sub.autopay_enabled = False
+
+                    if secondary_wins:
+                        # Secondary sub wins → expire primary conflict, transfer secondary sub
+                        if primary_conflict.remnawave_uuid:
+                            deferred_remnawave_deletions.append(primary_conflict.remnawave_uuid)
+                            primary_conflict.remnawave_uuid = None
+                        await db.flush()
+                        sub.user_id = primary.id
+                        transferred.append(sub)
+                    else:
+                        # Primary sub wins → expire secondary sub, transfer it as expired
+                        if sub.remnawave_uuid:
+                            deferred_remnawave_deletions.append(sub.remnawave_uuid)
+                            sub.remnawave_uuid = None
+                        sub.user_id = primary.id
+                        transferred.append(sub)
+                    await db.flush()
+                    continue
+
+                # No conflict — simple transfer
                 sub.user_id = primary.id
                 transferred.append(sub)
                 logger.info(
-                    'Transferred subscription during account merge',
+                    'Transferred subscription during account merge (multi-tariff)',
                     subscription_id=sub.id,
                     tariff_id=sub_tariff_id,
                     from_user=secondary.id,
@@ -521,26 +564,80 @@ async def _handle_subscription_merge(
         )
         return
 
-    # Обе подписки есть — survivor (primary) всегда побеждает.
-    # Роль-своп выполняется на уровне эндпоинта (Task 1): survivor передаётся как
-    # primary_user_id, поэтому здесь всегда оставляем подписку primary.
-    # Task 2 добавит логику объединения подписок вместо удаления.
+    # Обе подписки есть — COMBINE: продлеваем победителя на остаток проигравшего.
     assert primary_sub is not None
     assert secondary_sub is not None
 
-    # Удаляем подписку secondary из RemnaWave
-    if secondary.remnawave_uuid:
-        deferred_remnawave_deletions.append(secondary.remnawave_uuid)
+    now = datetime.now(UTC)
+    primary_end = getattr(primary_sub, 'end_date', None)
+    secondary_end = getattr(secondary_sub, 'end_date', None)
+
+    # Определяем победителя (более поздняя дата; None=lifetime всегда побеждает)
+    secondary_wins = (secondary_end is None and primary_end is not None) or (
+        secondary_end is not None
+        and primary_end is not None
+        and secondary_end > primary_end
+    )
+
+    if secondary_wins:
+        winner_sub, loser_sub, winner_remnawave, loser_remnawave = (
+            secondary_sub, primary_sub, secondary.remnawave_uuid, primary.remnawave_uuid
+        )
+    else:
+        winner_sub, loser_sub, winner_remnawave, loser_remnawave = (
+            primary_sub, secondary_sub, primary.remnawave_uuid, secondary.remnawave_uuid
+        )
+
+    # Продлеваем победителя на остаток проигравшего
+    extension = _combine_subscription_end_dates(winner_sub, loser_sub, now)
+    if extension.total_seconds() > 0 and winner_sub.end_date is not None:
+        previous_end = winner_sub.end_date
+        winner_sub.end_date = previous_end + extension
+        extended_days = int(extension.total_seconds() / 86400)
+        db.add(SubscriptionEvent(
+            event_type='renewal',
+            user_id=primary.id,
+            subscription_id=winner_sub.id,
+            occurred_at=now,
+            extra={
+                'extended_days': extended_days,
+                'previous_end_date': previous_end.isoformat(),
+                'new_end_date': winner_sub.end_date.isoformat(),
+                'reason': 'account_merge',
+            },
+        ))
+        logger.info(
+            'Мерж подписок: дата окончания победителя продлена на остаток проигравшего',
+            primary_id=primary.id,
+            secondary_id=secondary.id,
+            extended_days=extended_days,
+            new_end_date=str(winner_sub.end_date),
+        )
+
+    # Проигравший — деактивируем и дефеируем удаление из RemnaWave
+    loser_sub.status = 'expired'
+    loser_sub.autopay_enabled = False
+    if loser_remnawave:
+        deferred_remnawave_deletions.append(loser_remnawave)
+
+    if secondary_wins:
+        # Победитель — secondary_sub → переносим на primary, передаём remnawave_uuid
+        winner_sub.user_id = primary.id
         secondary.remnawave_uuid = None
-    # Явно удаляем subscription_servers перед подпиской (CASCADE настроен, но делаем явно для ясности)
-    await db.execute(delete(SubscriptionServer).where(SubscriptionServer.subscription_id == secondary_sub.id))
-    # Удаляем запись подписки secondary
-    await db.delete(secondary_sub)
+        await db.flush()
+        primary.remnawave_uuid = winner_remnawave
+        loser_sub.user_id = primary.id  # loser (primary_sub) уже у primary
+    else:
+        # Победитель — primary_sub → он уже у primary; переносим loser и чистим secondary
+        loser_sub.user_id = primary.id
+        secondary.remnawave_uuid = None
+
     await db.flush()
     logger.info(
-        'Мерж подписок: оставлена подписка primary (survivor), подписка secondary (absorbed) удалена',
+        'Мерж подписок: обе подписки объединены, дата победителя продлена',
         primary_id=primary.id,
         secondary_id=secondary.id,
+        secondary_wins=secondary_wins,
     )
 
 

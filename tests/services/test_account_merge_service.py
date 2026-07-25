@@ -721,11 +721,13 @@ class TestExecuteMergeSubscription:
         assert secondary.remnawave_uuid is None
 
     async def test_both_have_subscription_keep_primary(self, monkeypatch):
-        """When both have subscriptions, primary's is kept (survivor is primary by default).
-        T2 will add full combine-subscription assertions; for now just verify the call succeeds."""
+        """When both have subscriptions, the later-ending sub (or primary's if equal) wins.
+        The loser sub is marked expired and deferred for RemnaWave deletion — NOT hard-deleted.
+        Both subs have the same default end_date (2025-01-01), so primary's wins; loser's
+        remnawave_uuid is deferred for deletion."""
         db = _make_db()
-        sub_p = _make_subscription(user_id=1)
-        sub_s = _make_subscription(user_id=2)
+        sub_p = _make_subscription(user_id=1, remnawave_uuid='rw-sub-p')
+        sub_s = _make_subscription(user_id=2, remnawave_uuid='rw-sub-s')
         primary = _make_user(id=1, subscription=sub_p, remnawave_uuid='rw-primary')
         secondary = _make_user(id=2, subscription=sub_s, remnawave_uuid='rw-secondary')
         monkeypatch.setattr(
@@ -735,17 +737,21 @@ class TestExecuteMergeSubscription:
         )
         with _patch_remnawave_delete() as mock_del:
             await execute_merge(db, 1, 2)
+            # Loser (secondary) remnawave_uuid deferred for deletion
             mock_del.assert_awaited_once_with('rw-secondary')
 
-        db.delete.assert_awaited_once_with(sub_s)
+        # Combine: loser is expired, NOT hard-deleted
+        db.delete.assert_not_awaited()
+        assert sub_s.status == 'expired'
+        assert sub_s.user_id == 1  # transferred to primary
 
     async def test_both_have_subscription_keep_secondary(self, monkeypatch):
         """When both have subscriptions and secondary becomes survivor via role-swap,
-        secondary's sub (now in primary slot) wins. T2 will add proper combine assertions.
-        For now: call execute_merge with secondary in the primary/survivor slot."""
+        the survivor (now in primary slot) sub wins. Loser sub is marked expired, NOT deleted.
+        Both subs have the same default end_date (2025-01-01), so primary (=ex-secondary) wins."""
         db = _make_db()
-        sub_p = _make_subscription(user_id=2)
-        sub_s = _make_subscription(user_id=1)
+        sub_p = _make_subscription(user_id=2, remnawave_uuid='rw-sub-p')
+        sub_s = _make_subscription(user_id=1, remnawave_uuid='rw-sub-s')
         # Swap: caller (endpoint) already resolved roles; secondary is now primary_user_id=2
         primary = _make_user(id=2, subscription=sub_p, remnawave_uuid='rw-primary')
         secondary = _make_user(id=1, subscription=sub_s, remnawave_uuid='rw-secondary')
@@ -756,9 +762,13 @@ class TestExecuteMergeSubscription:
         )
         with _patch_remnawave_delete() as mock_del:
             await execute_merge(db, 2, 1)
+            # Loser (secondary) remnawave_uuid deferred for deletion
             mock_del.assert_awaited_once_with('rw-secondary')
 
-        db.delete.assert_awaited_once_with(sub_s)
+        # Combine: loser is expired, NOT hard-deleted
+        db.delete.assert_not_awaited()
+        assert sub_s.status == 'expired'
+        assert sub_s.user_id == 2  # transferred to primary (id=2)
 
     async def test_deferred_deletions_not_executed_during_merge(self, monkeypatch):
         """When the caller passes a deletions list, the discarded panel user is NOT
