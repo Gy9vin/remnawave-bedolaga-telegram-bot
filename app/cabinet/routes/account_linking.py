@@ -962,22 +962,23 @@ async def execute_merge_endpoint(
             detail='This merge can only be completed by the account that started it.',
         )
 
-    # 2. Validate keep_account — must be one of the two ids in the token
-    if request.keep_account not in (primary_user_id, secondary_user_id):
+    # 2. Validate keep_account and resolve merge roles in one step.
+    # Role-swap: the chosen account plays 'primary' (survivor) in execute_merge.
+    # If the user chose the secondary, we swap roles so the secondary is absorbed-into
+    # and the initiator is absorbed.
+    # _resolve_merge_roles raises ValueError when keep_account is not one of the two ids.
+    try:
+        survivor_id, absorbed_id = _resolve_merge_roles(
+            keep_account=request.keep_account,
+            primary_user_id=primary_user_id,
+            secondary_user_id=secondary_user_id,
+        )
+    except ValueError:
         await restore_merge_token(merge_token, consumed)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='keep_account must be one of the two user IDs being merged',
         )
-
-    # Role-swap: the chosen account plays 'primary' (survivor) in execute_merge.
-    # If the user chose the secondary, we swap roles so the secondary is absorbed-into
-    # and the initiator is absorbed.
-    survivor_id, absorbed_id = _resolve_merge_roles(
-        keep_account=request.keep_account,
-        primary_user_id=primary_user_id,
-        secondary_user_id=secondary_user_id,
-    )
 
     # 3. Execute merge (survivor plays 'primary' role).
     # RemnaWave user deletions are DEFERRED until after commit: an external delete
