@@ -685,6 +685,11 @@ async def _handle_subscription_merge(
     # Проигравший — деактивируем и дефеируем удаление из RemnaWave
     loser_sub.status = 'expired'
     loser_sub.autopay_enabled = False
+    # СБП-автопродление Platega проигравшей подписки отменяем, иначе Platega
+    # продолжила бы списывать за деактивированную подписку.
+    from app.services.payment.platega import cancel_platega_recurring_for_subscription_safe
+
+    await cancel_platega_recurring_for_subscription_safe(db, loser_sub.id, commit=False)
     if loser_remnawave:
         deferred_remnawave_deletions.append(loser_remnawave)
 
@@ -764,6 +769,12 @@ async def execute_merge(
     # Два прохода: сначала очищаем secondary (flush для освобождения unique constraint),
     # затем устанавливаем на primary. Без этого SQLAlchemy может отправить UPDATE primary
     # раньше UPDATE secondary, что вызовет UniqueViolation.
+    # A merge can move or delete subscriptions and panel UUIDs. Keep the
+    # snapshot owner stable until every open grace overlay is restored.
+    from app.services.grace_access_runtime import ensure_no_open_grace_for_users
+
+    await ensure_no_open_grace_for_users(db, (primary_user_id, secondary_user_id))
+
     oauth_transfers: list[tuple[str, object]] = []
     for field in _OAUTH_FIELDS:
         secondary_value = getattr(secondary, field)

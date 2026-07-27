@@ -4,6 +4,8 @@ import re
 import smtplib
 import threading
 import time
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, make_msgid
@@ -133,6 +135,7 @@ class EmailService:
         subject: str,
         body_html: str,
         body_text: str | None = None,
+        attachments: list[tuple[str, bytes, str]] | None = None,
     ) -> bool:
         """
         Send an email.
@@ -142,6 +145,7 @@ class EmailService:
             subject: Email subject
             body_html: HTML body content
             body_text: Plain text body (optional, generated from HTML if not provided)
+            attachments: Optional list of (filename, content, mimetype) tuples
 
         Returns:
             True if email was sent successfully, False otherwise
@@ -160,7 +164,10 @@ class EmailService:
         subject = subject.replace('\n', '').replace('\r', '')
 
         try:
-            msg = MIMEMultipart('alternative')
+            # С вложениями письмо становится multipart/mixed: внутри него
+            # обычная alternative-пара text/html плюс файлы.
+            alternative = MIMEMultipart('alternative')
+            msg = MIMEMultipart('mixed') if attachments else alternative
             msg['Subject'] = subject
             safe_from_name = self.from_name.replace('\n', '').replace('\r', '') if self.from_name else ''
             safe_from_email = sender_email.replace('\n', '').replace('\r', '')
@@ -176,8 +183,19 @@ class EmailService:
             part1 = MIMEText(body_text, 'plain', 'utf-8')
             part2 = MIMEText(body_html, 'html', 'utf-8')
 
-            msg.attach(part1)
-            msg.attach(part2)
+            alternative.attach(part1)
+            alternative.attach(part2)
+
+            if attachments:
+                msg.attach(alternative)
+                for filename, content, mimetype in attachments:
+                    maintype, _, subtype = (mimetype or 'application/octet-stream').partition('/')
+                    attachment_part = MIMEBase(maintype or 'application', subtype or 'octet-stream')
+                    attachment_part.set_payload(content)
+                    encoders.encode_base64(attachment_part)
+                    safe_filename = filename.replace('\n', '').replace('\r', '')
+                    attachment_part.add_header('Content-Disposition', 'attachment', filename=safe_filename)
+                    msg.attach(attachment_part)
 
             payload = msg.as_string()
 

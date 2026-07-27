@@ -126,6 +126,20 @@ def _two_call_mock(user_a, user_b):
     return AsyncMock(side_effect=[user_a, user_b])
 
 
+@pytest.fixture(autouse=True)
+def _stub_grace_delete_guard(monkeypatch):
+    """Neutralize the upstream grace-access lock hook.
+
+    ``execute_merge`` calls ``ensure_no_open_grace_for_users`` which inspects a
+    real SQLAlchemy bind (``db.get_bind()``). Our SimpleNamespace mock has no
+    bind, so we stub it out — the invariant assertions below are unaffected.
+    """
+    monkeypatch.setattr(
+        'app.services.grace_access_runtime.ensure_no_open_grace_for_users',
+        AsyncMock(),
+    )
+
+
 class TestSingleProfileInvariant:
     async def test_telegram_sub_into_email_survivor_email(self, monkeypatch):
         """
