@@ -126,7 +126,7 @@ async def _needs_news_migration_rebase() -> bool:
 import re as _re
 
 
-_OUR_MIGRATION_PATTERN = _re.compile(r'^(00\d{2}_|9\d{3}_)')
+_OUR_MIGRATION_PATTERN = _re.compile(r'^(0\d{3}_|9\d{3}_)')
 
 
 def _cleanup_foreign_migration_files() -> int:
