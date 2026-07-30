@@ -4,7 +4,7 @@ import secrets
 from datetime import UTC, datetime
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,9 @@ from app.database.models import CabinetRefreshToken, User
 from app.services.account_merge_service import (
     execute_merge,
     flush_remnawave_deletions,
+    _count_active_referrals,
+    _get_remnawave_api,
+    compute_auth_methods,
 )
 from app.cabinet.auth.password_utils import hash_password
 
@@ -70,6 +73,43 @@ class AdminMergeUsersResponse(BaseModel):
     success: bool
     primary_user_id: int
     secondary_user_id: int
+
+
+class AdminMergeDeviceInfo(BaseModel):
+    hwid: str | None = None
+    app: str | None = None
+    platform: str | None = None
+    last_seen: str | None = None   # ISO string from panel
+
+
+class AdminMergeSubPreview(BaseModel):
+    subscription_id: int
+    tariff_name: str | None
+    end_date: datetime | None
+    status: str
+    subscription_url: str | None
+    subscription_crypto_link: str | None
+    remnawave_short_uuid: str | None
+    devices_count: int | None        # None when panel unavailable
+    devices: list[AdminMergeDeviceInfo]
+
+
+class AdminMergeUserPreview(BaseModel):
+    id: int
+    username: str | None
+    first_name: str | None
+    email: str | None
+    telegram_id: int | None
+    auth_methods: list[str]
+    balance_kopeks: int
+    referrals_count: int
+    created_at: datetime | None
+    subscriptions: list[AdminMergeSubPreview]
+
+
+class AdminMergePreviewResponse(BaseModel):
+    primary: AdminMergeUserPreview
+    secondary: AdminMergeUserPreview
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +396,103 @@ async def admin_unlink_telegram(
         pass
 
     return AdminUnlinkResponse(success=True)
+
+
+@router.get('/merge/preview', response_model=AdminMergePreviewResponse)
+async def admin_merge_preview(
+    primary_user_id: int = Query(...),
+    secondary_user_id: int = Query(...),
+    admin: User = Depends(require_permission('users:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> AdminMergePreviewResponse:
+    """Preview merge: return both users' base info + subscriptions with live device counts."""
+    if primary_user_id == secondary_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='primary_user_id and secondary_user_id must be different',
+        )
+
+    primary = await get_user_by_id(db, primary_user_id)
+    if not primary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Primary user (id={primary_user_id}) not found',
+        )
+    secondary = await get_user_by_id(db, secondary_user_id)
+    if not secondary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Secondary user (id={secondary_user_id}) not found',
+        )
+
+    primary_refs = await _count_active_referrals(db, primary_user_id)
+    secondary_refs = await _count_active_referrals(db, secondary_user_id)
+
+    async def _build_sub_previews(user: User) -> list[AdminMergeSubPreview]:
+        subs = getattr(user, 'subscriptions', None) or []
+        previews: list[AdminMergeSubPreview] = []
+        for sub in subs:
+            remnawave_uuid = getattr(sub, 'remnawave_uuid', None)
+            devices_count: int | None = None
+            devices: list[AdminMergeDeviceInfo] = []
+            if remnawave_uuid:
+                try:
+                    async with _get_remnawave_api() as api:
+                        data = await api.get_user_devices_all(remnawave_uuid)
+                    raw_devices = data.get('devices', [])
+                    devices_count = data.get('total', len(raw_devices))
+                    for d in raw_devices:
+                        devices.append(AdminMergeDeviceInfo(
+                            hwid=d.get('hwid'),
+                            app=d.get('userAgent') or d.get('app') or d.get('appName'),
+                            platform=d.get('platform'),
+                            last_seen=d.get('lastSeen') or d.get('last_seen'),
+                        ))
+                except Exception:
+                    logger.warning(
+                        'Failed to fetch devices for subscription in merge preview',
+                        subscription_id=sub.id,
+                        remnawave_uuid=remnawave_uuid,
+                        exc_info=True,
+                    )
+                    # devices_count stays None, devices stays []
+            tariff_name = None
+            if getattr(sub, 'tariff', None):
+                tariff_name = sub.tariff.name
+            previews.append(AdminMergeSubPreview(
+                subscription_id=sub.id,
+                tariff_name=tariff_name,
+                end_date=getattr(sub, 'end_date', None),
+                status=sub.status,
+                subscription_url=getattr(sub, 'subscription_url', None),
+                subscription_crypto_link=getattr(sub, 'subscription_crypto_link', None),
+                remnawave_short_uuid=getattr(sub, 'remnawave_short_uuid', None),
+                devices_count=devices_count,
+                devices=devices,
+            ))
+        return previews
+
+    primary_subs = await _build_sub_previews(primary)
+    secondary_subs = await _build_sub_previews(secondary)
+
+    def _build_user_preview(user: User, subs: list[AdminMergeSubPreview], refs: int) -> AdminMergeUserPreview:
+        return AdminMergeUserPreview(
+            id=user.id,
+            username=getattr(user, 'username', None),
+            first_name=getattr(user, 'first_name', None),
+            email=getattr(user, 'email', None),
+            telegram_id=getattr(user, 'telegram_id', None),
+            auth_methods=compute_auth_methods(user),
+            balance_kopeks=getattr(user, 'balance_kopeks', 0),
+            referrals_count=refs,
+            created_at=getattr(user, 'created_at', None),
+            subscriptions=subs,
+        )
+
+    return AdminMergePreviewResponse(
+        primary=_build_user_preview(primary, primary_subs, primary_refs),
+        secondary=_build_user_preview(secondary, secondary_subs, secondary_refs),
+    )
 
 
 @router.post('/merge', response_model=AdminMergeUsersResponse)
