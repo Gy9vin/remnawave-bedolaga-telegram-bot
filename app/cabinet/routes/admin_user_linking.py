@@ -534,11 +534,16 @@ async def admin_merge_users(
         for sub in (getattr(secondary, 'subscriptions', None) or []):
             all_sub_ids.add(sub.id)
         if request.keep_subscription_id not in all_sub_ids:
+            logger.warning(
+                'keep_subscription_id не принадлежит ни одному из объединяемых пользователей',
+                keep_subscription_id=request.keep_subscription_id,
+                valid_sub_ids=sorted(all_sub_ids),
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
                     f'keep_subscription_id={request.keep_subscription_id} does not belong '
-                    f'to either merged user (valid ids: {sorted(all_sub_ids)})'
+                    f'to either merged user'
                 ),
             )
 

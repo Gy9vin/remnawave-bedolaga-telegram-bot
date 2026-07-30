@@ -479,6 +479,7 @@ async def _handle_subscription_merge(
                 primary_active[ps.tariff_id] = ps
 
         transferred: list[Subscription] = []
+        keep_honored: bool = False  # set True when keep_subscription_id is consumed by a conflict block
         if secondary_subs:
             for sub in secondary_subs:
                 sub_tariff_id = getattr(sub, 'tariff_id', None)
@@ -496,11 +497,17 @@ async def _handle_subscription_merge(
 
                     # keep_subscription_id overrides default "later end_date wins" logic
                     if keep_subscription_id is not None and keep_subscription_id not in (sub.id, primary_conflict.id):
+                        logger.warning(
+                            'keep_subscription_id does not match this conflict pair',
+                            keep_subscription_id=keep_subscription_id,
+                            conflict_sub_ids=(sub.id, primary_conflict.id),
+                        )
                         raise ValueError(
                             f'keep_subscription_id={keep_subscription_id} does not belong to '
-                            f'either merged subscription (ids: {{{sub.id}, {primary_conflict.id}}})'
+                            f'either merged subscription'
                         )
                     if keep_subscription_id is not None and keep_subscription_id in (sub.id, primary_conflict.id):
+                        keep_honored = True
                         secondary_wins = keep_subscription_id == sub.id
                     else:
                         # Determine winner (later end_date; None = lifetime wins)
@@ -587,6 +594,17 @@ async def _handle_subscription_merge(
                 primary_id=primary.id,
                 secondary_id=secondary.id,
             )
+            # Warn if admin specified keep_subscription_id but no same-tariff conflict pair fired.
+            # The subscription itself is still transferred correctly; only the day-combine
+            # override was a no-op (spec: non-conflicting subs are transferred as-is).
+            if keep_subscription_id is not None and not keep_honored:
+                logger.warning(
+                    'keep_subscription_id был указан, но конфликтующей пары с тем же tariff_id не найдено — '
+                    'подписка перенесена как обычно, day-combine не выполнялся',
+                    keep_subscription_id=keep_subscription_id,
+                    primary_id=primary.id,
+                    secondary_id=secondary.id,
+                )
             # Sync transferred subscriptions in RemnaWave panel so description
             # reflects the primary user (telegramId, username, email).
             await _sync_transferred_subscriptions_to_panel(primary, transferred)
@@ -654,9 +672,14 @@ async def _handle_subscription_merge(
     if keep_subscription_id is not None:
         sub_ids = {primary_sub.id, secondary_sub.id}
         if keep_subscription_id not in sub_ids:
+            logger.warning(
+                'keep_subscription_id не совпадает ни с одной из двух подписок',
+                keep_subscription_id=keep_subscription_id,
+                valid_sub_ids=sorted(sub_ids),
+            )
             raise ValueError(
                 f'keep_subscription_id={keep_subscription_id} does not belong to '
-                f'either merged subscription (ids: {sub_ids})'
+                f'either merged subscription'
             )
         secondary_wins = keep_subscription_id == secondary_sub.id
     else:

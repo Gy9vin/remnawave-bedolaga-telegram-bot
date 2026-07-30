@@ -69,6 +69,7 @@ async def test_keep_subscription_id_validated_belongs_to_users():
 
         assert exc_info.value.status_code == 400
         assert 'keep_subscription_id' in exc_info.value.detail.lower()
+        mock_merge.assert_not_called()
 
 
 async def test_keep_subscription_id_none_passes_none_to_execute_merge():
