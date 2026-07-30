@@ -63,6 +63,7 @@ class AdminUnlinkResponse(BaseModel):
 class AdminMergeUsersRequest(BaseModel):
     primary_user_id: int
     secondary_user_id: int
+    keep_subscription_id: int | None = None
 
 
 class AdminMergeUsersResponse(BaseModel):
@@ -388,6 +389,22 @@ async def admin_merge_users(
             detail=f'Secondary user (id={request.secondary_user_id}) not found',
         )
 
+    # Validate keep_subscription_id belongs to one of the two users
+    if request.keep_subscription_id is not None:
+        all_sub_ids: set[int] = set()
+        for sub in (getattr(primary, 'subscriptions', None) or []):
+            all_sub_ids.add(sub.id)
+        for sub in (getattr(secondary, 'subscriptions', None) or []):
+            all_sub_ids.add(sub.id)
+        if request.keep_subscription_id not in all_sub_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f'keep_subscription_id={request.keep_subscription_id} does not belong '
+                    f'to either merged user (valid ids: {sorted(all_sub_ids)})'
+                ),
+            )
+
     deferred_deletions: list[str] = []
     try:
         await execute_merge(
@@ -397,6 +414,7 @@ async def admin_merge_users(
             provider='admin_manual',
             provider_id=str(admin.id),
             deferred_remnawave_deletions=deferred_deletions,
+            keep_subscription_id=request.keep_subscription_id,
         )
         await db.commit()
     except ValueError as exc:
