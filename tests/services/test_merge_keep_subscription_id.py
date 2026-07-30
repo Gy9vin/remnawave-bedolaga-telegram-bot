@@ -71,6 +71,7 @@ class TestKeepSubscriptionIdSingleTariff:
             1, 1, _PRIMARY_END, remnawave_uuid='rw-p',
             subscription_url='https://link.example/primary',
             remnawave_short_uuid='short-p',
+            subscription_crypto_link='crypto://primary',
         )
         secondary_sub = _make_sub(
             2, 2, _SECONDARY_END, remnawave_uuid='rw-s',
@@ -97,10 +98,11 @@ class TestKeepSubscriptionIdSingleTariff:
         assert primary_sub.end_date == expected_end, \
             f'Expected {expected_end}, got {primary_sub.end_date}'
 
-        # Link fields must be unchanged
+        # Link fields must be unchanged (all 4 spec-mandated fields)
         assert primary_sub.subscription_url == 'https://link.example/primary'
         assert primary_sub.remnawave_short_uuid == 'short-p'
         assert primary_sub.remnawave_uuid == 'rw-p'
+        assert primary_sub.subscription_crypto_link == 'crypto://primary'
 
         # Loser (secondary) deferred for deletion
         assert 'rw-s' in deferred
@@ -114,11 +116,13 @@ class TestKeepSubscriptionIdSingleTariff:
             1, 1, _PRIMARY_END, remnawave_uuid='rw-p',
             subscription_url='https://link.example/primary',
             remnawave_short_uuid='short-p',
+            subscription_crypto_link='crypto://primary',
         )
         secondary_sub = _make_sub(
             2, 2, _SECONDARY_END, remnawave_uuid='rw-s',
             subscription_url='https://link.example/secondary',
             remnawave_short_uuid='short-s',
+            subscription_crypto_link='crypto://secondary',
         )
         primary = _make_user(1, remnawave_uuid='rw-p', subscriptions=[primary_sub])
         secondary = _make_user(2, remnawave_uuid='rw-s', subscriptions=[secondary_sub])
@@ -138,6 +142,11 @@ class TestKeepSubscriptionIdSingleTariff:
         assert 'rw-p' in deferred
         # secondary_sub is transferred to primary.id
         assert secondary_sub.user_id == primary.id
+        # Winner (secondary_sub) link fields must be unchanged
+        assert secondary_sub.subscription_url == 'https://link.example/secondary'
+        assert secondary_sub.remnawave_short_uuid == 'short-s'
+        assert secondary_sub.remnawave_uuid == 'rw-s'
+        assert secondary_sub.subscription_crypto_link == 'crypto://secondary'
 
     async def test_keep_none_preserves_original_logic(self):
         """keep_subscription_id=None → default: winner = later end_date (secondary wins here)."""
@@ -200,3 +209,80 @@ class TestKeepSubscriptionIdSingleTariff:
         assert primary_sub.end_date is None
         assert primary_sub.subscription_url == 'https://link.example/primary'
         assert 'rw-s' in deferred
+
+
+def _patch_multi_tariff():
+    return patch.object(Settings, 'is_multi_tariff_enabled', return_value=True)
+
+
+class TestKeepSubscriptionIdMultiTariff:
+    async def test_keep_early_sub_preserved_url_multi_tariff(self):
+        """Multi-tariff conflict with same tariff_id: keep_subscription_id = primary
+        (early-end-date sub) → primary wins; its 4 link fields unchanged; extended by
+        secondary's remaining days; secondary sub's remnawave_uuid in deferred deletions."""
+        TARIFF_ID = 77
+        primary_sub = _make_sub(
+            1, 1, _PRIMARY_END,
+            tariff_id=TARIFF_ID,
+            remnawave_uuid='rw-p',
+            subscription_url='https://link.example/primary',
+            remnawave_short_uuid='short-p',
+            subscription_crypto_link='crypto://primary',
+        )
+        secondary_sub = _make_sub(
+            2, 2, _SECONDARY_END,
+            tariff_id=TARIFF_ID,
+            remnawave_uuid='rw-s',
+            subscription_url='https://link.example/secondary',
+            remnawave_short_uuid='short-s',
+            subscription_crypto_link='crypto://secondary',
+        )
+        primary = _make_user(1, remnawave_uuid='rw-p', subscriptions=[primary_sub])
+        secondary = _make_user(2, remnawave_uuid='rw-s', subscriptions=[secondary_sub])
+        db = _make_db()
+        deferred: list[str] = []
+
+        with _patch_multi_tariff(), \
+             patch('app.services.account_merge_service.datetime') as mock_dt:
+            mock_dt.now.return_value = _NOW
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            await _handle_subscription_merge(
+                db, primary, secondary, deferred,
+                keep_subscription_id=primary_sub.id,
+            )
+
+        # Primary (early-end) is kept; secondary (late-end) is the loser.
+        # end_date extends by remaining of secondary: Sep 15 - Jul 30 = 47 days
+        expected_end = _PRIMARY_END + timedelta(days=47)
+        assert primary_sub.end_date == expected_end, \
+            f'Expected {expected_end}, got {primary_sub.end_date}'
+
+        # All 4 link fields on the keeper must be unchanged
+        assert primary_sub.subscription_url == 'https://link.example/primary'
+        assert primary_sub.remnawave_short_uuid == 'short-p'
+        assert primary_sub.remnawave_uuid == 'rw-p'
+        assert primary_sub.subscription_crypto_link == 'crypto://primary'
+
+        # Secondary sub (loser) remnawave_uuid deferred for panel deletion
+        assert 'rw-s' in deferred
+
+    async def test_keep_sub_not_in_pair_raises_multi_tariff(self):
+        """Multi-tariff: keep_subscription_id pointing to a sub id not in the
+        conflicting pair raises ValueError (symmetric with single-tariff guard)."""
+        TARIFF_ID = 77
+        primary_sub = _make_sub(1, 1, _PRIMARY_END, tariff_id=TARIFF_ID)
+        secondary_sub = _make_sub(2, 2, _SECONDARY_END, tariff_id=TARIFF_ID)
+        primary = _make_user(1, subscriptions=[primary_sub])
+        secondary = _make_user(2, subscriptions=[secondary_sub])
+        db = _make_db()
+        deferred: list[str] = []
+
+        with _patch_multi_tariff(), \
+             patch('app.services.account_merge_service.datetime') as mock_dt:
+            mock_dt.now.return_value = _NOW
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            with pytest.raises(ValueError, match='keep_subscription_id'):
+                await _handle_subscription_merge(
+                    db, primary, secondary, deferred,
+                    keep_subscription_id=999,
+                )

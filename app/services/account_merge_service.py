@@ -495,6 +495,11 @@ async def _handle_subscription_merge(
                     secondary_end = getattr(sub, 'end_date', None)
 
                     # keep_subscription_id overrides default "later end_date wins" logic
+                    if keep_subscription_id is not None and keep_subscription_id not in (sub.id, primary_conflict.id):
+                        raise ValueError(
+                            f'keep_subscription_id={keep_subscription_id} does not belong to '
+                            f'either merged subscription (ids: {{{sub.id}, {primary_conflict.id}}})'
+                        )
                     if keep_subscription_id is not None and keep_subscription_id in (sub.id, primary_conflict.id):
                         secondary_wins = keep_subscription_id == sub.id
                     else:
