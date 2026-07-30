@@ -455,6 +455,7 @@ async def _handle_subscription_merge(
     primary: User,
     secondary: User,
     deferred_remnawave_deletions: list[str],
+    keep_subscription_id: int | None = None,
 ) -> None:
     """Обрабатывает мерж подписок между двумя аккаунтами.
 
@@ -493,10 +494,14 @@ async def _handle_subscription_merge(
                     primary_end = getattr(primary_conflict, 'end_date', None)
                     secondary_end = getattr(sub, 'end_date', None)
 
-                    # Determine winner (later end_date; None = lifetime wins)
-                    secondary_wins = (secondary_end is None and primary_end is not None) or (
-                        secondary_end is not None and primary_end is not None and secondary_end > primary_end
-                    )
+                    # keep_subscription_id overrides default "later end_date wins" logic
+                    if keep_subscription_id is not None and keep_subscription_id in (sub.id, primary_conflict.id):
+                        secondary_wins = keep_subscription_id == sub.id
+                    else:
+                        # Determine winner (later end_date; None = lifetime wins)
+                        secondary_wins = (secondary_end is None and primary_end is not None) or (
+                            secondary_end is not None and primary_end is not None and secondary_end > primary_end
+                        )
 
                     if secondary_wins:
                         winner_sub, loser_sub = sub, primary_conflict
@@ -640,12 +645,22 @@ async def _handle_subscription_merge(
     primary_end = getattr(primary_sub, 'end_date', None)
     secondary_end = getattr(secondary_sub, 'end_date', None)
 
-    # Определяем победителя (более поздняя дата; None=lifetime всегда побеждает)
-    secondary_wins = (secondary_end is None and primary_end is not None) or (
-        secondary_end is not None
-        and primary_end is not None
-        and secondary_end > primary_end
-    )
+    # keep_subscription_id overrides default "later end_date wins" logic
+    if keep_subscription_id is not None:
+        sub_ids = {primary_sub.id, secondary_sub.id}
+        if keep_subscription_id not in sub_ids:
+            raise ValueError(
+                f'keep_subscription_id={keep_subscription_id} does not belong to '
+                f'either merged subscription (ids: {sub_ids})'
+            )
+        secondary_wins = keep_subscription_id == secondary_sub.id
+    else:
+        # Определяем победителя (более поздняя дата; None=lifetime всегда побеждает)
+        secondary_wins = (secondary_end is None and primary_end is not None) or (
+            secondary_end is not None
+            and primary_end is not None
+            and secondary_end > primary_end
+        )
 
     if secondary_wins:
         winner_sub, loser_sub, winner_remnawave, loser_remnawave = (
@@ -721,6 +736,7 @@ async def execute_merge(
     provider: str | None = None,
     provider_id: str | None = None,
     deferred_remnawave_deletions: list[str] | None = None,
+    keep_subscription_id: int | None = None,
 ) -> User:
     """Выполняет атомарный мерж двух аккаунтов. Caller отвечает за commit/rollback.
 
@@ -875,7 +891,8 @@ async def execute_merge(
     )
 
     # 5. Мерж подписок
-    await _handle_subscription_merge(db, primary, secondary, pending_remnawave_deletions)
+    await _handle_subscription_merge(db, primary, secondary, pending_remnawave_deletions,
+                                     keep_subscription_id=keep_subscription_id)
 
     # 6. Переназначение транзакций
     await db.execute(update(Transaction).where(Transaction.user_id == secondary.id).values(user_id=primary.id))
