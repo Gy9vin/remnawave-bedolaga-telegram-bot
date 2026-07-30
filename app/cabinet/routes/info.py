@@ -10,6 +10,7 @@ from app.config import settings
 from app.database.crud.rules import get_current_rules_content, get_rules_by_language
 from app.database.crud.system_setting import get_setting_value
 from app.database.models import SystemSetting, User
+from app.services import legal_consent_service
 from app.services.faq_service import FaqService
 from app.services.privacy_policy_service import PrivacyPolicyService
 from app.services.public_offer_service import PublicOfferService
@@ -134,6 +135,14 @@ class InfoVisibilityResponse(BaseModel):
     privacy: bool
     offer: bool
     recurrent: bool
+
+
+class LegalConsentConfigResponse(BaseModel):
+    """Что показать на экране первой авторизации нового пользователя."""
+
+    required: bool
+    prechecked: bool
+    documents: list[str]
 
 
 # ============ Routes ============
@@ -470,6 +479,24 @@ async def update_support_helper_config(
     return SupportHelperConfigResponse(
         enabled=enabled_value is not None and enabled_value.lower() == 'true',
         dev_mode=dev_mode_value is None or dev_mode_value.lower() != 'false',
+    )
+
+
+@router.get('/legal-consent', response_model=LegalConsentConfigResponse)
+async def get_legal_consent_config(
+    language: str = Query('ru', min_length=2, max_length=10),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Нужны ли новому пользователю галочки «ознакомлен» и с чем именно.
+
+    Публичный: экран логина запрашивает это ДО авторизации. Возвращает только ключи
+    документов — тексты и ссылки на них у кабинета свои.
+    """
+    requirement = await legal_consent_service.get_requirement(db, language)
+    return LegalConsentConfigResponse(
+        required=requirement.required,
+        prechecked=requirement.prechecked,
+        documents=requirement.documents,
     )
 
 
