@@ -2179,6 +2179,7 @@ class User(Base):
     admin_roles_rel = relationship('UserRole', foreign_keys='[UserRole.user_id]', back_populates='user')
     notification_settings = Column(JSONB, nullable=True, default=dict)
     last_pinned_message_id = Column(Integer, nullable=True)
+    last_seen_channel_post_id = Column(Integer, nullable=True)
 
     # Ограничения пользователя
     restriction_topup = Column(Boolean, default=False, nullable=False)  # Запрет пополнения
@@ -4318,6 +4319,11 @@ class RequiredChannel(Base):
     sort_order = Column(Integer, nullable=False, server_default='0')
     disable_trial_on_leave = Column(Boolean, nullable=False, server_default='true')
     disable_paid_on_leave = Column(Boolean, nullable=False, server_default='false')
+    is_main = Column(Boolean, nullable=False, server_default='false')
+    last_post_message_id = Column(Integer, nullable=True)
+    last_post_link = Column(String(500), nullable=True)
+    last_post_title = Column(String(200), nullable=True)
+    last_post_at = Column(AwareDateTime(), nullable=True)
     created_at = Column(AwareDateTime(), nullable=False, server_default=func.now())
     updated_at = Column(AwareDateTime(), nullable=True, onupdate=func.now())
 
