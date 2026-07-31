@@ -8,6 +8,7 @@ from app.database.crud.required_channel import (
     add_channel,
     delete_channel,
     get_all_channels,
+    set_main_channel,
     toggle_channel,
     update_channel,
 )
@@ -80,6 +81,20 @@ async def toggle_channel_endpoint(
     _admin: User = Depends(require_permission('channels:edit')),
 ) -> ChannelResponse:
     ch = await toggle_channel(db, channel_db_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail='Channel not found')
+    await channel_subscription_service.invalidate_channels_cache()
+    return ChannelResponse.model_validate(ch)
+
+
+@router.post('/{channel_db_id}/set-main', response_model=ChannelResponse)
+async def set_main_channel_endpoint(
+    channel_db_id: int,
+    db: AsyncSession = Depends(get_cabinet_db),
+    _admin: User = Depends(require_permission('channels:edit')),
+) -> ChannelResponse:
+    """Mark channel as the main channel. Clears is_main on all others."""
+    ch = await set_main_channel(db, channel_db_id)
     if not ch:
         raise HTTPException(status_code=404, detail='Channel not found')
     await channel_subscription_service.invalidate_channels_cache()

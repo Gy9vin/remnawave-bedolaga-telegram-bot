@@ -18,9 +18,14 @@ _UPDATABLE_FIELDS = frozenset(
         'channel_link',
         'title',
         'is_active',
+        'is_main',
         'sort_order',
         'disable_trial_on_leave',
         'disable_paid_on_leave',
+        'last_post_message_id',
+        'last_post_link',
+        'last_post_title',
+        'last_post_at',
     }
 )
 
@@ -140,6 +145,65 @@ async def toggle_channel(db: AsyncSession, channel_db_id: int) -> RequiredChanne
     await db.commit()
     await db.refresh(channel)
     return channel
+
+
+async def get_main_channel(db: AsyncSession) -> RequiredChannel | None:
+    """Return the single active channel marked is_main=True, or None."""
+    result = await db.execute(
+        select(RequiredChannel)
+        .where(RequiredChannel.is_main.is_(True), RequiredChannel.is_active.is_(True))
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def set_main_channel(db: AsyncSession, channel_db_id: int) -> RequiredChannel | None:
+    """Mark channel_db_id as is_main=True and clear is_main on all others.
+
+    Enforces the business rule: exactly one main channel.
+    Returns the newly-main channel or None if not found.
+
+    Bug-fix: verify the target channel EXISTS first; if it doesn't, do NOT clear
+    anyone (no channels lose their is_main flag) — avoids leaving the system with
+    zero main channels on an invalid id.
+    """
+    # Verify target exists BEFORE touching anything
+    channel = await get_channel_by_id(db, channel_db_id)
+    if not channel:
+        return None
+    # Only now clear is_main on all others
+    all_channels_result = await db.execute(select(RequiredChannel))
+    now = datetime.now(UTC)
+    for ch in all_channels_result.scalars().all():
+        ch.is_main = False
+        ch.updated_at = now
+    # Set the target
+    channel.is_main = True
+    channel.updated_at = now
+    await db.commit()
+    await db.refresh(channel)
+    return channel
+
+
+async def update_channel_post(
+    db: AsyncSession,
+    channel_db_id: int,
+    message_id: int,
+    link: str,
+    title: str,
+    at: datetime,
+) -> None:
+    """Update the cached latest-post fields on a RequiredChannel."""
+    channel = await get_channel_by_id(db, channel_db_id)
+    if not channel:
+        logger.warning('update_channel_post: channel not found', channel_db_id=channel_db_id)
+        return
+    channel.last_post_message_id = message_id
+    channel.last_post_link = link
+    channel.last_post_title = title
+    channel.last_post_at = at
+    channel.updated_at = datetime.now(UTC)
+    await db.commit()
 
 
 # -- UserChannelSubscription CRUD ------------------------------------------------

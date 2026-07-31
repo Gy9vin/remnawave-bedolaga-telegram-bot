@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, Message, TelegramObject, Update
 from app.config import settings
 from app.database.crud.campaign import get_campaign_by_start_parameter
 from app.database.crud.subscription import deactivate_subscription, reactivate_subscription
-from app.database.crud.user import get_user_by_telegram_id
+from app.database.crud.user import get_user_by_telegram_id, update_user_last_seen_post
 from app.database.database import AsyncSessionLocal
 from app.database.models import SubscriptionStatus, UserStatus
 from app.keyboards.inline import get_channel_sub_keyboard
@@ -172,6 +172,20 @@ class ChannelCheckerMiddleware(BaseMiddleware):
                 # Now subscribed to all channels
                 if self._any_channel_has_disable_flag(all_channels_fresh):
                     await self._reactivate_subscription_on_subscribe(telegram_id, bot)
+
+                # Отправить карточку свежего поста, если он ещё не был показан
+                try:
+                    main_channel = await channel_subscription_service.get_main_channel()
+                    if main_channel:
+                        async with AsyncSessionLocal() as db_nudge:
+                            db_user = await get_user_by_telegram_id(db_nudge, telegram_id)
+                            if db_user:
+                                await _send_channel_post_nudge(
+                                    bot, telegram_id, db_user, main_channel, db_nudge
+                                )
+                except Exception as _nudge_err:
+                    logger.warning('Ошибка при отправке карточки поста канала', error=_nudge_err)
+
                 return await handler(event, data)
 
             # Still not all subscribed — update keyboard with colored buttons
@@ -455,6 +469,8 @@ class ChannelCheckerMiddleware(BaseMiddleware):
         channels: list[dict],
     ) -> None:
         """Deactivate subscription when user unsubscribes from required channels."""
+        if settings.CHANNEL_SOFT_MODE:
+            return  # Мягкий режим: никогда не отключаем VPN
         async with AsyncSessionLocal() as db:
             try:
                 user = await get_user_by_telegram_id(db, telegram_id)
@@ -616,6 +632,45 @@ class ChannelCheckerMiddleware(BaseMiddleware):
             except Exception as db_error:
                 logger.error('Error reactivating subscription', telegram_id=telegram_id, db_error=db_error)
                 await db.rollback()
+
+
+async def _send_channel_post_nudge(
+    bot: Bot,
+    telegram_id: int,
+    db_user: Any,
+    main_channel: dict,
+    db: Any,
+) -> None:
+    """Отправить карточку «🆕 Свежее в канале», если пользователь ещё не видел последний пост.
+
+    После отправки сохраняет last_seen_channel_post_id, чтобы карточка
+    не появлялась повторно до выхода нового поста.
+    Ошибки отправки поглощаются (best-effort) — главное действие не прерывается.
+    """
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    post_id = main_channel.get('last_post_message_id')
+    post_link = main_channel.get('last_post_link')
+    post_title = main_channel.get('last_post_title') or 'Новый пост'
+
+    if not post_id or not post_link:
+        return  # Пост ещё не отслеживается
+
+    if getattr(db_user, 'last_seen_channel_post_id', None) == post_id:
+        return  # Пользователь уже видел этот пост
+
+    try:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text='Открыть пост', url=post_link)]]
+        )
+        await bot.send_message(
+            telegram_id,
+            f'🆕 Свежее в канале: {post_title}',
+            reply_markup=keyboard,
+        )
+        await update_user_last_seen_post(db, db_user.id, post_id)
+    except Exception as e:
+        logger.warning('Не удалось отправить карточку поста канала', telegram_id=telegram_id, error=e)
 
 
 def _normalize_channel_link(link: str) -> str:

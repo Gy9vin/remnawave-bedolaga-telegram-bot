@@ -1741,6 +1741,18 @@ async def get_google_at_risk_users(db: AsyncSession) -> list[dict]:
     ]
 
 
+async def update_user_last_seen_post(db: AsyncSession, user_id: int, post_id: int) -> None:
+    """Set user.last_seen_channel_post_id to mark a channel post as seen."""
+    from sqlalchemy import update as sa_update
+
+    await db.execute(
+        sa_update(User)
+        .where(User.id == user_id)
+        .values(last_seen_channel_post_id=post_id)
+    )
+    await db.commit()
+
+
 async def get_google_migration_stats(db: AsyncSession) -> dict[str, int]:
     """Counts for the Google-sunset migration admin dashboard (ACTIVE users only)."""
     base = (User.google_id.isnot(None), User.email.isnot(None), User.status == UserStatus.ACTIVE.value)
