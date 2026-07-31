@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cabinet.dependencies import get_cabinet_db, get_current_cabinet_user
-from app.cabinet.schemas.channel import ChannelBasicInfo, ChannelNudgeResponse
+from app.cabinet.schemas.channel import ChannelBasicInfo, ChannelNudgeResponse, ChannelPostInfo
 from app.database.crud.user import update_user_last_seen_post
 from app.database.models import User
 from app.services.channel_subscription_service import channel_subscription_service
@@ -47,13 +47,13 @@ async def get_channel_nudge(
 
     # Build latest_post block
     post_id = main_channel.get('last_post_message_id')
-    latest_post: dict | None = None
+    latest_post: ChannelPostInfo | None = None
     if post_id and main_channel.get('last_post_link'):
-        latest_post = {
-            'id': post_id,
-            'link': main_channel['last_post_link'],
-            'title': main_channel.get('last_post_title'),
-        }
+        latest_post = ChannelPostInfo(
+            id=post_id,
+            link=main_channel['last_post_link'],
+            title=main_channel.get('last_post_title'),
+        )
 
     channel_info = ChannelBasicInfo(
         title=main_channel.get('title'),
@@ -74,7 +74,7 @@ async def get_channel_nudge(
     # show_post: true if there is a post the user hasn't seen yet
     show_post = (
         latest_post is not None
-        and latest_post['id'] != current_user.last_seen_channel_post_id
+        and latest_post.id != current_user.last_seen_channel_post_id
     )
 
     return ChannelNudgeResponse(

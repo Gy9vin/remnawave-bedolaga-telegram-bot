@@ -105,5 +105,5 @@ class ChannelBasicInfo(BaseModel):
 class ChannelNudgeResponse(BaseModel):
     needs_subscribe: bool
     channel: ChannelBasicInfo | None
-    latest_post: dict | None
+    latest_post: ChannelPostInfo | None
     show_post: bool

@@ -82,7 +82,7 @@ async def test_nudge_email_only_user_always_needs_subscribe():
     assert resp.needs_subscribe is True
     assert resp.show_post is True
     assert resp.latest_post is not None
-    assert resp.latest_post['id'] == 77
+    assert resp.latest_post.id == 77
 
 
 @pytest.mark.asyncio
