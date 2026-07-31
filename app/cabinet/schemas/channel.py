@@ -1,5 +1,7 @@
 """Pydantic v2 schemas for channel subscription management."""
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.database.crud.required_channel import validate_channel_id as _validate_channel_id_format
@@ -27,9 +29,14 @@ class ChannelResponse(BaseModel):
     channel_link: str | None
     title: str | None
     is_active: bool
+    is_main: bool
     sort_order: int
     disable_trial_on_leave: bool
     disable_paid_on_leave: bool
+    last_post_message_id: int | None = None
+    last_post_link: str | None = None
+    last_post_title: str | None = None
+    last_post_at: datetime | None = None
 
 
 class ChannelListResponse(BaseModel):
@@ -82,3 +89,21 @@ class ChannelSubscriptionStatus(BaseModel):
     channel_link: str | None
     title: str | None
     is_subscribed: bool
+
+
+class ChannelPostInfo(BaseModel):
+    id: int
+    link: str
+    title: str | None
+
+
+class ChannelBasicInfo(BaseModel):
+    title: str | None
+    link: str | None
+
+
+class ChannelNudgeResponse(BaseModel):
+    needs_subscribe: bool
+    channel: ChannelBasicInfo | None
+    latest_post: dict | None
+    show_post: bool

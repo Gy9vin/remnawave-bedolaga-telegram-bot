@@ -78,6 +78,7 @@ from .ticket_notifications import (
     router as ticket_notifications_router,
 )
 from .tickets import router as tickets_router
+from .channel_nudge import router as channel_nudge_router
 from .websocket import router as websocket_router
 from .wheel import router as wheel_router
 from .withdrawal import router as withdrawal_router
@@ -179,6 +180,9 @@ router.include_router(admin_news_router)
 router.include_router(admin_info_pages_router)
 router.include_router(admin_legal_pages_router)
 router.include_router(admin_overpay_certificate_router)
+
+# Channel nudge route
+router.include_router(channel_nudge_router)
 
 # WebSocket route
 router.include_router(websocket_router)
