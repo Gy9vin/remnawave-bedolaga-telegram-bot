@@ -97,7 +97,14 @@ class AdminNotificationService:
             NotificationCategory.INFRASTRUCTURE: getattr(settings, 'ADMIN_NOTIFICATIONS_INFRASTRUCTURE_TOPIC_ID', None),
             NotificationCategory.ERRORS: getattr(settings, 'ADMIN_NOTIFICATIONS_ERRORS_TOPIC_ID', None),
             NotificationCategory.PROMO: getattr(settings, 'ADMIN_NOTIFICATIONS_PROMO_TOPIC_ID', None),
-            NotificationCategory.PARTNERS: getattr(settings, 'ADMIN_NOTIFICATIONS_PARTNERS_TOPIC_ID', None),
+            # Обратная совместимость: если новый ключ не задан, падаем на старый
+            # REFERRAL_WITHDRAWAL_NOTIFICATIONS_TOPIC_ID (топик выводов до рефакторинга
+            # раздельных топиков от 2026-03-18) — иначе кабинетные заявки на вывод
+            # уходят в общий топик вместо раздела выводов.
+            NotificationCategory.PARTNERS: (
+                getattr(settings, 'ADMIN_NOTIFICATIONS_PARTNERS_TOPIC_ID', None)
+                or getattr(settings, 'REFERRAL_WITHDRAWAL_NOTIFICATIONS_TOPIC_ID', None)
+            ),
             NotificationCategory.TICKETS: self.ticket_topic_id,
             NotificationCategory.WHEEL: getattr(settings, 'ADMIN_NOTIFICATIONS_WHEEL_TOPIC_ID', None),
             NotificationCategory.FALLBACK: getattr(settings, 'ADMIN_NOTIFICATIONS_FALLBACK_TOPIC_ID', None),
