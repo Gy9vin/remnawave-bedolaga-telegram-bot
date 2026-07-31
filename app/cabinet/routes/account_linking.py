@@ -128,6 +128,10 @@ class UnlinkResponse(BaseModel):
     success: bool
 
 
+class BackupLoginSuggestionResponse(BaseModel):
+    needs_backup: bool
+
+
 class LinkTelegramRequest(BaseModel):
     """Request for linking Telegram account. Supply EITHER init_data, id_token, OR widget fields."""
 
@@ -394,6 +398,18 @@ async def get_linked_providers(
             )
         )
     return LinkedProvidersResponse(providers=providers)
+
+
+@router.get('/backup-login-suggestion', response_model=BackupLoginSuggestionResponse)
+async def get_backup_login_suggestion(
+    user: User = Depends(get_current_cabinet_user),
+) -> BackupLoginSuggestionResponse:
+    """Возвращает, нужно ли предложить пользователю резервный метод входа.
+
+    needs_backup=True если у пользователя ≤ 1 метода входа.
+    Эндпоинт предназначен для кабинета и вызывается после успешной оплаты подписки.
+    """
+    return BackupLoginSuggestionResponse(needs_backup=needs_backup_login(user))
 
 
 @router.get('/link/{provider}/init', response_model=LinkInitResponse)
