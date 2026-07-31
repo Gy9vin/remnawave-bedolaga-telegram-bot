@@ -225,6 +225,11 @@ def _count_auth_methods(user: User) -> int:
     return len(compute_auth_methods(user))
 
 
+def needs_backup_login(user: User) -> bool:
+    """True если у пользователя ≤ 1 метода входа — нужно предложить резервный."""
+    return _count_auth_methods(user) <= 1
+
+
 async def _exchange_and_link_oauth(
     *,
     db: AsyncSession,
