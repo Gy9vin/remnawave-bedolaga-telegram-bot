@@ -27,22 +27,22 @@ async def send_backup_login_nudge(bot: Bot, user: User) -> None:
     - нет telegram_id (не можем отправить ЛС)
     - CABINET_URL не настроен
     """
-    if not needs_backup_login(user):
-        return
-    if not user.telegram_id:
-        return
-    cabinet_url = settings._normalized_cabinet_url()
-    if not cabinet_url:
-        return
-
-    linking_url = f'{cabinet_url}/profile/accounts'
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=_NUDGE_BUTTON_TEXT, url=linking_url)]
-        ]
-    )
-
     try:
+        if not needs_backup_login(user):
+            return
+        if not user.telegram_id:
+            return
+        cabinet_url = settings._normalized_cabinet_url()
+        if not cabinet_url:
+            return
+
+        linking_url = f'{cabinet_url}/profile/accounts'
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=_NUDGE_BUTTON_TEXT, url=linking_url)]
+            ]
+        )
+
         await bot.send_message(
             chat_id=user.telegram_id,
             text=_NUDGE_TEXT,
@@ -56,6 +56,6 @@ async def send_backup_login_nudge(bot: Bot, user: User) -> None:
     except Exception as exc:
         logger.warning(
             'Не удалось отправить предложение резервного входа (non-fatal)',
-            user_id=user.id,
+            user_id=getattr(user, 'id', None),
             error=str(exc),
         )

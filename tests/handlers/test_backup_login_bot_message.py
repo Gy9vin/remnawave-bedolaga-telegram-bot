@@ -109,3 +109,21 @@ async def test_nudge_failure_does_not_raise():
         await send_backup_login_nudge(bot, _user_single())
 
     bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_nudge_preflight_exception_does_not_raise():
+    """Исключение в needs_backup_login (до try) не пробрасывается — best-effort."""
+    from app.handlers.subscription.backup_login_nudge import send_backup_login_nudge
+
+    bot = AsyncMock()
+    bot.send_message = AsyncMock()
+
+    with patch(
+        'app.handlers.subscription.backup_login_nudge.needs_backup_login',
+        side_effect=AttributeError('unexpected user shape'),
+    ):
+        # Не должно выбрасывать исключение — вся функция best-effort
+        await send_backup_login_nudge(bot, _user_single())
+
+    bot.send_message.assert_not_awaited()
