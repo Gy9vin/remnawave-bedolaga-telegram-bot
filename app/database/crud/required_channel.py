@@ -162,18 +162,24 @@ async def set_main_channel(db: AsyncSession, channel_db_id: int) -> RequiredChan
 
     Enforces the business rule: exactly one main channel.
     Returns the newly-main channel or None if not found.
+
+    Bug-fix: verify the target channel EXISTS first; if it doesn't, do NOT clear
+    anyone (no channels lose their is_main flag) — avoids leaving the system with
+    zero main channels on an invalid id.
     """
-    # Clear all
-    all_channels_result = await db.execute(select(RequiredChannel))
-    for ch in all_channels_result.scalars().all():
-        ch.is_main = False
-        ch.updated_at = datetime.now(UTC)
-    # Set the target
+    # Verify target exists BEFORE touching anything
     channel = await get_channel_by_id(db, channel_db_id)
     if not channel:
         return None
+    # Only now clear is_main on all others
+    all_channels_result = await db.execute(select(RequiredChannel))
+    now = datetime.now(UTC)
+    for ch in all_channels_result.scalars().all():
+        ch.is_main = False
+        ch.updated_at = now
+    # Set the target
     channel.is_main = True
-    channel.updated_at = datetime.now(UTC)
+    channel.updated_at = now
     await db.commit()
     await db.refresh(channel)
     return channel
