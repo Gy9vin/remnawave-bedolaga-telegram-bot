@@ -63,8 +63,13 @@ class ChannelSubscriptionService:
                     'channel_link': ch.channel_link,
                     'title': ch.title,
                     'sort_order': ch.sort_order,
+                    'is_main': ch.is_main,
                     'disable_trial_on_leave': ch.disable_trial_on_leave,
                     'disable_paid_on_leave': ch.disable_paid_on_leave,
+                    'last_post_message_id': ch.last_post_message_id,
+                    'last_post_link': ch.last_post_link,
+                    'last_post_title': ch.last_post_title,
+                    'last_post_at': ch.last_post_at,
                 }
                 for ch in channels
             ]
@@ -247,6 +252,18 @@ class ChannelSubscriptionService:
         if not channels:
             return None
         return channels[0]['channel_id']
+
+    async def get_main_channel(self) -> dict | None:
+        """Return the cached main channel dict (is_main=True), or None.
+
+        Cache miss falls back to DB. Returns dict with same keys as get_required_channels()
+        plus 'is_main'. Returns None if no main channel is configured.
+        """
+        channels = await self.get_required_channels()
+        for ch in channels:
+            if ch.get('is_main'):
+                return ch
+        return None
 
     # -- Event handlers (called from ChatMemberUpdated router) --------------------
 

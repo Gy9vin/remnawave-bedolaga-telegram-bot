@@ -215,3 +215,5 @@ async def on_user_left_channel(event: ChatMemberUpdated, bot: Bot) -> None:
 def register_handlers(dp_router: Router) -> None:
     """Register channel member event handlers on the dispatcher/router."""
     dp_router.include_router(router)
+    from app.handlers.channel_post import router as channel_post_router
+    dp_router.include_router(channel_post_router)
