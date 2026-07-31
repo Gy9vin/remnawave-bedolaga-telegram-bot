@@ -135,6 +135,9 @@ async def on_user_left_channel(event: ChatMemberUpdated, bot: Bot) -> None:
 
     await channel_subscription_service.on_user_left(user.id, channel_id)
 
+    if settings.CHANNEL_SOFT_MODE:
+        return  # Мягкий режим: не отключаем VPN при выходе из канала
+
     if not settings.CHANNEL_IS_REQUIRED_SUB:
         return
 

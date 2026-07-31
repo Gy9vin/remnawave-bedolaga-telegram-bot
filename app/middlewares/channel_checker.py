@@ -455,6 +455,8 @@ class ChannelCheckerMiddleware(BaseMiddleware):
         channels: list[dict],
     ) -> None:
         """Deactivate subscription when user unsubscribes from required channels."""
+        if settings.CHANNEL_SOFT_MODE:
+            return  # Мягкий режим: никогда не отключаем VPN
         async with AsyncSessionLocal() as db:
             try:
                 user = await get_user_by_telegram_id(db, telegram_id)
