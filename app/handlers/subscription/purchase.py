@@ -116,6 +116,7 @@ from app.utils.subscription_utils import (
     resolve_simple_subscription_device_limit,
 )
 from app.utils.timezone import format_local_datetime
+from .backup_login_nudge import send_backup_login_nudge
 
 from .autopay import (
     handle_autopay_menu,
@@ -2911,6 +2912,8 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
 
     if purchase_completed:
         await clear_subscription_checkout_draft(db_user.id)
+        # best-effort: предлагаем резервный метод входа если у юзера ≤ 1 метода
+        await send_backup_login_nudge(callback.bot, db_user)
 
     await state.clear()
     await callback.answer()

@@ -31,6 +31,7 @@ from app.utils.decorators import error_handler
 from app.utils.formatting import format_period, format_price_kopeks, format_traffic
 from app.utils.promo_offer import get_user_active_promo_discount_percent
 
+from .backup_login_nudge import send_backup_login_nudge
 
 logger = structlog.get_logger(__name__)
 
@@ -2077,6 +2078,9 @@ async def confirm_tariff_purchase(
         ),
         parse_mode='HTML',
     )
+
+    # best-effort: предлагаем резервный метод входа если у юзера ≤ 1 метода
+    await send_backup_login_nudge(callback.bot, db_user)
 
 
 # ==================== Покупка суточного тарифа ====================
