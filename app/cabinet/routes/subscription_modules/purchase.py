@@ -1445,9 +1445,29 @@ async def activate_trial(
 
         price_kopeks = settings.TRIAL_ACTIVATION_PRICE
         if price_kopeks > 0 and user.balance_kopeks < price_kopeks:
+            cart_data = {
+                'cart_mode': 'trial_purchase',
+                'total_price': price_kopeks,
+                'missing_amount': price_kopeks - user.balance_kopeks,
+                'user_id': user.id,
+                'saved_cart': True,
+                'return_to_cart': True,
+                'source': 'cabinet',
+                'description': 'Активация пробной подписки',
+            }
+            try:
+                await user_cart_service.save_user_cart(user.id, cart_data)
+            except Exception as e:
+                logger.error('Error saving trial cart for auto-purchase (cabinet)', error=e)
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f'Insufficient balance. Need {price_kopeks / 100:.2f} RUB',
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    'code': 'insufficient_funds',
+                    'message': f'Недостаточно средств. Не хватает {settings.format_price(price_kopeks - user.balance_kopeks, round_kopeks=False)}',
+                    'missing_amount': price_kopeks - user.balance_kopeks,
+                    'cart_saved': True,
+                    'cart_mode': 'trial_purchase',
+                },
             )
         trial_description = 'Активация триальной подписки'
         success = await subtract_user_balance(
