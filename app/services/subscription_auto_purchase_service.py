@@ -1187,6 +1187,247 @@ async def _auto_purchase_tariff(
     return True
 
 
+async def _auto_purchase_trial(
+    db: AsyncSession,
+    user: User,
+    cart_data: dict,
+    *,
+    bot: Bot | None = None,
+) -> bool:
+    """Автоматическая активация платного триала из сохранённой корзины.
+
+    Вызывается диспетчером после пополнения баланса, когда пользователь ранее
+    попытался активировать триал при недостаточном балансе (cart_mode='trial_purchase').
+
+    Идемпотентность: если триал уже использован, есть активная подписка, баланс
+    недостаточен или оплата триала отключена — возвращает False без списания.
+    Компенсирующий возврат: при ошибке активации ПОСЛЕ списания — возвращает
+    средства через add_user_balance(REFUND).
+    """
+    from app.cabinet.routes.websocket import notify_user_subscription_activated
+    from app.database.crud.subscription import get_active_subscriptions_by_user_id
+    from app.database.crud.transaction import create_transaction
+    from app.database.crud.user import add_user_balance, lock_user_for_pricing
+    from app.database.models import TransactionType
+    from app.services.trial_activation_service import activate_paid_trial_core
+
+    # --- Гард 1: платная активация триала отключена ---
+    if not settings.TRIAL_PAYMENT_ENABLED:
+        logger.info(
+            '🔁 Автопокупка триала: TRIAL_PAYMENT_ENABLED=False, пропускаем',
+            format_user_id=_format_user_id(user),
+        )
+        return False
+
+    # --- Гард 2: триал уже использован ---
+    if user.is_trial_already_used():
+        logger.info(
+            '🔁 Автопокупка триала: триал уже использован пользователем, пропускаем',
+            format_user_id=_format_user_id(user),
+        )
+        return False
+
+    # --- Гард 3: есть активная подписка ---
+    active_subs = await get_active_subscriptions_by_user_id(db, user.id)
+    if active_subs:
+        logger.info(
+            '🔁 Автопокупка триала: у пользователя уже есть активная подписка, пропускаем',
+            format_user_id=_format_user_id(user),
+            active_count=len(active_subs),
+        )
+        return False
+
+    # --- Блокируем пользователя перед проверкой баланса (TOCTOU) ---
+    user = await lock_user_for_pricing(db, user.id)
+
+    # --- Гард 4: проверяем актуальную цену и баланс ---
+    price_kopeks = int(settings.TRIAL_ACTIVATION_PRICE or 0)
+    if price_kopeks <= 0:
+        logger.info(
+            '🔁 Автопокупка триала: TRIAL_ACTIVATION_PRICE=0, пропускаем',
+            format_user_id=_format_user_id(user),
+        )
+        return False
+
+    if user.balance_kopeks < price_kopeks:
+        logger.info(
+            '🔁 Автопокупка триала: недостаточно средств у пользователя',
+            format_user_id=_format_user_id(user),
+            balance_kopeks=user.balance_kopeks,
+            price_kopeks=price_kopeks,
+        )
+        return False
+
+    # --- Списываем баланс ---
+    description = 'Активация пробной подписки'
+    try:
+        success = await subtract_user_balance(
+            db,
+            user,
+            price_kopeks,
+            description,
+            mark_as_paid_subscription=True,
+        )
+        if not success:
+            logger.warning(
+                '❌ Автопокупка триала: не удалось списать баланс пользователя',
+                format_user_id=_format_user_id(user),
+            )
+            return False
+    except Exception as error:
+        logger.error(
+            '❌ Автопокупка триала: ошибка списания баланса пользователя',
+            format_user_id=_format_user_id(user),
+            error=error,
+            exc_info=True,
+        )
+        return False
+
+    # --- Активируем триал (core не списывает — списание уже выполнено выше) ---
+    try:
+        subscription = await activate_paid_trial_core(db, user, bot=bot, requires_payment=True)
+    except Exception as error:
+        logger.error(
+            '❌ Автопокупка триала: ошибка активации триала для пользователя',
+            format_user_id=_format_user_id(user),
+            error=error,
+            exc_info=True,
+        )
+        await db.rollback()
+        # Компенсирующий возврат: баланс уже списан до ошибки
+        try:
+            await add_user_balance(
+                db,
+                user,
+                price_kopeks,
+                'Возврат: ошибка автоактивации триала',
+                transaction_type=TransactionType.REFUND,
+            )
+            logger.info(
+                '💰 Автопокупка триала: возврат средств после ошибки активации',
+                format_user_id=_format_user_id(user),
+                refund_kopeks=price_kopeks,
+            )
+        except Exception as refund_error:
+            logger.critical(
+                'CRITICAL: Автопокупка триала: не удалось вернуть средства после ошибки активации',
+                format_user_id=_format_user_id(user),
+                price_kopeks=price_kopeks,
+                refund_error=refund_error,
+            )
+        return False
+
+    # --- Создаём транзакцию ---
+    try:
+        transaction = await create_transaction(
+            db=db,
+            user_id=user.id,
+            type=TransactionType.SUBSCRIPTION_PAYMENT,
+            amount_kopeks=price_kopeks,
+            description=description,
+        )
+    except Exception as error:
+        logger.warning(
+            '⚠️ Автопокупка триала: не удалось создать транзакцию для пользователя',
+            format_user_id=_format_user_id(user),
+            error=error,
+        )
+        transaction = None
+
+    # --- Очищаем корзину ---
+    await _delete_cart_for_subscription(user.id, cart_data)
+    await clear_subscription_checkout_draft(user.id)
+
+    # --- Уведомление администраторам ---
+    try:
+        from app.services.subscription_renewal_service import with_admin_notification_service
+
+        await with_admin_notification_service(
+            lambda svc: svc.send_subscription_purchase_notification(
+                db,
+                user,
+                subscription,
+                transaction,
+                settings.TRIAL_DURATION_DAYS,
+                False,
+                purchase_type='first_purchase',
+            )
+        )
+    except Exception as error:
+        logger.warning(
+            '⚠️ Автопокупка триала: не удалось уведомить администраторов о покупке пользователя',
+            format_user_id=_format_user_id(user),
+            error=error,
+        )
+
+    # --- Уведомление пользователя (только Telegram) ---
+    if bot and user.telegram_id:
+        try:
+            texts = get_texts(getattr(user, 'language', 'ru'))
+            message = texts.t(
+                'AUTO_PURCHASE_TRIAL_SUCCESS',
+                '✅ Пробная подписка автоматически активирована после пополнения баланса.',
+            )
+            hint = texts.t(
+                'AUTO_PURCHASE_SUBSCRIPTION_HINT',
+                'Перейдите в раздел «Моя подписка», чтобы получить ссылку.',
+            )
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 Моя подписка'),
+                            callback_data='menu_subscription',
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '🏠 Главное меню'),
+                            callback_data='back_to_menu',
+                        )
+                    ],
+                ]
+            )
+            await bot.send_message(
+                chat_id=user.telegram_id,
+                text=f'{message}\n\n{hint}',
+                reply_markup=keyboard,
+                parse_mode='HTML',
+            )
+        except Exception as error:
+            logger.warning(
+                '⚠️ Автопокупка триала: не удалось уведомить пользователя',
+                telegram_id=user.telegram_id or user.id,
+                error=error,
+            )
+
+    # --- Email-уведомление для пользователей без Telegram ---
+    await _notify_email_user_auto_purchase(user, subscription, None, renewed=False)
+
+    # --- WS-уведомление кабинету ---
+    try:
+        await notify_user_subscription_activated(
+            user_id=user.id,
+            subscription_id=subscription.id if subscription else None,
+            expires_at=format_email_datetime(subscription.end_date) if subscription and subscription.end_date else None,
+            tariff_name=None,
+        )
+    except Exception as ws_error:
+        logger.warning(
+            '⚠️ Автопокупка триала: не удалось отправить WS уведомление',
+            format_user_id=_format_user_id(user),
+            ws_error=ws_error,
+        )
+
+    logger.info(
+        '✅ Автопокупка триала: пробная подписка оформлена для пользователя',
+        format_user_id=_format_user_id(user),
+        price_kopeks=price_kopeks,
+    )
+
+    return True
+
+
 async def _auto_purchase_daily_tariff(
     db: AsyncSession,
     user: User,
@@ -3154,6 +3395,8 @@ async def _process_single_cart(
         return await _auto_purchase_tariff(db, user, cart_data, bot=bot)
     if cart_mode == 'daily_tariff_purchase':
         return await _auto_purchase_daily_tariff(db, user, cart_data, bot=bot)
+    if cart_mode == 'trial_purchase':
+        return await _auto_purchase_trial(db, user, cart_data, bot=bot)
     if cart_mode == 'add_devices':
         return await _auto_add_devices(db, user, cart_data, bot=bot)
     if cart_mode == 'add_traffic':
