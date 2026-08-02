@@ -48,7 +48,6 @@ class UserTraffic:
 
 @dataclass
 class RemnaWaveUser:
-    uuid: str
     short_uuid: str
     username: str
     status: UserStatus
@@ -74,6 +73,7 @@ class RemnaWaveUser:
     happ_link: str | None = None
     happ_crypto_link: str | None = None
     external_squad_uuid: str | None = None
+    uuid: str | None = None
     id: int | None = None
 
     @property
@@ -387,6 +387,27 @@ class RemnaWaveAPI:
             self._api_version = await self._detect_api_version()
         return self._api_version
 
+    def _resolve_user_path(self, *, uuid: str | None = None, remna_id: int | None = None) -> str:
+        """Вернуть сегмент пути для идентификатора пользователя.
+
+        Вызывать ТОЛЬКО после ``await self.get_api_version()`` — использует
+        закэшированный ``_api_version`` напрямую (без сетевого зондирования).
+
+        v2: возвращает ``uuid`` как есть.
+        v3: возвращает ``str(remna_id)``.
+        v3 без remna_id: выбрасывает ValueError — вызывающий код должен
+          бэкфиллить remna_id из БД (задача T4).
+        """
+        if self._api_version == 3:
+            if remna_id is None:
+                raise ValueError(
+                    'remna_id required for v3 but not provided — '
+                    'caller must backfill from T4'
+                )
+            return str(remna_id)
+        # v2 (или None — не должно случаться после await get_api_version)
+        return uuid  # type: ignore[return-value]
+
     def _detect_connection_type(self) -> str:
         parsed = urlparse(self.base_url)
 
@@ -666,9 +687,13 @@ class RemnaWaveAPI:
         )
         return await self.enrich_user_with_happ_link(user)
 
-    async def get_user_by_uuid(self, uuid: str) -> RemnaWaveUser | None:
+    async def get_user_by_uuid(
+        self, uuid: str | None, remna_id: int | None = None
+    ) -> RemnaWaveUser | None:
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=uuid, remna_id=remna_id)
         try:
-            response = await self._make_request('GET', f'/api/users/{uuid}')
+            response = await self._make_request('GET', f'/api/users/{path_id}')
             user = self._parse_user(response['response'])
             return await self.enrich_user_with_happ_link(user)
         except RemnaWaveAPIError as e:
@@ -718,9 +743,10 @@ class RemnaWaveAPI:
 
     async def get_subscription_request_history(
         self,
-        uuid: str,
+        uuid: str | None,
         offset: int = 0,
         limit: int = 20,
+        remna_id: int | None = None,
     ) -> dict:
         """Get subscription request history for a panel user.
 
@@ -730,10 +756,12 @@ class RemnaWaveAPI:
         Remnawave 2.8.0+: поле ``userUuid`` (uuid) переименовано в ``userId``
         (числовой внутренний id пользователя панели).
         """
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=uuid, remna_id=remna_id)
         try:
             response = await self._make_request(
                 'GET',
-                f'/api/users/{uuid}/subscription-request-history',
+                f'/api/users/{path_id}/subscription-request-history',
                 params={'offset': offset, 'limit': limit},
             )
             return response.get('response', {'total': 0, 'records': []})
@@ -742,7 +770,7 @@ class RemnaWaveAPI:
 
     async def update_user(
         self,
-        uuid: str,
+        uuid: str | None,
         status: UserStatus | None = None,
         traffic_limit_bytes: int | None = None,
         traffic_limit_strategy: TrafficLimitStrategy | None = None,
@@ -754,8 +782,19 @@ class RemnaWaveAPI:
         tag: str | None = None,
         active_internal_squads: list[str] | None = None,
         external_squad_uuid: str | None | type(...) = ...,
+        remna_id: int | None = None,
     ) -> RemnaWaveUser:
-        data = {'uuid': uuid}
+        await self.get_api_version()
+        # v3 идентифицирует пользователя по числовому id в теле запроса
+        if self._api_version == 3:
+            if remna_id is None:
+                raise ValueError(
+                    'remna_id required for v3 update_user but not provided — '
+                    'caller must backfill from T4'
+                )
+            data: dict = {'id': remna_id}
+        else:
+            data = {'uuid': uuid}
 
         if status:
             data['status'] = status.value
@@ -809,50 +848,69 @@ class RemnaWaveAPI:
         )
         return await self.enrich_user_with_happ_link(user)
 
-    async def delete_user(self, uuid: str) -> bool:
-        response = await self._make_request('DELETE', f'/api/users/{uuid}')
+    async def delete_user(self, uuid: str | None = None, remna_id: int | None = None) -> bool:
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=uuid, remna_id=remna_id)
+        response = await self._make_request('DELETE', f'/api/users/{path_id}')
         return response['response']['isDeleted']
 
-    async def enable_user(self, uuid: str) -> RemnaWaveUser:
-        response = await self._make_request('POST', f'/api/users/{uuid}/actions/enable')
+    async def enable_user(self, uuid: str | None = None, remna_id: int | None = None) -> RemnaWaveUser:
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=uuid, remna_id=remna_id)
+        response = await self._make_request('POST', f'/api/users/{path_id}/actions/enable')
         user = self._parse_user(response['response'])
         return await self.enrich_user_with_happ_link(user)
 
-    async def disable_user(self, uuid: str) -> RemnaWaveUser:
-        response = await self._make_request('POST', f'/api/users/{uuid}/actions/disable')
+    async def disable_user(self, uuid: str | None = None, remna_id: int | None = None) -> RemnaWaveUser:
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=uuid, remna_id=remna_id)
+        response = await self._make_request('POST', f'/api/users/{path_id}/actions/disable')
         user = self._parse_user(response['response'])
         return await self.enrich_user_with_happ_link(user)
 
-    async def reset_user_traffic(self, uuid: str) -> RemnaWaveUser:
-        response = await self._make_request('POST', f'/api/users/{uuid}/actions/reset-traffic')
+    async def reset_user_traffic(self, uuid: str | None = None, remna_id: int | None = None) -> RemnaWaveUser:
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=uuid, remna_id=remna_id)
+        response = await self._make_request('POST', f'/api/users/{path_id}/actions/reset-traffic')
         user = self._parse_user(response['response'])
         return await self.enrich_user_with_happ_link(user)
 
     async def revoke_user_subscription(
-        self, uuid: str, new_short_uuid: str | None = None, revoke_only_passwords: bool = False
+        self,
+        uuid: str | None = None,
+        new_short_uuid: str | None = None,
+        revoke_only_passwords: bool = False,
+        remna_id: int | None = None,
     ) -> RemnaWaveUser:
         """
         Отзывает подписку пользователя (меняет ссылку/пароли).
 
         Args:
-            uuid: UUID пользователя
+            uuid: UUID пользователя (v2) или None (v3)
             new_short_uuid: Новый короткий UUID (опционально, рекомендуется генерировать автоматически)
             revoke_only_passwords: Если True, меняются только пароли без изменения URL подписки
+            remna_id: Числовой id пользователя панели (v3)
         """
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=uuid, remna_id=remna_id)
         data = {}
         if new_short_uuid:
             data['shortUuid'] = new_short_uuid
         if revoke_only_passwords:
             data['revokeOnlyPasswords'] = True
 
-        response = await self._make_request('POST', f'/api/users/{uuid}/actions/revoke', data)
+        response = await self._make_request('POST', f'/api/users/{path_id}/actions/revoke', data)
         user = self._parse_user(response['response'])
         return await self.enrich_user_with_happ_link(user)
 
-    async def get_user_accessible_nodes(self, uuid: str) -> list[RemnaWaveAccessibleNode]:
+    async def get_user_accessible_nodes(
+        self, uuid: str | None = None, remna_id: int | None = None
+    ) -> list[RemnaWaveAccessibleNode]:
         """Получает список доступных нод для пользователя"""
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=uuid, remna_id=remna_id)
         try:
-            response = await self._make_request('GET', f'/api/users/{uuid}/accessible-nodes')
+            response = await self._make_request('GET', f'/api/users/{path_id}/accessible-nodes')
             nodes_data = response.get('response', {}).get('activeNodes', [])
             result = []
             for node in nodes_data:
@@ -1299,8 +1357,16 @@ class RemnaWaveAPI:
             logger.warning('Failed to get nodes metrics for realtime usage', error=e)
             return []
 
-    async def get_user_stats_usage(self, user_uuid: str, start_date: str, end_date: str) -> dict[str, Any]:
-        return await self.get_bandwidth_stats_user_legacy(user_uuid, start_date, end_date)
+    async def get_user_stats_usage(
+        self,
+        user_uuid: str | None,
+        start_date: str,
+        end_date: str,
+        remna_id: int | None = None,
+    ) -> dict[str, Any]:
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=user_uuid, remna_id=remna_id)
+        return await self.get_bandwidth_stats_user_legacy(path_id, start_date, end_date)
 
     # ============== Bandwidth Stats API ==============
 
@@ -1421,17 +1487,25 @@ class RemnaWaveAPI:
         response = await self._make_request('GET', '/api/subscriptions')
         return response.get('response') or []
 
-    async def get_user_devices(self, user_uuid: str) -> dict[str, Any]:
+    async def get_user_devices(
+        self, user_uuid: str | None = None, remna_id: int | None = None
+    ) -> dict[str, Any]:
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=user_uuid, remna_id=remna_id)
         try:
-            response = await self._make_request('GET', f'/api/hwid/devices/{user_uuid}')
+            response = await self._make_request('GET', f'/api/hwid/devices/{path_id}')
             return response['response']
         except RemnaWaveAPIError as e:
             if e.status_code == 404:
                 return {'total': 0, 'devices': []}
             raise
 
-    async def get_user_devices_all(self, user_uuid: str) -> dict[str, Any]:
+    async def get_user_devices_all(
+        self, user_uuid: str | None = None, remna_id: int | None = None
+    ) -> dict[str, Any]:
         """GET /api/hwid/devices/{user_uuid} — all devices for a user (paginated)."""
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=user_uuid, remna_id=remna_id)
         all_devices: list[dict[str, Any]] = []
         start = 0
         page_size = 1000
@@ -1439,7 +1513,7 @@ class RemnaWaveAPI:
         try:
             while True:
                 response = await self._make_request(
-                    'GET', f'/api/hwid/devices/{user_uuid}', params={'start': start, 'size': page_size}
+                    'GET', f'/api/hwid/devices/{path_id}', params={'start': start, 'size': page_size}
                 )
                 data = response.get('response', {'devices': [], 'total': 0})
                 devices = data.get('devices', [])
@@ -1717,7 +1791,8 @@ class RemnaWaveAPI:
             traffic_strategy = TrafficLimitStrategy.NO_RESET
 
         return RemnaWaveUser(
-            uuid=user_data['uuid'],
+            uuid=user_data.get('uuid'),        # v3 не содержит uuid — будет None
+            id=user_data.get('id'),            # v2 не содержит id — будет None
             short_uuid=user_data['shortUuid'],
             username=user_data['username'],
             status=status,
@@ -1745,7 +1820,6 @@ class RemnaWaveAPI:
             happ_link=happ_link,
             happ_crypto_link=happ_crypto_link,
             external_squad_uuid=user_data.get('externalSquadUuid'),
-            id=user_data.get('id'),
         )
 
     def _parse_optional_datetime(self, date_str: str | None) -> datetime | None:
