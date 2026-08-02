@@ -63,6 +63,31 @@ async def _resolve_subscription(callback, db_user, db, state=None):
     return await resolve_subscription_from_context(callback, db_user, db, state)
 
 
+async def _hwid_path_id(api, db_user, subscription, fallback_uuid):
+    """v2: вернуть fallback_uuid (как раньше). v3: числовой id как строку.
+    Multi-tariff: сперва по subscription.remnawave_short_uuid, иначе db_user.remnawave_id."""
+    try:
+        if await api.get_api_version() != 3:
+            return fallback_uuid
+        rid = None
+        # multi-tariff: приоритет per-subscription панель-юзера
+        short = getattr(subscription, 'remnawave_short_uuid', None) if subscription is not None else None
+        if short:
+            rid = await api.resolve_user_id(short_uuid=short)
+        if rid is None:
+            rid = getattr(db_user, 'remnawave_id', None)
+        if rid is None:
+            for _s in getattr(db_user, 'subscriptions', None) or []:
+                _sh = getattr(_s, 'remnawave_short_uuid', None)
+                if _sh:
+                    rid = await api.resolve_user_id(short_uuid=_sh)
+                    if rid is not None:
+                        break
+        return str(rid) if rid is not None else fallback_uuid
+    except Exception:
+        return fallback_uuid
+
+
 def _get_remnawave_uuid(subscription, db_user):
     """Get remnawave_uuid for device operations.
 
@@ -89,7 +114,8 @@ async def get_current_devices_detailed(db_user: User, subscription=None) -> dict
         service = RemnaWaveService()
 
         async with service.get_api_client() as api:
-            response = await api._make_request('GET', f'/api/hwid/devices/{uuid}')
+            _pid = await _hwid_path_id(api, db_user, subscription, uuid)
+            response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
 
             if response and 'response' in response:
                 devices_info = response['response']
@@ -161,7 +187,8 @@ async def get_current_devices_count(db_user: User, subscription=None) -> str:
         service = RemnaWaveService()
 
         async with service.get_api_client() as api:
-            response = await api._make_request('GET', f'/api/hwid/devices/{uuid}')
+            _pid = await _hwid_path_id(api, db_user, subscription, uuid)
+            response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
 
             if response and 'response' in response:
                 total_devices = response['response'].get('total', 0)
@@ -473,7 +500,8 @@ async def confirm_change_devices(
         try:
             service = RemnaWaveService()
             async with service.get_api_client() as api:
-                response = await api._make_request('GET', f'/api/hwid/devices/{remnawave_uuid}')
+                _pid = await _hwid_path_id(api, db_user, subscription, remnawave_uuid)
+                response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
                 if response and 'response' in response:
                     connected_count = response['response'].get('total', 0)
                     if connected_count > new_devices_count:
@@ -711,7 +739,8 @@ async def execute_change_devices(
             try:
                 service = RemnaWaveService()
                 async with service.get_api_client() as api:
-                    response = await api._make_request('GET', f'/api/hwid/devices/{remnawave_uuid}')
+                    _pid = await _hwid_path_id(api, db_user, subscription, remnawave_uuid)
+                    response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
                     if response and 'response' in response:
                         devices_list = response['response'].get('devices', [])
                         connected_count = len(devices_list)
@@ -737,7 +766,7 @@ async def execute_change_devices(
                                 device_hwid = device.get('hwid')
                                 if device_hwid:
                                     try:
-                                        delete_data = {'userUuid': remnawave_uuid, 'hwid': device_hwid}
+                                        delete_data = {'userUuid': _pid, 'hwid': device_hwid}
                                         await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
                                         devices_reset_count += 1
                                         logger.info('✅ Удалено устройство', device_hwid=device_hwid)
@@ -840,7 +869,8 @@ async def handle_device_management(
         service = RemnaWaveService()
 
         async with service.get_api_client() as api:
-            response = await api._make_request('GET', f'/api/hwid/devices/{remnawave_uuid}')
+            _pid = await _hwid_path_id(api, db_user, subscription, remnawave_uuid)
+            response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
 
             if response and 'response' in response:
                 devices_info = response['response']
@@ -973,7 +1003,8 @@ async def handle_devices_page(callback: types.CallbackQuery, db_user: User, db: 
         service = RemnaWaveService()
 
         async with service.get_api_client() as api:
-            response = await api._make_request('GET', f'/api/hwid/devices/{remnawave_uuid}')
+            _pid = await _hwid_path_id(api, db_user, subscription, remnawave_uuid)
+            response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
 
             if response and 'response' in response:
                 devices_list = response['response'].get('devices', [])
@@ -1031,7 +1062,8 @@ async def start_device_rename(callback: types.CallbackQuery, db_user: User, db: 
 
         service = RemnaWaveService()
         async with service.get_api_client() as api:
-            response = await api._make_request('GET', f'/api/hwid/devices/{remnawave_uuid}')
+            _pid = await _hwid_path_id(api, db_user, subscription, remnawave_uuid)
+            response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
     except Exception as exc:
         logger.error('Ошибка получения устройств перед переименованием', error=exc)
         await callback.answer(
@@ -1158,7 +1190,8 @@ async def process_device_rename(message: types.Message, db_user: User, db: Async
 
         service = RemnaWaveService()
         async with service.get_api_client() as api:
-            response = await api._make_request('GET', f'/api/hwid/devices/{remnawave_uuid}')
+            _pid = await _hwid_path_id(api, db_user, subscription, remnawave_uuid)
+            response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
         devices_list = (response or {}).get('response', {}).get('devices', []) or []
 
         # Сообщения от FSM-handler'а — не callback, поэтому отдельный пост.
@@ -1201,7 +1234,8 @@ async def cancel_device_rename(
         try:
             service = RemnaWaveService()
             async with service.get_api_client() as api:
-                response = await api._make_request('GET', f'/api/hwid/devices/{remnawave_uuid}')
+                _pid = await _hwid_path_id(api, db_user, subscription, remnawave_uuid)
+                response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
             devices_list = (response or {}).get('response', {}).get('devices', []) or []
             await show_devices_page(callback, db_user, devices_list, page=page, sub_id=sub_id)
             await callback.answer(texts.t('DEVICE_RENAME_CANCELLED', '✖️ Переименование отменено'))
@@ -1252,7 +1286,8 @@ async def handle_single_device_reset(
         service = RemnaWaveService()
 
         async with service.get_api_client() as api:
-            response = await api._make_request('GET', f'/api/hwid/devices/{remnawave_uuid}')
+            _pid = await _hwid_path_id(api, db_user, subscription, remnawave_uuid)
+            response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
 
             if response and 'response' in response:
                 devices_list = response['response'].get('devices', [])
@@ -1265,7 +1300,7 @@ async def handle_single_device_reset(
                     device_hwid = device.get('hwid')
 
                     if device_hwid:
-                        delete_data = {'userUuid': remnawave_uuid, 'hwid': device_hwid}
+                        delete_data = {'userUuid': _pid, 'hwid': device_hwid}
 
                         await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
 
@@ -1281,7 +1316,7 @@ async def handle_single_device_reset(
                             show_alert=True,
                         )
 
-                        updated_response = await api._make_request('GET', f'/api/hwid/devices/{remnawave_uuid}')
+                        updated_response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
                         if updated_response and 'response' in updated_response:
                             updated_devices = updated_response['response'].get('devices', [])
 
@@ -1354,7 +1389,8 @@ async def handle_all_devices_reset_from_management(
         service = RemnaWaveService()
 
         async with service.get_api_client() as api:
-            devices_response = await api._make_request('GET', f'/api/hwid/devices/{remnawave_uuid}')
+            _pid = await _hwid_path_id(api, db_user, subscription, remnawave_uuid)
+            devices_response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
 
             if not devices_response or 'response' not in devices_response:
                 await callback.answer(
@@ -1384,7 +1420,7 @@ async def handle_all_devices_reset_from_management(
                 device_hwid = device.get('hwid')
                 if device_hwid:
                     try:
-                        delete_data = {'userUuid': remnawave_uuid, 'hwid': device_hwid}
+                        delete_data = {'userUuid': _pid, 'hwid': device_hwid}
 
                         await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
                         success_count += 1

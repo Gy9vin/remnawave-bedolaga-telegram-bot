@@ -68,6 +68,30 @@ async def _resolve_subscription(callback, db_user, db, state=None):
     return await resolve_subscription_from_context(callback, db_user, db, state)
 
 
+async def _hwid_path_id(api, db_user, subscription, fallback_uuid):
+    """v2: вернуть fallback_uuid (как раньше). v3: числовой id как строку.
+    Multi-tariff: сперва по subscription.remnawave_short_uuid, иначе db_user.remnawave_id."""
+    try:
+        if await api.get_api_version() != 3:
+            return fallback_uuid
+        rid = None
+        short = getattr(subscription, 'remnawave_short_uuid', None) if subscription is not None else None
+        if short:
+            rid = await api.resolve_user_id(short_uuid=short)
+        if rid is None:
+            rid = getattr(db_user, 'remnawave_id', None)
+        if rid is None:
+            for _s in getattr(db_user, 'subscriptions', None) or []:
+                _sh = getattr(_s, 'remnawave_short_uuid', None)
+                if _sh:
+                    rid = await api.resolve_user_id(short_uuid=_sh)
+                    if rid is not None:
+                        break
+        return str(rid) if rid is not None else fallback_uuid
+    except Exception:
+        return fallback_uuid
+
+
 def _serialize_markup(markup: InlineKeyboardMarkup | None) -> Any | None:
     if markup is None:
         return None
@@ -325,7 +349,8 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
                 service = RemnaWaveService()
 
                 async with service.get_api_client() as api:
-                    response = await api._make_request('GET', f'/api/hwid/devices/{_device_uuid}')
+                    _pid = await _hwid_path_id(api, db_user, subscription, _device_uuid)
+                    response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
 
                     if response and 'response' in response:
                         devices_info = response['response']
@@ -2559,7 +2584,8 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                 try:
                     service = RemnaWaveService()
                     async with service.get_api_client() as api:
-                        response = await api._make_request('GET', f'/api/hwid/devices/{db_user.remnawave_uuid}')
+                        _pid = await _hwid_path_id(api, db_user, subscription, db_user.remnawave_uuid)
+                        response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
                         devices_list = []
                         if response and 'response' in response:
                             devices_list = response['response'].get('devices', [])
@@ -2571,7 +2597,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                                     await api._make_request(
                                         'POST',
                                         '/api/hwid/devices/delete',
-                                        data={'userUuid': db_user.remnawave_uuid, 'hwid': device_hwid},
+                                        data={'userUuid': _pid, 'hwid': device_hwid},
                                     )
                                     reset_count += 1
                                 except Exception as del_err:
