@@ -106,6 +106,12 @@ async def sync_user_clients(db: 'AsyncSession') -> dict:
         )
         sub_uuid_map: dict[str, int] = {row.remnawave_uuid: row.user_id for row in sub_rows}
 
+        # Карта по User.remnawave_id (v3: HWID-устройство несёт userId:number, не userUuid)
+        user_rid_rows = await db.execute(
+            sa_select(User.id, User.remnawave_id).where(User.remnawave_id.isnot(None))
+        )
+        user_remna_id_map: dict[int, int] = {row.remnawave_id: row.id for row in user_rid_rows}
+
     except Exception as e:
         logger.error('client_sync: ошибка загрузки карт uuid→user_id', error=e)
         return {'skipped': 'db_error'}
@@ -136,11 +142,14 @@ async def sync_user_clients(db: 'AsyncSession') -> dict:
 
     for device in all_devices:
         puuid = device.get('userUuid')
-        if not puuid:
-            continue
+        pid = device.get('userId')  # v3: числовой id панель-юзера (userUuid удалён)
 
-        # Резолв user_id: сначала User-карта, потом Subscription-карта
-        user_id = user_uuid_map.get(puuid) or sub_uuid_map.get(puuid)
+        # Резолв user_id: v2 — по userUuid (User→Subscription карты); v3 — по userId→remnawave_id
+        user_id = None
+        if puuid:
+            user_id = user_uuid_map.get(puuid) or sub_uuid_map.get(puuid)
+        if user_id is None and pid is not None:
+            user_id = user_remna_id_map.get(pid)
         if user_id is None:
             continue
 
