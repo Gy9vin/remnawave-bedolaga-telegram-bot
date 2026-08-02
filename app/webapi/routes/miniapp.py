@@ -2795,7 +2795,7 @@ async def _load_devices_info(user: User, subscription=None) -> tuple[int, list[M
         remnawave_uuid = getattr(subscription, 'remnawave_uuid', None)
     else:
         remnawave_uuid = getattr(user, 'remnawave_uuid', None)
-    if not remnawave_uuid:
+    if not remnawave_uuid and not getattr(user, 'remnawave_id', None):
         return 0, []
 
     try:
@@ -2809,7 +2809,26 @@ async def _load_devices_info(user: User, subscription=None) -> tuple[int, list[M
 
     try:
         async with service.get_api_client() as api:
-            response = await api.get_user_devices_all(remnawave_uuid)
+            # v2/v3-совместимый резолв идентификатора БЕЗ db-сессии.
+            # v3: remna_id из user.remnawave_id, иначе резолвим по short_uuid.
+            # v2: uuid как раньше (remna_id=None).
+            _remna_id = None
+            if await api.get_api_version() == 3:
+                _remna_id = getattr(user, 'remnawave_id', None)
+                if _remna_id is None:
+                    _short = getattr(subscription, 'remnawave_short_uuid', None)
+                    if not _short:
+                        for _s in getattr(user, 'subscriptions', None) or []:
+                            _cand = getattr(_s, 'remnawave_short_uuid', None)
+                            if _cand:
+                                _short = _cand
+                                break
+                    if _short:
+                        _remna_id = await api.resolve_user_id(short_uuid=_short)
+            response = await api.get_user_devices_all(
+                user_uuid=remnawave_uuid if _remna_id is None else None,
+                remna_id=_remna_id,
+            )
     except RemnaWaveConfigurationError:
         logger.debug('RemnaWave configuration missing while loading devices')
         return 0, []
@@ -4377,7 +4396,7 @@ async def remove_connected_device(
         )
 
     remnawave_uuid = getattr(user, 'remnawave_uuid', None)
-    if not remnawave_uuid:
+    if not remnawave_uuid and not getattr(user, 'remnawave_id', None):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             detail={'code': 'remnawave_unavailable', 'message': 'RemnaWave user is not linked'},
@@ -4399,7 +4418,11 @@ async def remove_connected_device(
 
     try:
         async with service.get_api_client() as api:
-            success = await api.remove_device(remnawave_uuid, hwid)
+            from app.services.remnawave_service import get_panel_user_ref
+
+            _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=None)
+            _path_id = str(_p_id) if _p_id is not None else (_p_uuid or remnawave_uuid)
+            success = await api.remove_device(_path_id, hwid)
     except RemnaWaveConfigurationError as error:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,

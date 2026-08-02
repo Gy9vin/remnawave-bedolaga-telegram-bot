@@ -435,10 +435,15 @@ async def admin_merge_preview(
             remnawave_uuid = getattr(sub, 'remnawave_uuid', None)
             devices_count: int | None = None
             devices: list[AdminMergeDeviceInfo] = []
-            if remnawave_uuid:
+            if remnawave_uuid or getattr(user, 'remnawave_id', None):
                 try:
+                    from app.services.remnawave_service import get_panel_user_ref
+
                     async with _get_remnawave_api() as api:
-                        data = await api.get_user_devices_all(remnawave_uuid)
+                        _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=sub)
+                        data = await api.get_user_devices_all(
+                            user_uuid=_p_uuid or remnawave_uuid, remna_id=_p_id
+                        )
                     raw_devices = data.get('devices', [])
                     devices_count = data.get('total', len(raw_devices))
                     for d in raw_devices:

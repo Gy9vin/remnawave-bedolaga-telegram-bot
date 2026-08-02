@@ -991,28 +991,34 @@ async def get_subscription_request_history(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
 
+    _hist_sub = None
     panel_uuid = None
     if settings.is_multi_tariff_enabled() and subscription_id:
         from app.database.crud.subscription import get_subscription_by_id_for_user
 
-        sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
-        if sub:
-            panel_uuid = sub.remnawave_uuid
+        _hist_sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+        if _hist_sub:
+            panel_uuid = _hist_sub.remnawave_uuid
     else:
         panel_uuid = getattr(user, 'remnawave_uuid', None)
 
-    if not panel_uuid:
+    if not panel_uuid and not getattr(user, 'remnawave_id', None):
         return {'total': 0, 'records': []}
 
     try:
-        from app.services.remnawave_service import RemnaWaveService
+        from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
         service = RemnaWaveService()
         if not service.is_configured:
             return {'total': 0, 'records': []}
 
         async with service.get_api_client() as api:
-            result = await api.get_subscription_request_history(panel_uuid, offset=offset, limit=limit)
+            _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=_hist_sub)
+            if not _p_uuid and _p_id is None:
+                return {'total': 0, 'records': []}
+            result = await api.get_subscription_request_history(
+                _p_uuid or panel_uuid, offset=offset, limit=limit, remna_id=_p_id
+            )
             return result
     except Exception as e:
         logger.error('Error getting subscription request history', user_id=user_id, error=e)
@@ -2590,28 +2596,30 @@ async def get_user_devices(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
 
     # Resolve panel UUID
+    _dev_sub = None
     _dev_uuid = None
     if settings.is_multi_tariff_enabled() and subscription_id:
         from app.database.crud.subscription import get_subscription_by_id_for_user
 
-        sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
-        if sub:
-            _dev_uuid = sub.remnawave_uuid
+        _dev_sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+        if _dev_sub:
+            _dev_uuid = _dev_sub.remnawave_uuid
     else:
         _dev_uuid = user.remnawave_uuid
 
-    if not _dev_uuid:
+    if not _dev_uuid and not getattr(user, 'remnawave_id', None):
         return UserDevicesResponse()
 
     try:
-        from app.services.remnawave_service import RemnaWaveService
+        from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
         service = RemnaWaveService()
         if not service.is_configured:
             return UserDevicesResponse()
 
         async with service.get_api_client() as api:
-            response = await api.get_user_devices_all(_dev_uuid)
+            _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=_dev_sub)
+            response = await api.get_user_devices_all(user_uuid=_p_uuid or _dev_uuid, remna_id=_p_id)
 
             # Aliases per-(user, hwid) — единый дикт на весь список устройств.
             # Best-effort: при сбое чтения возвращаем девайсы без локальных имён,
@@ -2671,25 +2679,28 @@ async def delete_user_device(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
 
+    _del_sub = None
     _uuid = None
     if settings.is_multi_tariff_enabled() and subscription_id:
         from app.database.crud.subscription import get_subscription_by_id_for_user
 
-        sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
-        if sub:
-            _uuid = sub.remnawave_uuid
+        _del_sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+        if _del_sub:
+            _uuid = _del_sub.remnawave_uuid
     else:
         _uuid = user.remnawave_uuid
 
-    if not _uuid:
+    if not _uuid and not getattr(user, 'remnawave_id', None):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='User has no panel account')
 
     try:
-        from app.services.remnawave_service import RemnaWaveService
+        from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
         service = RemnaWaveService()
         async with service.get_api_client() as api:
-            success = await api.remove_device(_uuid, hwid)
+            _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=_del_sub)
+            _path_id = str(_p_id) if _p_id is not None else (_p_uuid or _uuid)
+            success = await api.remove_device(_path_id, hwid)
 
         if success:
             logger.info('Admin deleted device for user', admin_id=admin.id, hwid=hwid, user_id=user_id)
@@ -2760,25 +2771,28 @@ async def reset_user_devices(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
 
+    _rst_sub = None
     _rst_uuid = None
     if settings.is_multi_tariff_enabled() and subscription_id:
         from app.database.crud.subscription import get_subscription_by_id_for_user
 
-        sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
-        if sub:
-            _rst_uuid = sub.remnawave_uuid
+        _rst_sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+        if _rst_sub:
+            _rst_uuid = _rst_sub.remnawave_uuid
     else:
         _rst_uuid = user.remnawave_uuid
 
-    if not _rst_uuid:
+    if not _rst_uuid and not getattr(user, 'remnawave_id', None):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='User has no panel account')
 
     try:
-        from app.services.remnawave_service import RemnaWaveService
+        from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
         service = RemnaWaveService()
         async with service.get_api_client() as api:
-            devices_info = await api.get_user_devices_all(_rst_uuid)
+            _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=_rst_sub)
+            _path_id = str(_p_id) if _p_id is not None else (_p_uuid or _rst_uuid)
+            devices_info = await api.get_user_devices_all(user_uuid=_p_uuid or _rst_uuid, remna_id=_p_id)
             devices = devices_info.get('devices', [])
             total = len(devices)
 
@@ -2790,7 +2804,7 @@ async def reset_user_devices(
                 device_hwid = d.get('hwid') or d.get('deviceId') or d.get('id')
                 if device_hwid:
                     try:
-                        await api.remove_device(_rst_uuid, device_hwid)
+                        await api.remove_device(_path_id, device_hwid)
                         deleted += 1
                     except Exception:
                         pass
