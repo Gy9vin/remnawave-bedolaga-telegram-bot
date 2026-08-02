@@ -46,6 +46,69 @@ from app.utils.timezone import get_local_timezone
 logger = structlog.get_logger(__name__)
 
 
+async def get_panel_user_ref(
+    client,
+    db,
+    *,
+    user=None,
+    subscription=None,
+) -> 'tuple[str | None, int | None]':
+    """Возвращает (uuid, remna_id) для идентификации пользователя в панели.
+
+    v2: возвращает (user.remnawave_uuid, None) — без обращений к API.
+    v3: если remnawave_id уже есть — возвращает (None, id) немедленно.
+        Иначе пытается разрешить через short_uuid (из subscription или
+        user.subscriptions[0]), потом через get_user_by_telegram_id.
+        Найденный id сохраняется в user.remnawave_id и коммитится в db.
+    """
+    api_version = await client.get_api_version()
+
+    if api_version != 3:
+        # v2: зеркалируем старую логику — в multi-tariff каждая подписка = отдельный
+        # панель-юзер, поэтому берём subscription.remnawave_uuid; иначе user-level uuid.
+        if subscription is not None and settings.is_multi_tariff_enabled():
+            return (getattr(subscription, 'remnawave_uuid', None), None)
+        return (getattr(user, 'remnawave_uuid', None) if user is not None else None, None)
+
+    # v3 path
+    if user is not None and getattr(user, 'remnawave_id', None):
+        return (None, user.remnawave_id)
+
+    # Попытка через short_uuid
+    short_uuid: str | None = None
+    if subscription is not None:
+        short_uuid = getattr(subscription, 'remnawave_short_uuid', None)
+    if not short_uuid and user is not None:
+        user_subs = getattr(user, 'subscriptions', None) or []
+        for s in user_subs:
+            candidate = getattr(s, 'remnawave_short_uuid', None)
+            if candidate:
+                short_uuid = candidate
+                break
+
+    resolved_id: int | None = None
+    if short_uuid:
+        resolved_id = await client.resolve_user_id(short_uuid=short_uuid)
+
+    # Fallback: поиск по telegram_id
+    if resolved_id is None and user is not None and getattr(user, 'telegram_id', None):
+        panel_users = await client.get_user_by_telegram_id(user.telegram_id)
+        if panel_users:
+            resolved_id = getattr(panel_users[0], 'id', None)
+
+    if resolved_id is not None and user is not None:
+        user.remnawave_id = resolved_id
+        await db.commit()
+        return (None, resolved_id)
+
+    if resolved_id is None:
+        logger.warning(
+            'get_panel_user_ref: не удалось разрешить remna_id для пользователя v3',
+            telegram_id=getattr(user, 'telegram_id', None) if user is not None else None,
+        )
+    return (None, None)
+
+
 def _get_user_traffic_bytes(panel_user: dict[str, Any]) -> int:
     """Извлекает usedTrafficBytes из панельного пользователя (совместимо с новым и старым API)"""
     # Новый формат: userTraffic.usedTrafficBytes
@@ -2690,6 +2753,8 @@ class RemnaWaveService:
                                                 sub.remnawave_uuid = new_user.uuid
                                             else:
                                                 user.remnawave_uuid = new_user.uuid
+                                            if new_user.id is not None:
+                                                user.remnawave_id = new_user.id
                                             sub.remnawave_short_uuid = new_user.short_uuid
                                             sub.subscription_url = new_user.subscription_url
                                             sub.subscription_crypto_link = new_user.happ_crypto_link
@@ -2701,6 +2766,8 @@ class RemnaWaveService:
                                         sub.remnawave_uuid = new_user.uuid
                                     else:
                                         user.remnawave_uuid = new_user.uuid
+                                    if new_user.id is not None:
+                                        user.remnawave_id = new_user.id
                                     sub.remnawave_short_uuid = new_user.short_uuid
                                     sub.subscription_url = new_user.subscription_url
                                     sub.subscription_crypto_link = new_user.happ_crypto_link
@@ -2731,6 +2798,8 @@ class RemnaWaveService:
                                     sub.remnawave_uuid = new_user.uuid
                                 else:
                                     sub.user.remnawave_uuid = new_user.uuid
+                                if new_user.id is not None:
+                                    sub.user.remnawave_id = new_user.id
                                 sub.remnawave_short_uuid = new_user.short_uuid
                             stats['created'] += 1
                         elif action == 'updated':
@@ -3028,9 +3097,12 @@ class RemnaWaveService:
 
                 params = {'start': start_str, 'end': end_str}
 
-                usage_data = await api._make_request(
-                    'GET', f'/api/bandwidth-stats/nodes/{node_uuid}/users/legacy', params=params
-                )
+                api_version = await api.get_api_version()
+                if api_version == 3:
+                    bw_endpoint = f'/api/bandwidth-stats/nodes/{node_uuid}/users'
+                else:
+                    bw_endpoint = f'/api/bandwidth-stats/nodes/{node_uuid}/users/legacy'
+                usage_data = await api._make_request('GET', bw_endpoint, params=params)
 
                 return usage_data.get('response', [])
 
