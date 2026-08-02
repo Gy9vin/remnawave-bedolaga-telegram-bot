@@ -326,6 +326,9 @@ async def _get_remnawave_api() -> AsyncIterator[RemnaWaveAPI]:
 
 async def _delete_remnawave_user_with_fallback(remnawave_uuid: str) -> None:
     """Удаляет пользователя из RemnaWave. При неудаче — деактивирует как fallback."""
+    # TODO(v3): функция принимает только uuid-строку без db/user; разрешить remna_id
+    # невозможно без доступа к БД. Для v3 caller'ам (flush_remnawave_deletions) нужно
+    # передавать db + user/subscription, чтобы можно было вызвать get_panel_user_ref.
     try:
         async with _get_remnawave_api() as api:
             deleted = await api.delete_user(remnawave_uuid)
@@ -339,7 +342,7 @@ async def _delete_remnawave_user_with_fallback(remnawave_uuid: str) -> None:
                     'RemnaWave delete_user вернул False, пробуем disable',
                     remnawave_uuid=remnawave_uuid,
                 )
-                await api.disable_user(remnawave_uuid)
+                await api.disable_user(remnawave_uuid)  # TODO(v3): needs remna_id= for v3
                 logger.info(
                     'RemnaWave пользователь деактивирован как fallback при мерже',
                     remnawave_uuid=remnawave_uuid,
@@ -359,7 +362,7 @@ async def _delete_remnawave_user_with_fallback(remnawave_uuid: str) -> None:
         )
         try:
             async with _get_remnawave_api() as api:
-                await api.disable_user(remnawave_uuid)
+                await api.disable_user(remnawave_uuid)  # TODO(v3): needs remna_id= for v3
                 logger.info(
                     'RemnaWave пользователь деактивирован как fallback при мерже',
                     remnawave_uuid=remnawave_uuid,
@@ -394,6 +397,7 @@ async def flush_remnawave_deletions(remnawave_uuids: list[str]) -> None:
 async def _sync_transferred_subscriptions_to_panel(
     primary: User,
     transferred_subs: list[Subscription],
+    db: AsyncSession,
 ) -> None:
     """Updates RemnaWave panel description for subscriptions transferred to primary user.
 
@@ -418,11 +422,15 @@ async def _sync_transferred_subscriptions_to_panel(
     )
 
     try:
+        from app.services.remnawave_service import get_panel_user_ref
+
         async with _get_remnawave_api() as api:
             for sub in subs_with_uuid:
                 try:
+                    uuid, remna_id = await get_panel_user_ref(api, db, user=primary, subscription=sub)
                     await api.update_user(
-                        uuid=sub.remnawave_uuid,
+                        uuid=uuid,
+                        remna_id=remna_id,
                         description=new_description,
                         telegram_id=primary.telegram_id,
                         email=getattr(primary, 'email', None),
@@ -607,7 +615,7 @@ async def _handle_subscription_merge(
                 )
             # Sync transferred subscriptions in RemnaWave panel so description
             # reflects the primary user (telegramId, username, email).
-            await _sync_transferred_subscriptions_to_panel(primary, transferred)
+            await _sync_transferred_subscriptions_to_panel(primary, transferred, db)
         # Clean up legacy remnawave_uuid on secondary
         if secondary.remnawave_uuid:
             secondary.remnawave_uuid = None

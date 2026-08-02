@@ -298,6 +298,9 @@ class BlockedUsersService:
 
     async def delete_user_from_remnawave(self, remnawave_uuid: str) -> bool:
         """Удаляет пользователя из панели Remnawave."""
+        # TODO(v3): метод принимает только uuid-строку без db/User; разрешить remna_id
+        # невозможно без объекта User из БД. Для v3 нужно переработать сигнатуру:
+        # передавать db + user_id и загружать User внутри, чтобы вызвать get_panel_user_ref.
         if not remnawave_uuid:
             return False
 

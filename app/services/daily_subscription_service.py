@@ -696,20 +696,18 @@ class DailySubscriptionService:
 
     async def _get_panel_used_gb(self, db: AsyncSession, subscription: Subscription) -> float | None:
         """Текущий израсходованный трафик из панели в ГБ. None — если узнать не удалось."""
+        from app.services.remnawave_service import get_panel_user_ref
         from app.services.subscription_service import SubscriptionService
 
         service = SubscriptionService()
-        if settings.is_multi_tariff_enabled():
-            uuid = getattr(subscription, 'remnawave_uuid', None)
-        else:
-            user = await get_user_by_id(db, subscription.user_id)
-            uuid = getattr(user, 'remnawave_uuid', None) if user else None
-        if not uuid:
-            return None
+        user = await get_user_by_id(db, subscription.user_id)
 
         try:
             async with service.get_api_client() as api:
-                panel_user = await api.get_user_by_uuid(uuid)
+                uuid, remna_id = await get_panel_user_ref(api, db, user=user, subscription=subscription)
+                if not uuid and remna_id is None:
+                    return None
+                panel_user = await api.get_user_by_uuid(uuid, remna_id=remna_id)
         except Exception as exc:
             logger.warning(
                 'Не удалось получить used из панели для выравнивания докупки — применим понижение со страховкой',

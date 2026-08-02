@@ -23,6 +23,11 @@ logger = structlog.get_logger(__name__)
 
 
 async def _refresh_remnawave_description(remnawave_uuid: str, description: str, telegram_id: int) -> None:
+    # TODO(v3): функция запускается через asyncio.create_task без db/User; AsyncSession
+    # нельзя передавать через границы task. Для v3 нужно открывать новую сессию внутри
+    # и загружать User по telegram_id, чтобы вызвать get_panel_user_ref. Также здесь
+    # возможен import cycle: middlewares.auth → remnawave_service → (chain) → auth.
+    # Использовать LOCAL import внутри функции при рефакторинге.
     try:
         remnawave_service = RemnaWaveService()
         async with remnawave_service.get_api_client() as api:

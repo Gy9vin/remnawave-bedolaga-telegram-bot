@@ -2058,6 +2058,12 @@ async def wipe_trial_subscriptions(db: AsyncSession, subscriptions) -> int:
                     return True  # в панели нечего удалять
                 async with semaphore:
                     try:
+                        # TODO(v3): import cycle — cannot migrate here.
+                        # app.database.crud.subscription импортируется из remnawave_service,
+                        # поэтому LOCAL import get_panel_user_ref создаёт circular import.
+                        # Для v3 поддержки нужно перенести wipe_trial_subscriptions в
+                        # сервисный слой (например, remnawave_service или subscription_service),
+                        # где цикл отсутствует, и там уже вызывать get_panel_user_ref.
                         await api.delete_user(panel_uuid)
                         return True
                     except Exception as error:
