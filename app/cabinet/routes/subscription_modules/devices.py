@@ -1110,8 +1110,7 @@ async def delete_device(
         service = RemnaWaveService()
         async with service.get_api_client() as api:
             _, _, _path_id = await _panel_ref_for_devices(api, db, subscription, user, _puuid)
-            delete_data = {'userUuid': _path_id, 'hwid': hwid}
-            await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+            await api.delete_hwid_device_by_path(_path_id, hwid)
 
             return {
                 'success': True,
@@ -1178,8 +1177,7 @@ async def delete_all_devices(
                 if device_hwid:
                     try:
                         _, _, _path_id = await _panel_ref_for_devices(api, db, subscription, user, _puuid)
-                        delete_data = {'userUuid': _path_id, 'hwid': device_hwid}
-                        await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+                        await api.delete_hwid_device_by_path(_path_id, device_hwid)
                         deleted_count += 1
                     except Exception as device_error:
                         logger.error('Error deleting device', device_hwid=device_hwid, device_error=device_error)
@@ -1386,8 +1384,7 @@ async def reduce_devices(
                             if device_hwid:
                                 try:
                                     _, _, _path_id = await _panel_ref_for_devices(api, db, subscription, user, _puuid)
-                                    delete_data = {'userUuid': _path_id, 'hwid': device_hwid}
-                                    await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+                                    await api.delete_hwid_device_by_path(_path_id, device_hwid)
                                     devices_removed_count += 1
                                     logger.info('Removed device for user', device_hwid=device_hwid, user_id=user.id)
                                 except Exception as del_error:

@@ -2594,11 +2594,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                             device_hwid = device.get('hwid')
                             if device_hwid:
                                 try:
-                                    await api._make_request(
-                                        'POST',
-                                        '/api/hwid/devices/delete',
-                                        data={'userUuid': _pid, 'hwid': device_hwid},
-                                    )
+                                    await api.delete_hwid_device_by_path(_pid, device_hwid)
                                     reset_count += 1
                                 except Exception as del_err:
                                     logger.error(

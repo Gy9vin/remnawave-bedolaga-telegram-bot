@@ -1615,6 +1615,36 @@ class RemnaWaveAPI:
 
         return {'devices': all_devices, 'total': len(all_devices)}
 
+    def _hwid_delete_body(self, path_id: str | None, hwid: str | None = None) -> dict:
+        """Версионное тело для POST /api/hwid/devices/delete.
+
+        v3: {'userId': <number>} (поле переименовано и типизировано как число);
+        v2: {'userUuid': <uuid>}. path_id — то, что резолверы уже вычислили:
+        str(remna_id) на v3, uuid на v2. Требует предварительного get_api_version().
+        """
+        if self._api_version == 3:
+            try:
+                body: dict = {'userId': int(path_id)}
+            except (TypeError, ValueError):
+                raise RemnaWaveAPIError(
+                    f'v3 hwid delete требует числовой userId, получено {path_id!r}', 400, {}
+                )
+        else:
+            body = {'userUuid': path_id}
+        if hwid is not None:
+            body['hwid'] = hwid
+        return body
+
+    async def delete_hwid_device_by_path(self, path_id: str | None, hwid: str) -> Any:
+        """POST /api/hwid/devices/delete с версионно-корректным телом (v2/v3).
+
+        path_id — str(remna_id) на v3 (→ userId:number) или uuid на v2 (→ userUuid).
+        """
+        await self.get_api_version()
+        return await self._make_request(
+            'POST', '/api/hwid/devices/delete', data=self._hwid_delete_body(path_id, hwid)
+        )
+
     async def reset_user_devices(
         self, user_uuid: str | None = None, remna_id: int | None = None
     ) -> bool:
@@ -1632,8 +1662,7 @@ class RemnaWaveAPI:
                 device_hwid = device.get('hwid')
                 if device_hwid:
                     try:
-                        delete_data = {'userUuid': path_id, 'hwid': device_hwid}
-                        await self._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+                        await self.delete_hwid_device_by_path(path_id, device_hwid)
                     except Exception as device_error:
                         logger.error('Ошибка удаления устройства', device_hwid=device_hwid, device_error=device_error)
                         failed_count += 1
@@ -1656,9 +1685,11 @@ class RemnaWaveAPI:
         Панели, отвечающие «голым» ack без списка devices, обрабатываются как раньше
         (успешный запрос == удалено).
         """
-        delete_data = {'userUuid': user_uuid, 'hwid': device_hwid}
+        await self.get_api_version()
         try:
-            response = await self._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+            response = await self._make_request(
+                'POST', '/api/hwid/devices/delete', data=self._hwid_delete_body(user_uuid, device_hwid)
+            )
         except RemnaWaveAPIError as e:
             if e.status_code == 404:
                 return True  # устройства уже нет — цель достигнута

@@ -766,8 +766,7 @@ async def execute_change_devices(
                                 device_hwid = device.get('hwid')
                                 if device_hwid:
                                     try:
-                                        delete_data = {'userUuid': _pid, 'hwid': device_hwid}
-                                        await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+                                        await api.delete_hwid_device_by_path(_pid, device_hwid)
                                         devices_reset_count += 1
                                         logger.info('✅ Удалено устройство', device_hwid=device_hwid)
                                     except Exception as del_error:
@@ -1300,9 +1299,7 @@ async def handle_single_device_reset(
                     device_hwid = device.get('hwid')
 
                     if device_hwid:
-                        delete_data = {'userUuid': _pid, 'hwid': device_hwid}
-
-                        await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+                        await api.delete_hwid_device_by_path(_pid, device_hwid)
 
                         platform = device.get('platform', 'Unknown')
                         device_model = device.get('deviceModel', 'Unknown')
@@ -1420,9 +1417,7 @@ async def handle_all_devices_reset_from_management(
                 device_hwid = device.get('hwid')
                 if device_hwid:
                     try:
-                        delete_data = {'userUuid': _pid, 'hwid': device_hwid}
-
-                        await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+                        await api.delete_hwid_device_by_path(_pid, device_hwid)
                         success_count += 1
                         logger.info('✅ Устройство удалено', device_hwid=device_hwid)
 
