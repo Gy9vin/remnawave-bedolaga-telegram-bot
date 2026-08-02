@@ -943,7 +943,10 @@ async def get_user_panel_info(
             if panel_user.user_traffic and panel_user.user_traffic.last_connected_node_uuid:
                 last_node_uuid = panel_user.user_traffic.last_connected_node_uuid
                 try:
-                    accessible = await api.get_user_accessible_nodes(panel_user.uuid)
+                    # v3: panel_user.uuid is None, use panel_user.id (numeric remna_id)
+                    accessible = await api.get_user_accessible_nodes(
+                        uuid=panel_user.uuid, remna_id=getattr(panel_user, 'id', None)
+                    )
                     for node in accessible:
                         if node.uuid == last_node_uuid:
                             last_node_name = node.node_name
@@ -1042,22 +1045,8 @@ async def get_user_node_usage(
             detail='User not found',
         )
 
-    # Resolve panel UUID
-    _panel_uuid = None
-    if settings.is_multi_tariff_enabled() and subscription_id:
-        from app.database.crud.subscription import get_subscription_by_id_for_user
-
-        sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
-        if sub:
-            _panel_uuid = sub.remnawave_uuid
-    else:
-        _panel_uuid = user.remnawave_uuid
-
-    if not _panel_uuid:
-        return UserNodeUsageResponse(items=[])
-
     try:
-        from app.services.remnawave_service import RemnaWaveService
+        from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
         service = RemnaWaveService()
         if not service.is_configured:
@@ -1069,12 +1058,31 @@ async def get_user_node_usage(
         end_str = end_date.strftime('%Y-%m-%d')
 
         async with service.get_api_client() as api:
+            # Resolve panel identifier (v2: uuid, v3: remna_id)
+            if settings.is_multi_tariff_enabled() and subscription_id:
+                from app.database.crud.subscription import get_subscription_by_id_for_user
+
+                _sub_for_ref = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+                _panel_uuid, _panel_remna_id = await get_panel_user_ref(
+                    api, db, user=user, subscription=_sub_for_ref
+                )
+            else:
+                _panel_uuid, _panel_remna_id = await get_panel_user_ref(api, db, user=user)
+
+            if not _panel_uuid and not _panel_remna_id:
+                return UserNodeUsageResponse(items=[])
+
+            # path_id used for endpoints that don't yet have a remna_id overload
+            _path_id = _panel_uuid if _panel_uuid else str(_panel_remna_id)
+
             # Get user's accessible nodes (1 API call)
-            accessible_nodes = await api.get_user_accessible_nodes(_panel_uuid)
+            accessible_nodes = await api.get_user_accessible_nodes(
+                uuid=_panel_uuid, remna_id=_panel_remna_id
+            )
 
             # Get user bandwidth stats (1 API call)
             # Response: {categories: [dates], series: [{uuid, name, countryCode, total, data: [daily]}, ...]}
-            stats = await api.get_bandwidth_stats_user(_panel_uuid, start_str, end_str)
+            stats = await api.get_bandwidth_stats_user(_path_id, start_str, end_str)
 
             categories: list[str] = []
             series_map: dict[str, dict] = {}

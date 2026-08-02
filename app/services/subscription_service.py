@@ -291,9 +291,15 @@ class SubscriptionService:
                 subscription.remnawave_short_uuid = updated_user.short_uuid
                 subscription.subscription_url = updated_user.subscription_url
                 subscription.subscription_crypto_link = updated_user.happ_crypto_link
-                subscription.remnawave_uuid = updated_user.uuid
+                # Guard: never write '' (empty string) — v3 omits uuid entirely (None);
+                # some panel builds may return "" which would violate the unique constraint.
+                if updated_user.uuid:
+                    subscription.remnawave_uuid = updated_user.uuid
+                elif updated_user.uuid is None:
+                    # v3: uuid not present; leave existing subscription.remnawave_uuid as-is
+                    pass
                 # Legacy field — keep in sync for single-mode backward compat
-                if not settings.is_multi_tariff_enabled():
+                if not settings.is_multi_tariff_enabled() and updated_user.uuid:
                     user.remnawave_uuid = updated_user.uuid
                 # v3: persist numeric id for future identity resolution
                 if updated_user.id is not None:

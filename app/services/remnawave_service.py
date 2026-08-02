@@ -3535,6 +3535,8 @@ class RemnaWaveService:
                             else None
                         ) or getattr(user, 'remnawave_uuid', None)
                         if not subscription.remnawave_short_uuid and _lookup_uuid:
+                            # v2-only: on v3 _lookup_uuid is None (no remnawave_uuid stored),
+                            # so this branch is skipped entirely — short_uuid backfill not needed.
                             try:
                                 async with self.get_api_client() as api:
                                     rw_user = await api.get_user_by_uuid(_lookup_uuid)

@@ -24,7 +24,7 @@ from app.keyboards.inline import (
 )
 from app.localization.texts import get_texts
 from app.services.pricing_engine import PricingEngine
-from app.services.remnawave_service import RemnaWaveService
+from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
 from app.states import SubscriptionStates
@@ -376,10 +376,11 @@ async def confirm_reset_traffic(
         remnawave_service = RemnaWaveService()
 
         user = db_user
-        remnawave_uuid = getattr(subscription, 'remnawave_uuid', None) or user.remnawave_uuid
-        if remnawave_uuid:
-            async with remnawave_service.get_api_client() as api:
-                await api.reset_user_traffic(remnawave_uuid)
+        async with remnawave_service.get_api_client() as api:
+            # Resolve panel identifier (v2: uuid, v3: remna_id via get_panel_user_ref)
+            _rw_uuid, _rw_remna_id = await get_panel_user_ref(api, db, user=user, subscription=subscription)
+            if _rw_uuid or _rw_remna_id:
+                await api.reset_user_traffic(uuid=_rw_uuid, remna_id=_rw_remna_id)
 
         await create_transaction(
             db=db,

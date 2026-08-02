@@ -58,7 +58,7 @@ from app.services.referral_service import (
     process_referral_registration,
     process_referral_topup,
 )
-from app.services.remnawave_service import RemnaWaveService
+from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 from app.services.subscription_service import SubscriptionService
 from app.services.user_service import UserService
 from app.states import AdminStates
@@ -5151,25 +5151,23 @@ async def _update_user_devices(
 
         await db.commit()
 
-        _uuid = (
-            getattr(subscription, 'remnawave_uuid', None)
-            if settings.is_multi_tariff_enabled() and subscription
-            else None
-        ) or getattr(user, 'remnawave_uuid', None)
-        if _uuid:
-            try:
-                remnawave_service = RemnaWaveService()
-                async with remnawave_service.get_api_client() as api:
+        try:
+            remnawave_service = RemnaWaveService()
+            async with remnawave_service.get_api_client() as api:
+                # Resolve panel identifier (v2: uuid, v3: remna_id)
+                _rw_uuid, _rw_remna_id = await get_panel_user_ref(api, db, user=user, subscription=subscription)
+                if _rw_uuid or _rw_remna_id:
                     await api.update_user(
-                        uuid=_uuid,
+                        uuid=_rw_uuid,
+                        remna_id=_rw_remna_id,
                         hwid_device_limit=devices,
                         description=settings.format_remnawave_user_description(
                             full_name=user.full_name, username=user.username, telegram_id=user.telegram_id
                         ),
                     )
-                logger.info('✅ Обновлен лимит устройств в RemnaWave для пользователя', telegram_id=user.telegram_id)
-            except Exception as rw_error:
-                logger.error('❌ Ошибка обновления лимита устройств в RemnaWave', rw_error=rw_error)
+            logger.info('✅ Обновлен лимит устройств в RemnaWave для пользователя', telegram_id=user.telegram_id)
+        except Exception as rw_error:
+            logger.error('❌ Ошибка обновления лимита устройств в RemnaWave', rw_error=rw_error)
 
         logger.info(
             'Админ изменил лимит устройств пользователя',

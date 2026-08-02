@@ -739,25 +739,47 @@ class RemnaWaveWebhookService:
     async def _resolve_user_and_subscription(
         self, db: AsyncSession, data: dict
     ) -> tuple[User | None, Subscription | None]:
-        """Find bot user by telegramId or uuid from webhook payload.
+        """Find bot user by telegramId or uuid/id from webhook payload.
 
         Handles both user-scope events (top-level telegramId/uuid) and
         device-scope events (userUuid, or nested user.telegramId/user.uuid).
 
-        In multi-tariff mode, resolves subscription by remnawave_uuid from payload
-        (each subscription has its own Remnawave user).
+        v2 payload carries ``uuid`` (string); v3 payload carries numeric ``id``
+        and ``shortUuid`` but NO ``uuid``.  Both always carry ``telegramId``
+        (when the panel user has one), so telegramId is tried first and covers
+        the common case for both versions.
+
+        In multi-tariff mode, resolves subscription by remnawave_uuid (v2) or
+        remnawave_short_uuid (v3 via shortUuid) from payload.
         """
         user: User | None = None
         remnawave_uuid: str | None = None
+        # v3: numeric panel user id present in payload as "id"; shortUuid always present
+        panel_numeric_id: int | None = None
+        short_uuid: str | None = None
 
-        # Extract Remnawave UUID from payload (used for subscription lookup in multi-tariff)
+        # Extract identifiers from payload.
+        # v2: data.uuid / data.userUuid  (string UUID)
+        # v3: data.id (int), data.shortUuid (str) — uuid field absent
         remnawave_uuid = data.get('uuid') or data.get('userUuid')
         if not remnawave_uuid:
             nested_user = data.get('user')
             if isinstance(nested_user, dict):
                 remnawave_uuid = nested_user.get('uuid')
 
-        # Try top-level telegramId first
+        _raw_id = data.get('id')
+        if _raw_id is not None:
+            try:
+                panel_numeric_id = int(_raw_id)
+            except (ValueError, TypeError):
+                pass
+        short_uuid = data.get('shortUuid') or data.get('userShortUuid')
+        if not short_uuid:
+            nested_user_obj = data.get('user')
+            if isinstance(nested_user_obj, dict):
+                short_uuid = nested_user_obj.get('shortUuid')
+
+        # Try top-level telegramId first (present in both v2 and v3)
         telegram_id = data.get('telegramId')
         if telegram_id:
             try:
@@ -765,9 +787,18 @@ class RemnaWaveWebhookService:
             except (ValueError, TypeError):
                 pass
 
-        # Try top-level uuid
+        # Try top-level uuid (v2)
         if not user and remnawave_uuid:
             user = await get_user_by_remnawave_uuid(db, remnawave_uuid)
+
+        # v3: try User.remnawave_id match (panel numeric id stored during get_panel_user_ref)
+        if not user and panel_numeric_id is not None:
+            from sqlalchemy import select as _sa_select
+
+            _id_result = await db.execute(
+                _sa_select(User).where(User.remnawave_id == panel_numeric_id).limit(1)
+            )
+            user = _id_result.scalar_one_or_none()
 
         # Try nested user object (e.g. user_hwid_devices events)
         if not user:
@@ -783,81 +814,123 @@ class RemnaWaveWebhookService:
                     nested_uuid = nested_user.get('uuid')
                     if nested_uuid:
                         user = await get_user_by_remnawave_uuid(db, nested_uuid)
+                    # v3 nested: try numeric id
+                    if not user:
+                        nested_id = nested_user.get('id')
+                        if nested_id is not None:
+                            try:
+                                _nested_numeric = int(nested_id)
+                                from sqlalchemy import select as _sa_sel2
 
-        # Multi-tariff: try finding user through subscription's remnawave_uuid
-        if not user and remnawave_uuid and settings.is_multi_tariff_enabled():
+                                _nid_result = await db.execute(
+                                    _sa_sel2(User).where(User.remnawave_id == _nested_numeric).limit(1)
+                                )
+                                user = _nid_result.scalar_one_or_none()
+                            except (ValueError, TypeError):
+                                pass
+
+        # Multi-tariff: try finding user through subscription's remnawave_uuid (v2)
+        # or remnawave_short_uuid (v3 — uuid absent in payload, shortUuid always present)
+        if not user and settings.is_multi_tariff_enabled():
             from sqlalchemy import select as sa_select
             from sqlalchemy.orm import selectinload as sa_selectinload
 
-            sub_result = await db.execute(
-                sa_select(Subscription)
-                .options(
-                    sa_selectinload(Subscription.user)
-                    .selectinload(User.subscriptions)
-                    .selectinload(Subscription.tariff),
-                    sa_selectinload(Subscription.tariff),
+            _mt_where = None
+            if remnawave_uuid:
+                _mt_where = Subscription.remnawave_uuid == remnawave_uuid
+            elif short_uuid:
+                # v3: no uuid in payload; match by shortUuid → remnawave_short_uuid
+                _mt_where = Subscription.remnawave_short_uuid == short_uuid
+
+            if _mt_where is not None:
+                sub_result = await db.execute(
+                    sa_select(Subscription)
+                    .options(
+                        sa_selectinload(Subscription.user)
+                        .selectinload(User.subscriptions)
+                        .selectinload(Subscription.tariff),
+                        sa_selectinload(Subscription.tariff),
+                    )
+                    .where(_mt_where)
+                    .limit(1)
                 )
-                .where(Subscription.remnawave_uuid == remnawave_uuid)
-                .limit(1)
-            )
-            found_sub = sub_result.scalar_one_or_none()
-            if found_sub and found_sub.user:
-                return found_sub.user, found_sub
+                found_sub = sub_result.scalar_one_or_none()
+                if found_sub and found_sub.user:
+                    return found_sub.user, found_sub
 
         if not user:
             return None, None
 
-        # In multi-tariff mode, find subscription by remnawave_uuid (per-subscription)
-        if settings.is_multi_tariff_enabled() and remnawave_uuid:
+        # In multi-tariff mode, find subscription by remnawave_uuid (v2) or
+        # remnawave_short_uuid (v3 — uuid absent in payload, shortUuid always present).
+        if settings.is_multi_tariff_enabled() and (remnawave_uuid or short_uuid):
             from sqlalchemy import select
             from sqlalchemy.orm import selectinload
 
-            result = await db.execute(
-                select(Subscription)
-                .options(selectinload(Subscription.tariff))
-                .where(
-                    Subscription.remnawave_uuid == remnawave_uuid,
-                    Subscription.user_id == user.id,
+            if remnawave_uuid:
+                result = await db.execute(
+                    select(Subscription)
+                    .options(selectinload(Subscription.tariff))
+                    .where(
+                        Subscription.remnawave_uuid == remnawave_uuid,
+                        Subscription.user_id == user.id,
+                    )
                 )
-            )
-            subscription = result.scalar_one_or_none()
-            if subscription:
-                return user, subscription
+                subscription = result.scalar_one_or_none()
+                if subscription:
+                    return user, subscription
 
-            # Fallback 1: search ALL user's subscriptions by remnawave_uuid
-            # (covers recently merged accounts where user_id might differ)
-            logger.warning(
-                'Webhook: подписка не найдена по remnawave_uuid + user_id, '
-                'fallback на поиск по remnawave_uuid среди всех подписок пользователя',
-                remnawave_uuid=remnawave_uuid,
-                user_id=user.id,
-            )
-            fallback1_result = await db.execute(
-                select(Subscription)
-                .options(selectinload(Subscription.tariff))
-                .where(Subscription.remnawave_uuid == remnawave_uuid)
-                .limit(1)
-            )
-            fallback1_sub = fallback1_result.scalar_one_or_none()
-            if fallback1_sub:
-                if fallback1_sub.user_id == user.id:
-                    return user, fallback1_sub
-                # Subscription belongs to a different user (transferred or merged)
+            # v3: try by shortUuid → remnawave_short_uuid
+            if short_uuid:
+                su_result = await db.execute(
+                    select(Subscription)
+                    .options(selectinload(Subscription.tariff))
+                    .where(
+                        Subscription.remnawave_short_uuid == short_uuid,
+                        Subscription.user_id == user.id,
+                    )
+                    .limit(1)
+                )
+                su_sub = su_result.scalar_one_or_none()
+                if su_sub:
+                    return user, su_sub
+
+            if remnawave_uuid:
+                # Fallback 1: search ALL user's subscriptions by remnawave_uuid
+                # (covers recently merged accounts where user_id might differ)
                 logger.warning(
-                    'Webhook: подписка найдена по remnawave_uuid, '
-                    'но принадлежит другому пользователю — игнорируем (IDOR prevention)',
+                    'Webhook: подписка не найдена по remnawave_uuid + user_id, '
+                    'fallback на поиск по remnawave_uuid среди всех подписок пользователя',
                     remnawave_uuid=remnawave_uuid,
-                    webhook_user_id=user.id,
-                    subscription_user_id=fallback1_sub.user_id,
-                    subscription_id=fallback1_sub.id,
+                    user_id=user.id,
                 )
-                # Do NOT return cross-user subscription — would mutate another user's data
-                return user, None
+                fallback1_result = await db.execute(
+                    select(Subscription)
+                    .options(selectinload(Subscription.tariff))
+                    .where(Subscription.remnawave_uuid == remnawave_uuid)
+                    .limit(1)
+                )
+                fallback1_sub = fallback1_result.scalar_one_or_none()
+                if fallback1_sub:
+                    if fallback1_sub.user_id == user.id:
+                        return user, fallback1_sub
+                    # Subscription belongs to a different user (transferred or merged)
+                    logger.warning(
+                        'Webhook: подписка найдена по remnawave_uuid, '
+                        'но принадлежит другому пользователю — игнорируем (IDOR prevention)',
+                        remnawave_uuid=remnawave_uuid,
+                        webhook_user_id=user.id,
+                        subscription_user_id=fallback1_sub.user_id,
+                        subscription_id=fallback1_sub.id,
+                    )
+                    # Do NOT return cross-user subscription — would mutate another user's data
+                    return user, None
 
-            # Fallback 2: all lookups exhausted
+            # Fallback: all lookups exhausted
             logger.warning(
                 'Webhook: подписка не найдена ни по одному методу поиска, возвращаем (user, None)',
                 remnawave_uuid=remnawave_uuid,
+                short_uuid=short_uuid,
                 user_id=user.id,
             )
 
@@ -1491,18 +1564,35 @@ class RemnaWaveWebhookService:
             if other_end is not None and other_end > now:
                 continue
 
-            # Resolve the sibling's panel UUID — fall back to user.remnawave_uuid in
-            # BOTH modes, since pre-multi-tariff subs store the panel UUID there.
+            # Resolve the sibling's panel identifier.
+            # v2: sub.remnawave_uuid / user.remnawave_uuid (string UUID)
+            # v3: neither is set; fall back to sub.remnawave_short_uuid → resolve numeric id
             sibling_uuid = getattr(other_sub, 'remnawave_uuid', None) or getattr(user, 'remnawave_uuid', None)
+            sibling_remna_id: int | None = None
+            if not sibling_uuid:
+                # v3: try resolving via shortUuid
+                sibling_short = getattr(other_sub, 'remnawave_short_uuid', None)
+                if sibling_short:
+                    sibling_remna_id = None  # resolved inside API call via resolve_user_id below
 
             # Only expire when the panel POSITIVELY reports the user is gone. If we
-            # cannot verify (no uuid, API not configured, or a transient error), leave
-            # the sub untouched — an unverifiable check must never expire a live sub.
-            if not sibling_uuid or not subscription_service.is_configured:
+            # cannot verify (no uuid/short_uuid, API not configured, or transient error),
+            # leave the sub untouched — an unverifiable check must never expire a live sub.
+            if not sibling_uuid and not getattr(other_sub, 'remnawave_short_uuid', None):
+                continue
+            if not subscription_service.is_configured:
                 continue
             try:
                 async with subscription_service.get_api_client() as api:
-                    panel_user = await api.get_user_by_uuid(sibling_uuid)
+                    # v3: resolve numeric id from shortUuid if we don't have a UUID
+                    if not sibling_uuid:
+                        _sibling_short = getattr(other_sub, 'remnawave_short_uuid', None)
+                        if _sibling_short:
+                            sibling_remna_id = await api.resolve_user_id(short_uuid=_sibling_short)
+                        if not sibling_remna_id:
+                            # Cannot identify the sibling in the panel — fail-safe: skip
+                            continue
+                    panel_user = await api.get_user_by_uuid(sibling_uuid, remna_id=sibling_remna_id)
             except Exception as exc:
                 logger.warning(
                     'Webhook user.deleted: sibling liveness check failed, leaving subscription untouched',
