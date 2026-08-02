@@ -1600,9 +1600,13 @@ class RemnaWaveAPI:
 
         return {'devices': all_devices, 'total': len(all_devices)}
 
-    async def reset_user_devices(self, user_uuid: str) -> bool:
+    async def reset_user_devices(
+        self, user_uuid: str | None = None, remna_id: int | None = None
+    ) -> bool:
+        await self.get_api_version()
+        path_id = self._resolve_user_path(uuid=user_uuid, remna_id=remna_id)
         try:
-            devices_info = await self.get_user_devices_all(user_uuid)
+            devices_info = await self.get_user_devices_all(user_uuid=user_uuid, remna_id=remna_id)
             devices = devices_info.get('devices', [])
 
             if not devices:
@@ -1613,7 +1617,7 @@ class RemnaWaveAPI:
                 device_hwid = device.get('hwid')
                 if device_hwid:
                     try:
-                        delete_data = {'userUuid': user_uuid, 'hwid': device_hwid}
+                        delete_data = {'userUuid': path_id, 'hwid': device_hwid}
                         await self._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
                     except Exception as device_error:
                         logger.error('Ошибка удаления устройства', device_hwid=device_hwid, device_error=device_error)

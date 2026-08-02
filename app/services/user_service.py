@@ -866,6 +866,9 @@ class UserService:
             else:
                 panel_uuids = [user.remnawave_uuid] if user.remnawave_uuid else []
 
+            # Маппинг uuid → подписка для get_panel_user_ref (multi-tariff)
+            uuid_to_sub = {sub.remnawave_uuid: sub for sub in subs if sub.remnawave_uuid}
+
             if panel_uuids:
                 if not force_panel_delete and any(is_active_paid_subscription(sub) for sub in subs):
                     logger.info(
@@ -887,13 +890,18 @@ class UserService:
 
                     for panel_uuid in panel_uuids:
                         try:
-                            from app.services.remnawave_service import RemnaWaveService
+                            from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
                             remnawave_service = RemnaWaveService()
 
                             if delete_mode == 'delete':
                                 async with remnawave_service.get_api_client() as api:
-                                    delete_success = await api.delete_user(panel_uuid)
+                                    _uuid, _remna_id = await get_panel_user_ref(
+                                        api, db,
+                                        user=user,
+                                        subscription=uuid_to_sub.get(panel_uuid),
+                                    )
+                                    delete_success = await api.delete_user(uuid=_uuid, remna_id=_remna_id)
                                     if delete_success:
                                         result.panel_deleted = True
                                         logger.info(

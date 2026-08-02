@@ -590,22 +590,20 @@ class SubscriptionRenewalService:
         # Сброс привязанных устройств при продлении (если включено)
         if reset_devices:
             try:
-                from app.services.remnawave_service import RemnaWaveService
+                from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
                 rw_service = RemnaWaveService()
-                _uuid = (
-                    getattr(subscription_after, 'remnawave_uuid', None)
-                    if settings.is_multi_tariff_enabled()
-                    else getattr(user, 'remnawave_uuid', None)
-                )
-                if _uuid:
-                    async with rw_service.get_api_client() as api:
-                        await api.reset_user_devices(_uuid)
-                    logger.info(
-                        'Devices reset on renewal',
-                        subscription_id=subscription_after.id,
-                        user_id=user.id,
+                async with rw_service.get_api_client() as api:
+                    _uuid, _remna_id = await get_panel_user_ref(
+                        api, db, user=user, subscription=subscription_after
                     )
+                    if _uuid or _remna_id:
+                        await api.reset_user_devices(user_uuid=_uuid, remna_id=_remna_id)
+                        logger.info(
+                            'Devices reset on renewal',
+                            subscription_id=subscription_after.id,
+                            user_id=user.id,
+                        )
             except Exception as error:
                 logger.warning('Failed to reset devices on renewal', error=error, exc_info=True)
 

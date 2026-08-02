@@ -373,19 +373,20 @@ async def is_user_dormant_for_autopay(db, subscription, user, now=None, remnawav
     if now is None:
         now = datetime.now(UTC)
 
-    # Определяем UUID панели для этой подписки/пользователя
-    uuid = None
-    if subscription is not None:
-        uuid = getattr(subscription, 'remnawave_uuid', None)
-    if not uuid:
-        uuid = getattr(user, 'remnawave_uuid', None)
-
     online_at = None
 
-    if uuid and remnawave_service is not None:
+    if remnawave_service is not None:
         try:
+            from app.services.remnawave_service import get_panel_user_ref
+
             async with remnawave_service.get_api_client() as api:
-                panel_user = await api.get_user_by_uuid(uuid)
+                _uuid, _remna_id = await get_panel_user_ref(
+                    api, db, user=user, subscription=subscription
+                )
+                if _uuid or _remna_id:
+                    panel_user = await api.get_user_by_uuid(_uuid, remna_id=_remna_id)
+                else:
+                    panel_user = None
             if panel_user is not None:
                 online_at = panel_user.online_at
                 # online_at из _parse_optional_datetime всегда tz-aware (UTC+00:00)
@@ -395,7 +396,6 @@ async def is_user_dormant_for_autopay(db, subscription, user, now=None, remnawav
         except Exception as e:
             logger.debug(
                 'VPN activity check failed, falling back to app activity',
-                uuid=uuid,
                 error=str(e),
             )
             online_at = None
@@ -406,7 +406,6 @@ async def is_user_dormant_for_autopay(db, subscription, user, now=None, remnawav
         logger.debug(
             'Activity gate [VPN signal]',
             user_id=getattr(user, 'id', None),
-            uuid=uuid,
             online_at=online_at,
             days_inactive=days_inactive,
             threshold=threshold,

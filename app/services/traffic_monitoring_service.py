@@ -919,6 +919,10 @@ class TrafficMonitoringService:
             threshold_bytes = threshold_gb * (1024**3)
 
             # Получаем пользователя из Remnawave
+            # TODO(v3): get_panel_user_ref недоступен здесь — нет ORM-объекта пользователя.
+            # Метод принимает только user_uuid: str; для v3-совместимости нужно либо
+            # передавать ORM-user через параметр, либо резолвить remna_id через
+            # client.resolve_user_id(short_uuid=...). Пока оставляем v2-путь.
             async with self.remnawave_service.get_api_client() as api:
                 user = await api.get_user_by_uuid(user_uuid)
 

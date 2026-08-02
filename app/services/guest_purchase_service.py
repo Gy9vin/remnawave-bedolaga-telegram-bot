@@ -1523,16 +1523,19 @@ async def activate_purchase(db: AsyncSession, purchase_token: str, *, skip_notif
         # (иначе у него останутся в Remnawave 10 хвидов привязок при лимите 1).
         if purchase.is_gift:
             try:
-                panel_uuid = subscription.remnawave_uuid or user.remnawave_uuid
-                if panel_uuid:
-                    async with subscription_service.get_api_client() as api:
-                        await api.reset_user_devices(panel_uuid)
-                    logger.info(
-                        'HWID devices reset on gift activation',
-                        purchase_id=purchase.id,
-                        subscription_id=subscription.id,
-                        panel_uuid=panel_uuid,
+                from app.services.remnawave_service import get_panel_user_ref
+
+                async with subscription_service.get_api_client() as api:
+                    _uuid, _remna_id = await get_panel_user_ref(
+                        api, db, user=user, subscription=subscription
                     )
+                    if _uuid or _remna_id:
+                        await api.reset_user_devices(user_uuid=_uuid, remna_id=_remna_id)
+                        logger.info(
+                            'HWID devices reset on gift activation',
+                            purchase_id=purchase.id,
+                            subscription_id=subscription.id,
+                        )
             except Exception:
                 logger.warning(
                     'Failed to reset HWID devices on gift activation',
