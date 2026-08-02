@@ -176,7 +176,7 @@ async def delete_subscription(
             # sweep never touches the user's other (still-active) subscriptions.
             RemnaWaveWebhookService.mark_intentional_panel_deletion(panel_uuids=[subscription.remnawave_uuid])
             service = SubscriptionService()
-            await service.delete_remnawave_user(subscription.remnawave_uuid)
+            await service.delete_remnawave_user(subscription)
         except Exception as e:
             logger.warning('Failed to delete RemnaWave user on subscription delete', error=e)
 
