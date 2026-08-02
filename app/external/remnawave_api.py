@@ -358,18 +358,24 @@ class RemnaWaveAPI:
             logger.debug('RemnaWave API version forced to 3')
             return 3
 
-        # auto — зондируем
+        # auto — зондируем. Эндпоинт /api/users/stream есть ТОЛЬКО в v3; в v2 он
+        # отдаёт 404 (→ RemnaWaveAPIError → v2). Поэтому любой УСПЕШНЫЙ ответ (без
+        # исключения) означает v3. Тело _make_request возвращает в конверте
+        # {'response': {...}} — данные стрима (users/hasMore/nextCursor) внутри него,
+        # поэтому проверять ключи надо в развёрнутом payload, а не в наружном dict.
         try:
             result = await self._make_request('GET', '/api/users/stream', params={'size': 1})
-            if isinstance(result, dict) and 'users' in result and 'hasMore' in result:
+            payload = result.get('response', result) if isinstance(result, dict) else result
+            if isinstance(payload, dict) and ('users' in payload or 'hasMore' in payload):
                 logger.info('RemnaWave version probe: detected v3 (stream endpoint available)')
-                return 3
-            # Неожиданный формат ответа — консервативный фолбэк
-            logger.warning(
-                'RemnaWave version probe: unexpected response format %r, defaulting to v2',
-                list(result.keys()) if isinstance(result, dict) else type(result).__name__,
-            )
-            return 2
+            else:
+                # 200 без ожидаемых ключей — эндпоинт всё равно существует (в v2 был бы
+                # 404), значит панель v3. НЕ откатываемся в v2 на успешном ответе.
+                logger.info(
+                    'RemnaWave version probe: stream endpoint responded 200 (payload keys=%r) → v3',
+                    list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+                )
+            return 3
         except RemnaWaveAPIError as exc:
             logger.warning(
                 'RemnaWave version probe: stream endpoint unavailable (status=%s), defaulting to v2',

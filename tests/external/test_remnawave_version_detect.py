@@ -65,7 +65,8 @@ async def test_auto_detect_v3_when_stream_returns_users_hasmore():
     """auto mode: stream endpoint returns {users, hasMore, nextCursor} → v3."""
     api = _api()
     api._make_request = AsyncMock(
-        return_value={'users': [], 'hasMore': False, 'nextCursor': None}
+        # _make_request возвращает конверт {'response': {...}} — как реальная панель.
+        return_value={'response': {'users': [], 'hasMore': False, 'nextCursor': None}}
     )
 
     with patch.object(type(settings), 'get_remnawave_api_version', return_value='auto'):
@@ -76,6 +77,32 @@ async def test_auto_detect_v3_when_stream_returns_users_hasmore():
     call_args = api._make_request.call_args
     assert call_args.args[0] == 'GET'
     assert '/api/users/stream' in call_args.args[1]
+
+
+# ---------------------------------------------------------------------------
+# (c-regression) auto + реальный конверт {'response': {...}} → v3
+# Прод-баг 2026-08-02: проба искала ключи в наружном dict ['response'] и
+# ошибочно откатывалась в v2, ломая v3-панель (userId=NaN на get_user_by_uuid).
+# ---------------------------------------------------------------------------
+
+async def test_auto_detect_v3_unwraps_response_envelope():
+    """auto: конверт {'response': {users, hasMore}} должен дать v3 (регресс прод-бага)."""
+    api = _api()
+    api._make_request = AsyncMock(
+        return_value={'response': {'users': [{'id': 1}], 'hasMore': False, 'nextCursor': None}}
+    )
+    with patch.object(type(settings), 'get_remnawave_api_version', return_value='auto'):
+        version = await api.get_api_version()
+    assert version == 3
+
+
+async def test_auto_detect_v3_on_200_without_expected_keys():
+    """auto: успешный 200 без ожидаемых ключей — эндпоинт есть → v3 (не откатываться в v2)."""
+    api = _api()
+    api._make_request = AsyncMock(return_value={'response': {'unexpected': 'shape'}})
+    with patch.object(type(settings), 'get_remnawave_api_version', return_value='auto'):
+        version = await api.get_api_version()
+    assert version == 3
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +143,8 @@ async def test_get_api_version_caches_result():
     """Once detected, get_api_version() must return cached value without reprobing."""
     api = _api()
     api._make_request = AsyncMock(
-        return_value={'users': [], 'hasMore': False, 'nextCursor': None}
+        # _make_request возвращает конверт {'response': {...}} — как реальная панель.
+        return_value={'response': {'users': [], 'hasMore': False, 'nextCursor': None}}
     )
 
     with patch.object(type(settings), 'get_remnawave_api_version', return_value='auto'):
@@ -148,7 +176,8 @@ async def test_api_version_property_returns_cached_after_detection():
     """After get_api_version() runs, the api_version property returns the cached int."""
     api = _api()
     api._make_request = AsyncMock(
-        return_value={'users': [], 'hasMore': False, 'nextCursor': None}
+        # _make_request возвращает конверт {'response': {...}} — как реальная панель.
+        return_value={'response': {'users': [], 'hasMore': False, 'nextCursor': None}}
     )
 
     with patch.object(type(settings), 'get_remnawave_api_version', return_value='auto'):
