@@ -37,7 +37,9 @@ class FakeRemnawaveApi:
         self.user = user
         self.updates: list[dict[str, Any]] = []
 
-    async def get_user_by_uuid(self, remnawave_uuid: str) -> SimpleNamespace | None:
+    async def get_user_by_uuid(self, remnawave_uuid: str | None = None, *, remna_id: int | None = None) -> SimpleNamespace | None:
+        if remna_id is not None:
+            return self.user
         return self.user if remnawave_uuid == self.user.uuid else None
 
     async def update_user(self, **kwargs: Any) -> SimpleNamespace:
