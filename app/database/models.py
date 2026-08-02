@@ -2086,6 +2086,7 @@ class User(Base):
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now())
     last_activity = Column(AwareDateTime(), default=func.now())
     remnawave_uuid = Column(String(255), nullable=True, unique=True)
+    remnawave_id = Column(BigInteger, nullable=True, index=True)
     is_penalized = Column(Boolean, default=False, nullable=False, server_default='false')
     pre_penalty_squads = Column(JSONB, nullable=True)  # сохранённый список internal squads до штрафа
 
