@@ -377,7 +377,10 @@ class SubscriptionService:
                 if existing:
                     if settings.RESET_DEVICES_ON_RENEWAL:
                         try:
-                            await api.reset_user_devices(existing.uuid or str(existing.id or ''))
+                            _rd_uuid, _rd_remna_id = await _get_panel_user_ref()(
+                                api, db, user=user, subscription=subscription
+                            )
+                            await api.reset_user_devices(uuid=_rd_uuid, remna_id=_rd_remna_id)
                         except Exception as hwid_error:
                             logger.warning('⚠️ Не удалось сбросить HWID', hwid_error=hwid_error)
 
@@ -498,7 +501,10 @@ class SubscriptionService:
 
             if settings.RESET_DEVICES_ON_RENEWAL:
                 try:
-                    await api.reset_user_devices(remnawave_user.uuid or str(remnawave_user.id or ''))
+                    _rd2_uuid, _rd2_remna_id = await _get_panel_user_ref()(
+                        api, db, user=user, subscription=subscription
+                    )
+                    await api.reset_user_devices(uuid=_rd2_uuid, remna_id=_rd2_remna_id)
                     logger.info('🔧 Сброшены HWID устройства', _format_user_log=self._format_user_log(user))
                 except Exception as hwid_error:
                     logger.warning('⚠️ Не удалось сбросить HWID', hwid_error=hwid_error)
@@ -843,20 +849,28 @@ class SubscriptionService:
             logger.error('Ошибка отключения RemnaWave пользователя', error=e)
             return False
 
-    async def delete_remnawave_user(self, user_uuid: str) -> bool:
-        """Полное удаление пользователя из панели RemnaWave (хуки прекращаются)."""
+    async def delete_remnawave_user(self, subscription: 'Subscription', db: 'AsyncSession | None' = None) -> bool:
+        """Полное удаление пользователя из панели RemnaWave (хуки прекращаются).
+
+        subscription — ORM-объект Subscription; поддерживает v2 (uuid) и v3 (remna_id).
+        db — сессия SQLAlchemy (нужна для персистентности remna_id в v3).
+        """
+        _log_uuid = getattr(subscription, 'remnawave_uuid', None) or getattr(subscription, 'id', None)
         try:
             async with self.get_api_client() as api:
-                await api.delete_user(user_uuid)
-                logger.info('🗑 Удалён RemnaWave пользователь', user_uuid=user_uuid)
+                uuid, remna_id = await _get_panel_user_ref()(
+                    api, db, subscription=subscription
+                )
+                await api.delete_user(uuid=uuid, remna_id=remna_id)
+                logger.info('🗑 Удалён RemnaWave пользователь', user_uuid=_log_uuid)
                 return True
 
         except Exception as e:
             error_msg = str(e).lower()
             if 'not found' in error_msg or 'not exist' in error_msg:
-                logger.info('🗑 RemnaWave пользователь уже удалён', user_uuid=user_uuid)
+                logger.info('🗑 RemnaWave пользователь уже удалён', user_uuid=_log_uuid)
                 return True
-            logger.error('Ошибка удаления RemnaWave пользователя', error=e, user_uuid=user_uuid)
+            logger.error('Ошибка удаления RemnaWave пользователя', error=e, user_uuid=_log_uuid)
             return False
 
     async def enable_remnawave_user(self, user_uuid: str, db: AsyncSession | None = None) -> bool:

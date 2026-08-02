@@ -98,7 +98,8 @@ async def get_panel_user_ref(
 
     if resolved_id is not None and user is not None:
         user.remnawave_id = resolved_id
-        await db.commit()
+        if db is not None:
+            await db.commit()
         return (None, resolved_id)
 
     if resolved_id is None:
@@ -2715,6 +2716,10 @@ class RemnaWaveService:
                                             )
 
                                 if panel_uuid:
+                                    # Для v3 разрешаем remna_id через get_panel_user_ref
+                                    _bs_uuid, _bs_remna_id = await get_panel_user_ref(
+                                        api, db, user=user, subscription=sub
+                                    )
                                     update_kwargs = dict(
                                         uuid=panel_uuid,
                                         status=status,
@@ -2725,6 +2730,8 @@ class RemnaWaveService:
                                         description=create_kwargs['description'],
                                         active_internal_squads=sub.connected_squads,
                                     )
+                                    if _bs_remna_id is not None:
+                                        update_kwargs['remna_id'] = _bs_remna_id
 
                                     if hwid_limit is not None:
                                         update_kwargs['hwid_device_limit'] = hwid_limit
@@ -2866,31 +2873,51 @@ class RemnaWaveService:
             logger.error('Ошибка получения статистики трафика для пользователя', telegram_id=telegram_id, error=e)
             return None
 
-    async def get_user_traffic_stats_by_uuid(self, remnawave_uuid: str) -> dict[str, Any] | None:
+    async def get_user_traffic_stats_by_uuid(self, subscription_or_user, db: 'AsyncSession | None' = None) -> dict[str, Any] | None:
         """
-        Получить статистику трафика по RemnaWave UUID.
+        Получить статистику трафика по объекту Subscription или User.
 
-        Используется для email-пользователей у которых нет telegram_id.
+        subscription_or_user — ORM-объект Subscription или User.
+        db — сессия SQLAlchemy (нужна для персистентности remna_id в v3; если None,
+             используется только кешированный user.remnawave_id).
+        Поддерживает v2 (uuid) и v3 (remna_id) через get_panel_user_ref.
         """
+        from app.database.models import Subscription as _Subscription, User as _User  # noqa: PLC0415
+
+        # Определяем типы переданного объекта
+        _sub_arg = subscription_or_user if isinstance(subscription_or_user, _Subscription) else None
+        _user_arg = subscription_or_user if isinstance(subscription_or_user, _User) else None
+        if _sub_arg is not None and getattr(_sub_arg, 'user', None) is not None:
+            _user_arg = _sub_arg.user
+
+        _log_id = (
+            getattr(_sub_arg, 'id', None)
+            or getattr(_user_arg, 'telegram_id', None)
+            or repr(subscription_or_user)
+        )
+
         try:
             async with self.get_api_client() as api:
-                user = await api.get_user_by_uuid(remnawave_uuid)
+                uuid, remna_id = await get_panel_user_ref(
+                    api, db, user=_user_arg, subscription=_sub_arg
+                )
+                panel_user = await api.get_user_by_uuid(uuid=uuid, remna_id=remna_id)
 
-                if not user:
+                if not panel_user:
                     return None
 
                 return {
-                    'used_traffic_bytes': user.used_traffic_bytes,
-                    'used_traffic_gb': user.used_traffic_bytes / (1024**3),
-                    'lifetime_used_traffic_bytes': user.lifetime_used_traffic_bytes,
-                    'lifetime_used_traffic_gb': user.lifetime_used_traffic_bytes / (1024**3),
-                    'traffic_limit_bytes': user.traffic_limit_bytes,
-                    'traffic_limit_gb': user.traffic_limit_bytes / (1024**3) if user.traffic_limit_bytes > 0 else 0,
-                    'subscription_url': user.subscription_url,
+                    'used_traffic_bytes': panel_user.used_traffic_bytes,
+                    'used_traffic_gb': panel_user.used_traffic_bytes / (1024**3),
+                    'lifetime_used_traffic_bytes': panel_user.lifetime_used_traffic_bytes,
+                    'lifetime_used_traffic_gb': panel_user.lifetime_used_traffic_bytes / (1024**3),
+                    'traffic_limit_bytes': panel_user.traffic_limit_bytes,
+                    'traffic_limit_gb': panel_user.traffic_limit_bytes / (1024**3) if panel_user.traffic_limit_bytes > 0 else 0,
+                    'subscription_url': panel_user.subscription_url,
                 }
 
         except Exception as e:
-            logger.error('Ошибка получения статистики трафика по UUID', remnawave_uuid=remnawave_uuid, error=e)
+            logger.error('Ошибка получения статистики трафика по UUID', log_id=_log_id, error=e)
             return None
 
     async def get_telegram_id_by_email(self, user_identifier: str) -> int | None:
@@ -3185,23 +3212,27 @@ class RemnaWaveService:
 
             logger.info('🗑️ ПРИНУДИТЕЛЬНАЯ полная очистка данных пользователя', user_id_display=user_id_display)
 
-            # Reset devices for all subscription UUIDs in multi-tariff, or user UUID in single-tariff
-            _uuids_to_reset = set()
+            # Reset devices for all subscriptions in multi-tariff, or user in single-tariff
+            # Поддерживаем v2 (uuid) и v3 (remna_id) через get_panel_user_ref
+            _reset_targets: list[tuple] = []  # list of (sub_or_None, user_or_None)
             if settings.is_multi_tariff_enabled():
                 user_subs = getattr(user, 'subscriptions', []) or []
-                for sub in user_subs:
-                    _sub_uuid = getattr(sub, 'remnawave_uuid', None)
-                    if _sub_uuid:
-                        _uuids_to_reset.add(_sub_uuid)
-            if not _uuids_to_reset and user.remnawave_uuid:
-                _uuids_to_reset.add(user.remnawave_uuid)
+                for _sub in user_subs:
+                    if getattr(_sub, 'remnawave_uuid', None) or getattr(user, 'remnawave_id', None):
+                        _reset_targets.append((_sub, user))
+            if not _reset_targets:
+                if user.remnawave_uuid or getattr(user, 'remnawave_id', None):
+                    _reset_targets.append((None, user))
 
-            for _uuid in _uuids_to_reset:
+            for _rt_sub, _rt_user in _reset_targets:
                 try:
                     async with self.get_api_client() as api:
-                        await api.reset_user_devices(_uuid)
+                        _rt_uuid, _rt_remna_id = await get_panel_user_ref(
+                            api, db, user=_rt_user, subscription=_rt_sub
+                        )
+                        await api.reset_user_devices(uuid=_rt_uuid, remna_id=_rt_remna_id)
                 except Exception as e:
-                    logger.warning('Failed to reset devices for UUID', uuid=_uuid, error=e)
+                    logger.warning('Failed to reset devices', user_id=user_id_display, error=e)
 
             try:
                 from sqlalchemy import delete
