@@ -3793,11 +3793,12 @@ async def confirm_tariff_switch(
             )
         if _reset_uuid:
             try:
-                from app.services.remnawave_service import RemnaWaveService
+                from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
                 service = RemnaWaveService()
                 async with service.get_api_client() as api:
-                    await api.reset_user_devices(_reset_uuid)
+                    uuid, remna_id = await get_panel_user_ref(api, db, user=db_user, subscription=subscription)
+                    await api.reset_user_devices(uuid=uuid, remna_id=remna_id)
                     logger.info('🔧 Сброшены устройства при смене тарифа для user_id', db_user_id=db_user.id)
             except Exception as e:
                 logger.error('Ошибка сброса устройств при смене тарифа', error=e)
@@ -4082,11 +4083,12 @@ async def confirm_daily_tariff_switch(
             )
         if _reset_uuid_daily:
             try:
-                from app.services.remnawave_service import RemnaWaveService
+                from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
                 service = RemnaWaveService()
                 async with service.get_api_client() as api:
-                    await api.reset_user_devices(_reset_uuid_daily)
+                    uuid, remna_id = await get_panel_user_ref(api, db, user=db_user, subscription=subscription)
+                    await api.reset_user_devices(uuid=uuid, remna_id=remna_id)
                     logger.info('🔧 Сброшены устройства при смене на суточный тариф для user_id', db_user_id=db_user.id)
             except Exception as e:
                 logger.error('Ошибка сброса устройств при смене тарифа', error=e)
@@ -5024,11 +5026,12 @@ async def confirm_instant_switch(
             )
         if _reset_uuid_instant:
             try:
-                from app.services.remnawave_service import RemnaWaveService
+                from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
                 service = RemnaWaveService()
                 async with service.get_api_client() as api:
-                    await api.reset_user_devices(_reset_uuid_instant)
+                    uuid, remna_id = await get_panel_user_ref(api, db, user=db_user, subscription=subscription)
+                    await api.reset_user_devices(uuid=uuid, remna_id=remna_id)
                     logger.info(
                         '🔧 Сброшены устройства при мгновенном переключении тарифа для user_id', db_user_id=db_user.id
                     )

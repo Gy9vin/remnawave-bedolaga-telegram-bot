@@ -4275,7 +4275,7 @@ async def delete_user_subscription(callback: types.CallbackQuery, db_user: User,
             from app.services.subscription_service import SubscriptionService
 
             service = SubscriptionService()
-            await service.delete_remnawave_user(subscription.remnawave_uuid)
+            await service.delete_remnawave_user(subscription, db=db)
         except Exception as e:
             logger.warning('Failed to delete RemnaWave user', error=e)
 
@@ -5086,8 +5086,11 @@ async def reset_user_devices(callback: types.CallbackQuery, db_user: User, db: A
     )
 
     try:
+        from app.services.remnawave_service import get_panel_user_ref
+
         user = await get_user_by_id(db, user_id)
         _uuid = None
+        subscription = None
         if subscription_id and settings.is_multi_tariff_enabled():
             from app.database.crud.subscription import get_subscription_by_id_for_user
 
@@ -5104,7 +5107,8 @@ async def reset_user_devices(callback: types.CallbackQuery, db_user: User, db: A
 
         remnawave_service = RemnaWaveService()
         async with remnawave_service.get_api_client() as api:
-            success = await api.reset_user_devices(_uuid)
+            uuid, remna_id = await get_panel_user_ref(api, db, user=user, subscription=subscription)
+            success = await api.reset_user_devices(uuid=uuid, remna_id=remna_id)
 
         if success:
             await callback.message.edit_text(
