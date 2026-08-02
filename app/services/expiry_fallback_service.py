@@ -115,18 +115,26 @@ def _is_dev_user_allowed(subscription: Subscription) -> bool:
     return str(subscription.user_id) in ids
 
 
-async def _get_remnawave_user(remnawave_uuid: str):
+async def _get_remnawave_user(remnawave_uuid: str, db=None, subscription=None):
     """Достаёт юзера из Remnawave.
 
     Возвращает None если:
       - 404 (юзер удалён в панели) — нормальный кейс, не логируем как ошибку
       - сетевая/другая ошибка — лог error
+
+    db + subscription используются для разрешения идентификатора на v3
+    через get_panel_user_ref (v2: передаёт uuid без изменений).
     """
     from app.external.remnawave_api import RemnaWaveAPIError
-    from app.services.remnawave_service import remnawave_service
+    from app.services.remnawave_service import remnawave_service, get_panel_user_ref
     try:
         async with remnawave_service.get_api_client() as api:
-            return await api.get_user_by_uuid(remnawave_uuid)
+            if db is not None and subscription is not None:
+                user = getattr(subscription, 'user', None)
+                uuid, remna_id = await get_panel_user_ref(api, db, subscription=subscription, user=user)
+            else:
+                uuid, remna_id = remnawave_uuid, None
+            return await api.get_user_by_uuid(uuid=uuid, remna_id=remna_id)
     except RemnaWaveAPIError as exc:
         if getattr(exc, 'status_code', None) == 404:
             logger.debug('Remnawave: юзер не найден (404)', remnawave_uuid=remnawave_uuid)
@@ -145,17 +153,28 @@ async def _patch_user_full(
     expire_at: datetime | None = None,
     traffic_limit_bytes: int | None = None,
     verify_squad_in: list[str] | None = None,
+    db=None,
+    subscription=None,
 ) -> bool:
     """Обновляет юзера в Remnawave и при ошибке/conflict проверяет реальное состояние.
 
     verify_squad_in — UUID(ы) ожидаемых сквадов для верификации. Если PATCH вернул
     409 или ошибку, мы делаем get_user и проверяем не применилось ли уже.
+
+    db + subscription используются для разрешения идентификатора на v3
+    через get_panel_user_ref (v2: передаёт uuid без изменений).
     """
-    from app.services.remnawave_service import remnawave_service
+    from app.services.remnawave_service import remnawave_service, get_panel_user_ref
     try:
         async with remnawave_service.get_api_client() as api:
+            if db is not None and subscription is not None:
+                user = getattr(subscription, 'user', None)
+                uuid, remna_id = await get_panel_user_ref(api, db, subscription=subscription, user=user)
+            else:
+                uuid, remna_id = remnawave_uuid, None
             await api.update_user(
-                uuid=remnawave_uuid,
+                uuid=uuid,
+                remna_id=remna_id,
                 active_internal_squads=squads if squads is not None else None,
                 expire_at=expire_at,
                 traffic_limit_bytes=traffic_limit_bytes,
@@ -168,7 +187,12 @@ async def _patch_user_full(
         if is_conflict and verify_squad_in:
             try:
                 async with remnawave_service.get_api_client() as api:
-                    verified = await api.get_user_by_uuid(remnawave_uuid)
+                    if db is not None and subscription is not None:
+                        user = getattr(subscription, 'user', None)
+                        uuid, remna_id = await get_panel_user_ref(api, db, subscription=subscription, user=user)
+                    else:
+                        uuid, remna_id = remnawave_uuid, None
+                    verified = await api.get_user_by_uuid(uuid=uuid, remna_id=remna_id)
                 if verified:
                     actual = set(_extract_squad_uuids(getattr(verified, 'active_internal_squads', None)))
                     expected = set(verify_squad_in)
@@ -191,7 +215,7 @@ async def _patch_user_full(
         return False
 
 
-async def _reset_remnawave_traffic(remnawave_uuid: str) -> bool:
+async def _reset_remnawave_traffic(remnawave_uuid: str, db=None, subscription=None) -> bool:
     """Сбрасывает счётчик used_traffic_bytes юзера в Remnawave в 0.
 
     Используется при move_to_fallback(reason='expired') — после сброса
@@ -199,11 +223,19 @@ async def _reset_remnawave_traffic(remnawave_uuid: str) -> bool:
     обычно доли GB. Резкий рост = squad настроен неправильно.
 
     Не критичен: если не получилось, продолжаем (move уже прошёл).
+
+    db + subscription используются для разрешения идентификатора на v3
+    через get_panel_user_ref (v2: передаёт uuid без изменений).
     """
-    from app.services.remnawave_service import remnawave_service
+    from app.services.remnawave_service import remnawave_service, get_panel_user_ref
     try:
         async with remnawave_service.get_api_client() as api:
-            await api.reset_user_traffic(remnawave_uuid)
+            if db is not None and subscription is not None:
+                user = getattr(subscription, 'user', None)
+                uuid, remna_id = await get_panel_user_ref(api, db, subscription=subscription, user=user)
+            else:
+                uuid, remna_id = remnawave_uuid, None
+            await api.reset_user_traffic(uuid=uuid, remna_id=remna_id)
         logger.info('🔄 Сброшен трафик в Remnawave (move to fallback)', remnawave_uuid=remnawave_uuid)
         return True
     except Exception as exc:
@@ -263,7 +295,7 @@ async def move_to_fallback(
         return True
 
     # Считываем текущее состояние юзера в Remnawave
-    rw_user = await _get_remnawave_user(subscription.remnawave_uuid)
+    rw_user = await _get_remnawave_user(subscription.remnawave_uuid, db=db, subscription=subscription)
     if not rw_user:
         return False
 
@@ -288,6 +320,8 @@ async def move_to_fallback(
         expire_at=new_expire_at,
         traffic_limit_bytes=new_traffic_limit,
         verify_squad_in=[fallback_uuid],
+        db=db,
+        subscription=subscription,
     )
     if not ok:
         return False
@@ -297,7 +331,7 @@ async def move_to_fallback(
     # Сброс нужен чтобы по счётчику было видно реальный fallback-трафик
     # (Telegram + банки) — должно быть ~доли GB, аномалия = утечка в squad'е.
     if reason == 'expired':
-        await _reset_remnawave_traffic(subscription.remnawave_uuid)
+        await _reset_remnawave_traffic(subscription.remnawave_uuid, db=db, subscription=subscription)
         subscription.traffic_used_gb = 0.0
         subscription.traffic_reset_at = datetime.now(UTC)
 
@@ -411,8 +445,12 @@ async def regrace_disabled_subscriptions(db: AsyncSession) -> dict:
         try:
             # enable юзера в Remnawave (после cleanup он DISABLED там)
             try:
+                from app.services.remnawave_service import get_panel_user_ref
                 async with remnawave_service.get_api_client() as api:
-                    await api.enable_user(sub.remnawave_uuid)
+                    _uuid, _remna_id = await get_panel_user_ref(
+                        api, db, subscription=sub, user=sub.user,
+                    )
+                    await api.enable_user(uuid=_uuid, remna_id=_remna_id)
             except Exception as enable_exc:
                 logger.warning(
                     'regrace: enable_user failed, continuing',
@@ -646,6 +684,10 @@ async def scan_and_restore_active(db: AsyncSession) -> dict:
             active_end = active_end.replace(tzinfo=UTC)
 
         try:
+            # TODO(v3): здесь нет загруженного User-объекта (только user_id),
+            # поэтому db/subscription не передаём — _patch_user_full упадёт на v3
+            # если у подписки нет remnawave_uuid. Для полной поддержки v3 нужно
+            # загрузить User через selectinload(Subscription.user) в запросе выше.
             ok = await _patch_user_full(
                 active_sub.remnawave_uuid,
                 squads=active_sub.connected_squads or [],
@@ -738,6 +780,8 @@ async def restore_from_fallback(
         expire_at=expire_at,
         traffic_limit_bytes=traffic_limit,
         verify_squad_in=saved_squads,
+        db=db,
+        subscription=subscription,
     )
     if not ok:
         return False
@@ -986,6 +1030,10 @@ async def reconcile_fallback_subscriptions(db: AsyncSession) -> dict:
         try:
             # Защита от повторного загона: если админ уже вытащил юзера в панели
             # (or дал ему доступ через продление), пропускаем — не отменяем admin action.
+            # TODO(v3): lost_subs загружены без selectinload(Subscription.user),
+            # поэтому db/subscription не передаём — на v3 будет использован uuid из БД.
+            # Для полной поддержки v3 добавить .options(selectinload(Subscription.user))
+            # в запрос lost_subs выше и передать db=db, subscription=sub.
             rw_user = await _get_remnawave_user(sub.remnawave_uuid)
             if rw_user is not None:
                 current_squads = set(
@@ -1061,9 +1109,13 @@ async def _reconcile_single_active_fallback(
             from app.services.remnawave_service import remnawave_service
             try:
                 if sub.remnawave_uuid:
+                    from app.services.remnawave_service import get_panel_user_ref
                     async with remnawave_service.get_api_client() as api:
+                        _uuid, _remna_id = await get_panel_user_ref(
+                            api, db, subscription=sub, user=sub.user,
+                        )
                         try:
-                            await api.disable_user(sub.remnawave_uuid)
+                            await api.disable_user(uuid=_uuid, remna_id=_remna_id)
                         except RemnaWaveAPIError as api_exc:
                             # Идемпотентность: юзер уже DISABLED в Remnawave
                             # (предыдущий cleanup, ручная блокировка админа,
@@ -1124,7 +1176,7 @@ async def _reconcile_single_active_fallback(
             )
         return
 
-    rw_user = await _get_remnawave_user(sub.remnawave_uuid)
+    rw_user = await _get_remnawave_user(sub.remnawave_uuid, db=db, subscription=sub)
     if not rw_user:
         return
 
@@ -1207,6 +1259,8 @@ async def _reconcile_single_active_fallback(
             expire_at=new_grace_expire_at,
             traffic_limit_bytes=int(current_traffic_limit) if current_traffic_limit else None,
             verify_squad_in=[fallback_uuid],
+            db=db,
+            subscription=sub,
         )
         if ok:
             stats['extended_grace'] += 1
