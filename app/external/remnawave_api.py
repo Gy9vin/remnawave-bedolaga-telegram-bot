@@ -324,6 +324,68 @@ class RemnaWaveAPI:
         self.auth_type = auth_type.lower() if auth_type else 'api_key'
         self.session: aiohttp.ClientSession | None = None
         self.authenticated = False
+        # Версия API панели: None — ещё не определена, 2 или 3 — уже закэширована.
+        # Инициализируется лениво через get_api_version() / _detect_api_version().
+        self._api_version: int | None = None
+
+    @property
+    def api_version(self) -> int:
+        """Возвращает закэшированную версию API.
+
+        Выбрасывает RuntimeError, если get_api_version() ещё не вызывался.
+        """
+        if self._api_version is None:
+            raise RuntimeError(
+                'api_version accessed before detection; call await get_api_version() first'
+            )
+        return self._api_version
+
+    async def _detect_api_version(self) -> int:
+        """Определить версию API панели RemnaWave.
+
+        Алгоритм:
+          - '2' → сразу вернуть 2 (без сетевого вызова)
+          - '3' → сразу вернуть 3 (без сетевого вызова)
+          - 'auto' → зондируем GET /api/users/stream?size=1:
+              * ответ содержит ключи 'users' и 'hasMore' → v3
+              * RemnaWaveAPIError (404 и др.) → v2 (безопасный фолбэк) + warning
+        """
+        forced = settings.get_remnawave_api_version()
+        if forced == '2':
+            logger.debug('RemnaWave API version forced to 2')
+            return 2
+        if forced == '3':
+            logger.debug('RemnaWave API version forced to 3')
+            return 3
+
+        # auto — зондируем
+        try:
+            result = await self._make_request('GET', '/api/users/stream', params={'size': 1})
+            if isinstance(result, dict) and 'users' in result and 'hasMore' in result:
+                logger.info('RemnaWave version probe: detected v3 (stream endpoint available)')
+                return 3
+            # Неожиданный формат ответа — консервативный фолбэк
+            logger.warning(
+                'RemnaWave version probe: unexpected response format %r, defaulting to v2',
+                list(result.keys()) if isinstance(result, dict) else type(result).__name__,
+            )
+            return 2
+        except RemnaWaveAPIError as exc:
+            logger.warning(
+                'RemnaWave version probe: stream endpoint unavailable (status=%s), defaulting to v2',
+                exc.status_code,
+            )
+            return 2
+
+    async def get_api_version(self) -> int:
+        """Вернуть версию API панели (lazy-кэш).
+
+        При первом вызове запускает _detect_api_version() и сохраняет результат.
+        Последующие вызовы возвращают кэш без сетевых запросов.
+        """
+        if self._api_version is None:
+            self._api_version = await self._detect_api_version()
+        return self._api_version
 
     def _detect_connection_type(self) -> str:
         parsed = urlparse(self.base_url)

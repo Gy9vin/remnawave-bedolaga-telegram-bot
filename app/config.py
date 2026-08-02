@@ -226,6 +226,9 @@ class Settings(BaseSettings):
     REMNAWAVE_API_URL: str | None = None
     REMNAWAVE_API_KEY: str | None = None
     REMNAWAVE_SECRET_KEY: str | None = None
+    # Версия API панели: 'auto' (зондирование при первом обращении), '2' или '3'.
+    # Значение '2' — безопасный фолбэк: весь старый код работает без изменений.
+    REMNAWAVE_API_VERSION: str = 'auto'
 
     # HTTP-таймауты запросов к панели RemnaWave (секунды). Self-hosted панели
     # бывают медленными на коннект: раньше connect был зашит в 10с, из-за чего
@@ -2073,6 +2076,23 @@ class Settings(BaseSettings):
             return normalized in {'1', 'true', 'yes', 'on'}
 
         return bool(value)
+
+    def get_remnawave_api_version(self) -> str:
+        """Вернуть нормализованную версию API панели: 'auto', '2' или '3'.
+
+        Принимает строки вида '2', '3', 'auto'; обрезает пробелы.
+        Неизвестные значения трактуются как 'auto' (безопасный режим зондирования).
+        """
+        try:
+            raw = self.REMNAWAVE_API_VERSION
+        except AttributeError:
+            return 'auto'
+        if not isinstance(raw, str):
+            return 'auto'
+        normalized = raw.strip().lower()
+        if normalized in ('2', '3'):
+            return normalized
+        return 'auto'
 
     def get_available_languages(self) -> list[str]:
         defaults = ['ru', 'en', 'ua', 'zh', 'fa']
