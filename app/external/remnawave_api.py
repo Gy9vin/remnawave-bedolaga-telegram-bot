@@ -702,6 +702,25 @@ class RemnaWaveAPI:
             raise
 
     async def get_user_by_telegram_id(self, telegram_id: int) -> list[RemnaWaveUser]:
+        await self.get_api_version()
+        if self._api_version == 3:
+            # v3: by-telegram-id удалён; используем stream-endpoint
+            try:
+                response = await self._make_request(
+                    'GET',
+                    '/api/users/stream',
+                    params={'telegramId': telegram_id, 'size': 1},
+                )
+                users_data = response.get('users', [])
+                if not users_data:
+                    return []
+                users = [self._parse_user(u) for u in users_data]
+                return [await self.enrich_user_with_happ_link(u) for u in users]
+            except RemnaWaveAPIError as e:
+                if e.status_code == 404:
+                    return []
+                raise
+        # v2: оригинальный endpoint
         try:
             response = await self._make_request('GET', f'/api/users/by-telegram-id/{telegram_id}')
             users_data = response.get('response', [])
@@ -726,6 +745,25 @@ class RemnaWaveAPI:
 
     async def get_user_by_email(self, email: str) -> list[RemnaWaveUser]:
         """Get users by email address."""
+        await self.get_api_version()
+        if self._api_version == 3:
+            # v3: by-email удалён; используем stream-endpoint
+            try:
+                response = await self._make_request(
+                    'GET',
+                    '/api/users/stream',
+                    params={'email': email, 'size': 1},
+                )
+                users_data = response.get('users', [])
+                if not users_data:
+                    return []
+                users = [self._parse_user(u) for u in users_data]
+                return [await self.enrich_user_with_happ_link(u) for u in users]
+            except RemnaWaveAPIError as e:
+                if e.status_code == 404:
+                    return []
+                raise
+        # v2: оригинальный endpoint
         try:
             response = await self._make_request('GET', f'/api/users/by-email/{email}')
             users_data = response.get('response', [])
@@ -739,6 +777,38 @@ class RemnaWaveAPI:
         except RemnaWaveAPIError as e:
             if e.status_code == 404:
                 return []
+            raise
+
+    async def resolve_user_id(
+        self,
+        *,
+        short_uuid: str | None = None,
+        username: str | None = None,
+        remna_id: int | None = None,
+    ) -> int | None:
+        """Вернуть числовой id пользователя панели через POST /api/users/resolve (v3).
+
+        На v2 возвращает None — endpoint не существует.
+        При 404 (пользователь не найден) также возвращает None.
+        Приоритет ключей: short_uuid > username > remna_id.
+        """
+        await self.get_api_version()
+        if self._api_version != 3:
+            return None
+        if short_uuid is not None:
+            body: dict = {'shortUuid': short_uuid}
+        elif username is not None:
+            body = {'username': username}
+        elif remna_id is not None:
+            body = {'id': remna_id}
+        else:
+            raise ValueError('resolve_user_id: необходимо передать short_uuid, username или remna_id')
+        try:
+            response = await self._make_request('POST', '/api/users/resolve', body)
+            return response['id']
+        except RemnaWaveAPIError as e:
+            if e.status_code == 404:
+                return None
             raise
 
     async def get_subscription_request_history(
