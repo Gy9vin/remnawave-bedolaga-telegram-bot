@@ -66,6 +66,32 @@ def _resolve_panel_uuid(subscription: Subscription | None, user: User) -> str | 
     return user.remnawave_uuid
 
 
+async def _panel_ref_for_devices(api, db, subscription, user, fallback_uuid):
+    """Резолвит (user_uuid, remna_id, path_id) для device-операций на v2/v3.
+
+    v2: (uuid, None, uuid). v3: (None, remna_id, str(remna_id)) — числовой id.
+    path_id — то, что кладётся в поле ``userUuid`` raw hwid-запросов
+    (в v3 панель принимает туда числовой id, ср. RemnaWaveAPI.reset_user_devices).
+    При сбое резолва откатываемся на fallback_uuid (сохраняет v2-поведение).
+    """
+    from app.services.remnawave_service import get_panel_user_ref
+
+    try:
+        uuid, remna_id = await get_panel_user_ref(api, db, user=user, subscription=subscription)
+    except Exception:
+        uuid, remna_id = fallback_uuid, None
+    if not uuid and remna_id is None:
+        uuid = fallback_uuid
+    path_id = str(remna_id) if remna_id is not None else uuid
+    return uuid, remna_id, path_id
+
+
+async def _fetch_user_devices(api, db, subscription, user, fallback_uuid):
+    """v2/v3-совместимая загрузка устройств: резолвит идентификатор и зовёт панель."""
+    uuid, remna_id, _ = await _panel_ref_for_devices(api, db, subscription, user, fallback_uuid)
+    return await api.get_user_devices_all(user_uuid=uuid, remna_id=remna_id)
+
+
 @router.post('/devices')
 async def purchase_devices_legacy(
     request: DevicePurchaseRequest,
@@ -934,7 +960,7 @@ async def get_devices(
     try:
         service = RemnaWaveService()
         async with service.get_api_client() as api:
-            response = await api.get_user_devices_all(_puuid)
+            response = await _fetch_user_devices(api, db, subscription, user, _puuid)
 
             devices_list = response.get('devices', [])
             # Подтягиваем все локальные alias'ы юзера одним запросом — дешевле
@@ -1083,7 +1109,8 @@ async def delete_device(
     try:
         service = RemnaWaveService()
         async with service.get_api_client() as api:
-            delete_data = {'userUuid': _puuid, 'hwid': hwid}
+            _, _, _path_id = await _panel_ref_for_devices(api, db, subscription, user, _puuid)
+            delete_data = {'userUuid': _path_id, 'hwid': hwid}
             await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
 
             return {
@@ -1128,7 +1155,7 @@ async def delete_all_devices(
         service = RemnaWaveService()
         async with service.get_api_client() as api:
             # Get all devices first
-            response = await api.get_user_devices_all(_puuid)
+            response = await _fetch_user_devices(api, db, subscription, user, _puuid)
 
             if not response:
                 return {
@@ -1150,7 +1177,8 @@ async def delete_all_devices(
                 device_hwid = device.get('hwid')
                 if device_hwid:
                     try:
-                        delete_data = {'userUuid': _puuid, 'hwid': device_hwid}
+                        _, _, _path_id = await _panel_ref_for_devices(api, db, subscription, user, _puuid)
+                        delete_data = {'userUuid': _path_id, 'hwid': device_hwid}
                         await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
                         deleted_count += 1
                     except Exception as device_error:
@@ -1239,7 +1267,7 @@ async def get_device_reduction_info(
         try:
             service = RemnaWaveService()
             async with service.get_api_client() as api:
-                response = await api.get_user_devices_all(_puuid)
+                response = await _fetch_user_devices(api, db, subscription, user, _puuid)
                 if response:
                     connected_devices_count = response.get('total', 0)
         except Exception as e:
@@ -1330,7 +1358,7 @@ async def reduce_devices(
         try:
             service = RemnaWaveService()
             async with service.get_api_client() as api:
-                response = await api.get_user_devices_all(_puuid)
+                response = await _fetch_user_devices(api, db, subscription, user, _puuid)
                 if response:
                     devices_list = response.get('devices', [])
                     connected_devices_count = len(devices_list)
@@ -1357,7 +1385,8 @@ async def reduce_devices(
                             device_hwid = device.get('hwid')
                             if device_hwid:
                                 try:
-                                    delete_data = {'userUuid': _puuid, 'hwid': device_hwid}
+                                    _, _, _path_id = await _panel_ref_for_devices(api, db, subscription, user, _puuid)
+                                    delete_data = {'userUuid': _path_id, 'hwid': device_hwid}
                                     await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
                                     devices_removed_count += 1
                                     logger.info('Removed device for user', device_hwid=device_hwid, user_id=user.id)
