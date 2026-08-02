@@ -67,8 +67,8 @@ _V3_USER: dict = {
     'userTraffic': None,
 }
 
-# v3 stream-ответ
-_V3_STREAM_RESP = {'users': [_V3_USER], 'nextCursor': None, 'hasMore': False}
+# v3 stream-ответ — _make_request отдаёт конверт {'response': {...}}, как реальная панель.
+_V3_STREAM_RESP = {'response': {'users': [_V3_USER], 'nextCursor': None, 'hasMore': False}}
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ async def test_get_user_by_telegram_id_v3_empty_stream():
     """v3: пустой список users → пустой результат."""
     api = _api()
     _force_version(api, 3)
-    api._make_request = AsyncMock(return_value={'users': [], 'nextCursor': None, 'hasMore': False})
+    api._make_request = AsyncMock(return_value={'response': {'users': [], 'nextCursor': None, 'hasMore': False}})
     api.enrich_user_with_happ_link = AsyncMock(side_effect=lambda u: u)
 
     users = await api.get_user_by_telegram_id(999)
@@ -162,7 +162,7 @@ async def test_get_user_by_email_v3_empty_stream():
     """v3: пустой users → []."""
     api = _api()
     _force_version(api, 3)
-    api._make_request = AsyncMock(return_value={'users': [], 'nextCursor': None, 'hasMore': False})
+    api._make_request = AsyncMock(return_value={'response': {'users': [], 'nextCursor': None, 'hasMore': False}})
     api.enrich_user_with_happ_link = AsyncMock(side_effect=lambda u: u)
 
     users = await api.get_user_by_email('nobody@example.com')
@@ -177,7 +177,7 @@ async def test_resolve_user_id_v3_by_short_uuid():
     """v3 + short_uuid: POST /api/users/resolve {shortUuid:...} → id."""
     api = _api()
     _force_version(api, 3)
-    api._make_request = AsyncMock(return_value={'id': 77, 'username': 'tguser3', 'shortUuid': 'xyz789'})
+    api._make_request = AsyncMock(return_value={'response': {'id': 77, 'username': 'tguser3', 'shortUuid': 'xyz789'}})
 
     result = await api.resolve_user_id(short_uuid='xyz789')
 
@@ -193,7 +193,7 @@ async def test_resolve_user_id_v3_by_username():
     """v3 + username: POST /api/users/resolve {username:...} → id."""
     api = _api()
     _force_version(api, 3)
-    api._make_request = AsyncMock(return_value={'id': 77, 'username': 'tguser3', 'shortUuid': 'xyz789'})
+    api._make_request = AsyncMock(return_value={'response': {'id': 77, 'username': 'tguser3', 'shortUuid': 'xyz789'}})
 
     result = await api.resolve_user_id(username='tguser3')
 
@@ -207,7 +207,7 @@ async def test_resolve_user_id_v3_by_remna_id():
     """v3 + remna_id: POST /api/users/resolve {id:...} → id."""
     api = _api()
     _force_version(api, 3)
-    api._make_request = AsyncMock(return_value={'id': 77, 'username': 'tguser3', 'shortUuid': 'xyz789'})
+    api._make_request = AsyncMock(return_value={'response': {'id': 77, 'username': 'tguser3', 'shortUuid': 'xyz789'}})
 
     result = await api.resolve_user_id(remna_id=77)
 
@@ -221,7 +221,7 @@ async def test_resolve_user_id_v3_prefers_short_uuid_over_username():
     """v3: short_uuid имеет приоритет над username."""
     api = _api()
     _force_version(api, 3)
-    api._make_request = AsyncMock(return_value={'id': 77, 'username': 'tguser3', 'shortUuid': 'xyz789'})
+    api._make_request = AsyncMock(return_value={'response': {'id': 77, 'username': 'tguser3', 'shortUuid': 'xyz789'}})
 
     await api.resolve_user_id(short_uuid='xyz789', username='tguser3')
 

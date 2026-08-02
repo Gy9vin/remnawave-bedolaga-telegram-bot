@@ -717,7 +717,8 @@ class RemnaWaveAPI:
                     '/api/users/stream',
                     params={'telegramId': telegram_id, 'size': 1},
                 )
-                users_data = response.get('users', [])
+                # _make_request возвращает конверт {'response': {'users': [...]}}.
+                users_data = (response.get('response') or {}).get('users', [])
                 if not users_data:
                     return []
                 users = [self._parse_user(u) for u in users_data]
@@ -760,7 +761,8 @@ class RemnaWaveAPI:
                     '/api/users/stream',
                     params={'email': email, 'size': 1},
                 )
-                users_data = response.get('users', [])
+                # _make_request возвращает конверт {'response': {'users': [...]}}.
+                users_data = (response.get('response') or {}).get('users', [])
                 if not users_data:
                     return []
                 users = [self._parse_user(u) for u in users_data]
@@ -811,7 +813,8 @@ class RemnaWaveAPI:
             raise ValueError('resolve_user_id: необходимо передать short_uuid, username или remna_id')
         try:
             response = await self._make_request('POST', '/api/users/resolve', body)
-            return response['id']
+            # Конверт {'response': {id, username, shortUuid}} — разворачиваем.
+            return (response.get('response') or {}).get('id')
         except RemnaWaveAPIError as e:
             if e.status_code == 404:
                 return None
