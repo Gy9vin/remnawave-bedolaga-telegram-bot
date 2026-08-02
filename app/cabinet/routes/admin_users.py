@@ -332,7 +332,7 @@ async def _sync_subscription_to_panel(
             create_panel_user_grace_safe,
             update_panel_user_grace_safe,
         )
-        from app.services.remnawave_service import RemnaWaveService
+        from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
         from app.services.subscription_service import get_traffic_reset_strategy
         from app.utils.subscription_utils import resolve_hwid_device_limit_for_payload
 
@@ -397,7 +397,8 @@ async def _sync_subscription_to_panel(
 
             # Try to find existing user by UUID first
             if panel_uuid:
-                existing_user = await api.get_user_by_uuid(panel_uuid)
+                _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=subscription)
+                existing_user = await api.get_user_by_uuid(uuid=_p_uuid, remna_id=_p_id)
                 if not existing_user:
                     logger.warning('Stale remnawave_uuid, clearing', user_id=user.id, panel_uuid=panel_uuid)
                     panel_uuid = None
@@ -501,15 +502,16 @@ async def _sync_subscription_to_panel(
                 logger.info('Created user in Remnawave panel', user_id=user.id, uuid=new_panel_user.uuid)
 
             # Reset traffic on panel if requested
-            _reset_uuid = subscription.remnawave_uuid if settings.is_multi_tariff_enabled() else user.remnawave_uuid
-            if reset_traffic and _reset_uuid:
-                try:
-                    await api.reset_user_traffic(_reset_uuid)
-                    changes['traffic_reset'] = True
-                    reason_text = f' ({reset_traffic_reason})' if reset_traffic_reason else ''
-                    logger.info('Reset RemnaWave traffic for user', user_id=user.id, reason=reason_text)
-                except Exception as reset_exc:
-                    logger.warning('Failed to reset RemnaWave traffic', user_id=user.id, error=reset_exc)
+            if reset_traffic:
+                _r_uuid, _r_id = await get_panel_user_ref(api, db, user=user, subscription=subscription)
+                if _r_uuid or _r_id:
+                    try:
+                        await api.reset_user_traffic(uuid=_r_uuid, remna_id=_r_id)
+                        changes['traffic_reset'] = True
+                        reason_text = f' ({reset_traffic_reason})' if reset_traffic_reason else ''
+                        logger.info('Reset RemnaWave traffic for user', user_id=user.id, reason=reason_text)
+                    except Exception as reset_exc:
+                        logger.warning('Failed to reset RemnaWave traffic', user_id=user.id, error=reset_exc)
 
             user.last_remnawave_sync = datetime.now(UTC)
             await db.commit()
@@ -896,7 +898,7 @@ async def get_user_panel_info(
         )
 
     try:
-        from app.services.remnawave_service import RemnaWaveService
+        from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
         service = RemnaWaveService()
         if not service.is_configured:
@@ -910,11 +912,15 @@ async def get_user_panel_info(
                 from app.database.crud.subscription import get_subscription_by_id_for_user
 
                 sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
-                if sub and sub.remnawave_uuid:
-                    panel_user = await api.get_user_by_uuid(sub.remnawave_uuid)
+                if sub:
+                    _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=sub)
+                    if _p_uuid or _p_id:
+                        panel_user = await api.get_user_by_uuid(uuid=_p_uuid, remna_id=_p_id)
             # Single-tariff: user-level UUID
-            elif user.remnawave_uuid:
-                panel_user = await api.get_user_by_uuid(user.remnawave_uuid)
+            else:
+                _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user)
+                if _p_uuid or _p_id:
+                    panel_user = await api.get_user_by_uuid(uuid=_p_uuid, remna_id=_p_id)
 
             # Fallback: search by telegram_id (single-tariff only)
             if not panel_user and not settings.is_multi_tariff_enabled() and user.telegram_id:
@@ -2812,7 +2818,7 @@ async def admin_delete_subscription(
             from app.services.subscription_service import SubscriptionService
 
             service = SubscriptionService()
-            await service.delete_remnawave_user(subscription.remnawave_uuid)
+            await service.delete_remnawave_user(subscription)
         except Exception as e:
             logger.warning('Failed to delete RemnaWave user', error=e)
 
@@ -3695,7 +3701,7 @@ async def get_user_sync_status(
     differences = []
 
     try:
-        from app.services.remnawave_service import RemnaWaveService
+        from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
         service = RemnaWaveService()
         if service.is_configured:
@@ -3703,8 +3709,11 @@ async def get_user_sync_status(
                 panel_user = None
 
                 # Try by UUID first (works for all users including OAuth)
-                if effective_uuid:
-                    panel_user = await api.get_user_by_uuid(effective_uuid)
+                # Preserve v2 fallback quirk: in multi-tariff, only use sub uuid when it exists
+                _use_sub = active_sub if (settings.is_multi_tariff_enabled() and active_sub and active_sub.remnawave_uuid) else None
+                _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=_use_sub)
+                if _p_uuid or _p_id:
+                    panel_user = await api.get_user_by_uuid(uuid=_p_uuid, remna_id=_p_id)
 
                 # Fallback: search by telegram_id
                 if not panel_user and user.telegram_id:
@@ -3840,7 +3849,7 @@ async def sync_user_from_panel(
         )
 
     try:
-        from app.services.remnawave_service import RemnaWaveService
+        from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
 
         service = RemnaWaveService()
         if not service.is_configured:
@@ -3870,9 +3879,11 @@ async def sync_user_from_panel(
             panel_user = None
 
             if settings.is_multi_tariff_enabled():
-                if selected_sub and selected_sub.remnawave_uuid:
+                if selected_sub:
                     # Specific subscription requested — use its UUID directly
-                    panel_user = await api.get_user_by_uuid(selected_sub.remnawave_uuid)
+                    _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=selected_sub)
+                    if _p_uuid or _p_id:
+                        panel_user = await api.get_user_by_uuid(uuid=_p_uuid, remna_id=_p_id)
                 elif selected_sub and not selected_sub.remnawave_uuid:
                     # The subscription lost its panel UUID (e.g. a spurious user.deleted
                     # webhook wiped it). Re-link it to its live panel user by
@@ -3906,14 +3917,19 @@ async def sync_user_from_panel(
                             detail='This subscription is not linked to the panel and no matching panel user was found.',
                         )
                 else:
-                    # No specific subscription — iterate all subscription UUIDs
-                    sub_uuids = [s.remnawave_uuid for s in from_subs if s.remnawave_uuid]
-                    for _uuid in sub_uuids:
-                        panel_user = await api.get_user_by_uuid(_uuid)
+                    # No specific subscription — iterate all subscriptions
+                    for _sub in from_subs:
+                        if not _sub.remnawave_uuid:
+                            continue
+                        _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=_sub)
+                        if _p_uuid or _p_id:
+                            panel_user = await api.get_user_by_uuid(uuid=_p_uuid, remna_id=_p_id)
                         if panel_user:
                             break
-            elif user.remnawave_uuid:
-                panel_user = await api.get_user_by_uuid(user.remnawave_uuid)
+            else:
+                _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user)
+                if _p_uuid or _p_id:
+                    panel_user = await api.get_user_by_uuid(uuid=_p_uuid, remna_id=_p_id)
 
             if not panel_user and user.telegram_id:
                 panel_users = await api.get_user_by_telegram_id(user.telegram_id)
@@ -4153,7 +4169,7 @@ async def sync_user_to_panel(
             create_panel_user_grace_safe,
             update_panel_user_grace_safe,
         )
-        from app.services.remnawave_service import RemnaWaveService
+        from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
         from app.services.subscription_service import get_traffic_reset_strategy
         from app.utils.subscription_utils import resolve_hwid_device_limit_for_payload
 
@@ -4222,7 +4238,8 @@ async def sync_user_to_panel(
         async with service.get_api_client() as api:
             # Validate existing UUID
             if panel_uuid:
-                existing_user = await api.get_user_by_uuid(panel_uuid)
+                _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=sub)
+                existing_user = await api.get_user_by_uuid(uuid=_p_uuid, remna_id=_p_id)
                 if not existing_user:
                     logger.warning('Stale remnawave_uuid, clearing', user_id=user.id, panel_uuid=panel_uuid)
                     panel_uuid = None
