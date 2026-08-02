@@ -1501,6 +1501,19 @@ async def activate_trial(
 
     subscription = await activate_paid_trial_core(db, user, requires_payment=requires_payment)
 
+    # _subscription_to_response обращается к subscription.tariff (is_daily_tariff и
+    # daily_price/tariff_name). В async ленивая загрузка отношения падает
+    # MissingGreenlet, поэтому подгружаем tariff явно перед сериализацией.
+    if getattr(subscription, 'tariff_id', None) is not None:
+        try:
+            await db.refresh(subscription, attribute_names=['tariff'])
+        except Exception as _tariff_refresh_err:
+            logger.warning(
+                'Не удалось подгрузить tariff для ответа активации триала',
+                subscription_id=getattr(subscription, 'id', None),
+                error=str(_tariff_refresh_err),
+            )
+
     # Yandex.Metrika offline conversion — sibling to #558449. Fire two events
     # when applicable: the regular 'trial-add' for every trial activation,
     # plus 'purchase' if TRIAL_PAYMENT_ENABLED and money was actually charged.
