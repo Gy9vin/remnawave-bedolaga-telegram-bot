@@ -636,16 +636,25 @@ async def cleanup_remnawave_headers() -> tuple[int, int]:
                 squads_url = f'{panel_url}/api/external-squads'
                 by_uuid, _ = await _get_existing_squads(http, auth, squads_url)
                 if by_uuid:
+                    from .squad_manager import _detect_panel_api_version
+
+                    version = await _detect_panel_api_version(http, auth, panel_url)
                     for sq_uuid, sq in by_uuid.items():
-                        sq_headers = sq.get('responseHeaders') or {}
-                        if not any(k in MANAGED_HEADER_KEYS for k in sq_headers):
+                        sq_headers = sq.get('responseHeaders') or sq.get('responseHeadersAdd') or {}
+                        managed_present = [k for k in sq_headers if k in MANAGED_HEADER_KEYS]
+                        if not managed_present:
                             continue
-                        clean_headers = {k: v for k, v in sq_headers.items() if k not in MANAGED_HEADER_KEYS}
+                        if version == 3:
+                            # v3: убираем managed-заголовки через responseHeadersRemove(array).
+                            patch_json = {'uuid': sq_uuid, 'responseHeadersRemove': managed_present}
+                        else:
+                            clean_headers = {k: v for k, v in sq_headers.items() if k not in MANAGED_HEADER_KEYS}
+                            patch_json = {'uuid': sq_uuid, 'responseHeaders': clean_headers}
                         try:
                             async with http.patch(
                                 squads_url,
                                 headers=auth,
-                                json={'uuid': sq_uuid, 'responseHeaders': clean_headers},
+                                json=patch_json,
                             ) as resp:
                                 if resp.status == 200:
                                     name = sq.get('name', '?')

@@ -452,6 +452,8 @@ async def start_scan(
                 'username': u.username,
                 'full_name': u.full_name,
                 'remnawave_uuid': u.remnawave_uuid,
+                'remnawave_id': u.remnawave_id,
+                'remnawave_short_uuid': u.remnawave_short_uuid,
                 'subscription_end_date': u.subscription_end_date.isoformat() if u.subscription_end_date else None,
             }
             for u in result.blocked_users
@@ -544,6 +546,8 @@ async def start_scan_subscribers(
                 'username': u.username,
                 'full_name': u.full_name,
                 'remnawave_uuid': u.remnawave_uuid,
+                'remnawave_id': u.remnawave_id,
+                'remnawave_short_uuid': u.remnawave_short_uuid,
                 'subscription_end_date': u.subscription_end_date.isoformat() if u.subscription_end_date else None,
             }
             for u in result.blocked_users
@@ -766,6 +770,8 @@ async def handle_confirm_action(
             full_name=u['full_name'],
             status=None,  # type: ignore
             remnawave_uuid=u['remnawave_uuid'],
+            remnawave_id=u.get('remnawave_id'),
+            remnawave_short_uuid=u.get('remnawave_short_uuid'),
         )
         for u in blocked_list
     ]

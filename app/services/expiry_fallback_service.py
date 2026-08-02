@@ -648,9 +648,11 @@ async def scan_and_restore_active(db: AsyncSession) -> dict:
     for user_id in affected_user_ids:
         scanned_users += 1
 
-        # Все подписки юзера
+        # Все подписки юзера (user eager-load нужен для v3-резолва remna_id)
         all_subs_q = await db.execute(
-            select(Subscription).where(Subscription.user_id == user_id)
+            select(Subscription)
+            .options(selectinload(Subscription.user))
+            .where(Subscription.user_id == user_id)
         )
         all_subs = list(all_subs_q.scalars().all())
 
@@ -684,15 +686,15 @@ async def scan_and_restore_active(db: AsyncSession) -> dict:
             active_end = active_end.replace(tzinfo=UTC)
 
         try:
-            # TODO(v3): здесь нет загруженного User-объекта (только user_id),
-            # поэтому db/subscription не передаём — _patch_user_full упадёт на v3
-            # если у подписки нет remnawave_uuid. Для полной поддержки v3 нужно
-            # загрузить User через selectinload(Subscription.user) в запросе выше.
+            # db+subscription прокидываем для v3-резолва remna_id через
+            # get_panel_user_ref (active_sub.user загружен selectinload'ом выше).
             ok = await _patch_user_full(
                 active_sub.remnawave_uuid,
                 squads=active_sub.connected_squads or [],
                 expire_at=active_end,
                 verify_squad_in=active_sub.connected_squads if active_sub.connected_squads else None,
+                db=db,
+                subscription=active_sub,
             )
             if not ok:
                 failed += 1
@@ -1011,6 +1013,7 @@ async def reconcile_fallback_subscriptions(db: AsyncSession) -> dict:
     # ----------------------------------------------------------------
     lost_result = await db.execute(
         select(Subscription)
+        .options(selectinload(Subscription.user))  # user нужен для v3-резолва remna_id
         .where(
             and_(
                 Subscription.status.in_([
@@ -1030,11 +1033,9 @@ async def reconcile_fallback_subscriptions(db: AsyncSession) -> dict:
         try:
             # Защита от повторного загона: если админ уже вытащил юзера в панели
             # (or дал ему доступ через продление), пропускаем — не отменяем admin action.
-            # TODO(v3): lost_subs загружены без selectinload(Subscription.user),
-            # поэтому db/subscription не передаём — на v3 будет использован uuid из БД.
-            # Для полной поддержки v3 добавить .options(selectinload(Subscription.user))
-            # в запрос lost_subs выше и передать db=db, subscription=sub.
-            rw_user = await _get_remnawave_user(sub.remnawave_uuid)
+            # db+subscription прокидываем для v3-резолва remna_id (sub.user загружен
+            # selectinload'ом в запросе lost_subs выше).
+            rw_user = await _get_remnawave_user(sub.remnawave_uuid, db=db, subscription=sub)
             if rw_user is not None:
                 current_squads = set(
                     _extract_squad_uuids(getattr(rw_user, 'active_internal_squads', None))

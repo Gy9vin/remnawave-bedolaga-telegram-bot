@@ -22,16 +22,29 @@ from app.utils.validators import sanitize_telegram_name
 logger = structlog.get_logger(__name__)
 
 
-async def _refresh_remnawave_description(remnawave_uuid: str, description: str, telegram_id: int) -> None:
-    # TODO(v3): функция запускается через asyncio.create_task без db/User; AsyncSession
-    # нельзя передавать через границы task. Для v3 нужно открывать новую сессию внутри
-    # и загружать User по telegram_id, чтобы вызвать get_panel_user_ref. Также здесь
-    # возможен import cycle: middlewares.auth → remnawave_service → (chain) → auth.
-    # Использовать LOCAL import внутри функции при рефакторинге.
+async def _refresh_remnawave_description(
+    remnawave_uuid: str,
+    description: str,
+    telegram_id: int,
+    remna_id: int | None = None,
+    short_uuid: str | None = None,
+) -> None:
+    # Запускается через asyncio.create_task без db/User, поэтому идентификаторы
+    # передаём значениями (remna_id/short_uuid, снятые с ORM у вызывателя). На v3
+    # если remna_id не передан — резолвим по short_uuid, затем по telegram_id.
+    # На v2 резолв не активируется и используется uuid как раньше (байт-в-байт).
     try:
         remnawave_service = RemnaWaveService()
         async with remnawave_service.get_api_client() as api:
-            await api.update_user(uuid=remnawave_uuid, description=description)
+            resolved_id = remna_id
+            if resolved_id is None and await api.get_api_version() == 3:
+                if short_uuid:
+                    resolved_id = await api.resolve_user_id(short_uuid=short_uuid)
+                if resolved_id is None and telegram_id:
+                    panel_users = await api.get_user_by_telegram_id(telegram_id)
+                    if panel_users:
+                        resolved_id = getattr(panel_users[0], 'id', None)
+            await api.update_user(uuid=remnawave_uuid, remna_id=resolved_id, description=description)
         logger.info('✅ [Middleware] Описание пользователя обновлено в RemnaWave', telegram_id=telegram_id)
     except Exception as remnawave_error:
         logger.error(
@@ -216,6 +229,7 @@ class AuthMiddleware(BaseMiddleware):
                                 remnawave_uuid=db_user.remnawave_uuid,
                                 description=description,
                                 telegram_id=db_user.telegram_id,
+                                remna_id=getattr(db_user, 'remnawave_id', None),
                             )
                         )
 
@@ -233,6 +247,7 @@ class AuthMiddleware(BaseMiddleware):
                                         remnawave_uuid=sub.remnawave_uuid,
                                         description=description,
                                         telegram_id=db_user.telegram_id,
+                                        short_uuid=getattr(sub, 'remnawave_short_uuid', None),
                                     )
                                 )
 

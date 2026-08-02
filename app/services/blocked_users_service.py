@@ -90,6 +90,10 @@ class BlockCheckResult:
     error_message: str | None = None
     remnawave_uuid: str | None = None
     remnawave_uuids: list[str] = field(default_factory=list)
+    # v3-идентификаторы для резолва numeric id, когда uuid недоступен/невалиден в v3.
+    remnawave_id: int | None = None  # user-level numeric id панели
+    remnawave_short_uuid: str | None = None  # primary shortUuid (стабилен в v2 и v3)
+    remnawave_short_uuids: list[str] = field(default_factory=list)  # выровнен по remnawave_uuids
     subscription_end_date: datetime | None = None
 
 
@@ -163,8 +167,23 @@ class BlockedUsersService:
     async def _check_single_user(self, user: User) -> BlockCheckResult:
         """Проверяет одного пользователя."""
         subscriptions = getattr(user, 'subscriptions', None) or []
-        sub_uuids = [s.remnawave_uuid for s in subscriptions if s.remnawave_uuid]
-        remnawave_uuids = sub_uuids or ([user.remnawave_uuid] if user.remnawave_uuid else [])
+        sub_pairs = [
+            (s.remnawave_uuid, getattr(s, 'remnawave_short_uuid', None))
+            for s in subscriptions
+            if s.remnawave_uuid
+        ]
+        if sub_pairs:
+            remnawave_uuids = [u for u, _ in sub_pairs]
+            remnawave_short_uuids = [sh for _, sh in sub_pairs]
+        else:
+            remnawave_uuids = [user.remnawave_uuid] if user.remnawave_uuid else []
+            remnawave_short_uuids = []
+        # primary shortUuid (для v3-резолва user-level удаления) и numeric id из БД
+        primary_short_uuid = next(
+            (getattr(s, 'remnawave_short_uuid', None) for s in subscriptions if getattr(s, 'remnawave_short_uuid', None)),
+            None,
+        )
+        user_remnawave_id = getattr(user, 'remnawave_id', None)
 
         active_ends = [
             s.end_date
@@ -182,6 +201,9 @@ class BlockedUsersService:
                 status=BlockCheckStatus.NO_TELEGRAM_ID,
                 remnawave_uuid=user.remnawave_uuid,
                 remnawave_uuids=remnawave_uuids,
+                remnawave_id=user_remnawave_id,
+                remnawave_short_uuid=primary_short_uuid,
+                remnawave_short_uuids=remnawave_short_uuids,
                 subscription_end_date=subscription_end_date,
             )
 
@@ -195,6 +217,9 @@ class BlockedUsersService:
             status=status,
             remnawave_uuid=user.remnawave_uuid,
             remnawave_uuids=remnawave_uuids,
+            remnawave_id=user_remnawave_id,
+            remnawave_short_uuid=primary_short_uuid,
+            remnawave_short_uuids=remnawave_short_uuids,
             subscription_end_date=subscription_end_date,
         )
 
@@ -296,12 +321,19 @@ class BlockedUsersService:
 
         return result
 
-    async def delete_user_from_remnawave(self, remnawave_uuid: str) -> bool:
-        """Удаляет пользователя из панели Remnawave."""
-        # TODO(v3): метод принимает только uuid-строку без db/User; разрешить remna_id
-        # невозможно без объекта User из БД. Для v3 нужно переработать сигнатуру:
-        # передавать db + user_id и загружать User внутри, чтобы вызвать get_panel_user_ref.
-        if not remnawave_uuid:
+    async def delete_user_from_remnawave(
+        self,
+        remnawave_uuid: str | None,
+        *,
+        remna_id: int | None = None,
+        short_uuid: str | None = None,
+    ) -> bool:
+        """Удаляет пользователя из панели Remnawave.
+
+        v3: юзер идентифицируется numeric id. Если remna_id не передан — резолвим
+        по short_uuid. На v2 резолв не активируется и используется uuid (как раньше).
+        """
+        if not remnawave_uuid and remna_id is None and not short_uuid:
             return False
 
         try:
@@ -310,8 +342,15 @@ class BlockedUsersService:
                 return False
 
             async with self.remnawave_service.get_api_client() as api:
-                await api.delete_user(remnawave_uuid)
-                logger.info('Удален пользователь из Remnawave', remnawave_uuid=remnawave_uuid)
+                resolved_id = remna_id
+                if resolved_id is None and short_uuid and await api.get_api_version() == 3:
+                    resolved_id = await api.resolve_user_id(short_uuid=short_uuid)
+                await api.delete_user(uuid=remnawave_uuid or None, remna_id=resolved_id)
+                logger.info(
+                    'Удален пользователь из Remnawave',
+                    remnawave_uuid=remnawave_uuid,
+                    remna_id=resolved_id,
+                )
                 return True
         except Exception as e:
             error_msg = str(e).lower()
@@ -490,8 +529,18 @@ class BlockedUsersService:
                     uuids_to_delete = user_result.remnawave_uuids or (
                         [user_result.remnawave_uuid] if user_result.remnawave_uuid else []
                     )
-                    for rw_uuid in uuids_to_delete:
-                        success = await self.delete_user_from_remnawave(rw_uuid)
+                    short_list = user_result.remnawave_short_uuids or (
+                        [user_result.remnawave_short_uuid] if user_result.remnawave_short_uuid else []
+                    )
+                    # user-level numeric id применим только когда удаляем единственного
+                    # user-level юзера (не per-subscription multi-tariff).
+                    is_user_level = not user_result.remnawave_uuids
+                    for idx, rw_uuid in enumerate(uuids_to_delete):
+                        rw_short = short_list[idx] if idx < len(short_list) else None
+                        rw_remna_id = user_result.remnawave_id if is_user_level else None
+                        success = await self.delete_user_from_remnawave(
+                            rw_uuid, remna_id=rw_remna_id, short_uuid=rw_short
+                        )
                         if success:
                             result.deleted_from_remnawave += 1
                         else:

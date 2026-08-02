@@ -547,7 +547,7 @@ async def admin_merge_users(
                 ),
             )
 
-    deferred_deletions: list[str] = []
+    deferred_deletions: list = []  # (uuid, short_uuid[, remna_id])-кортежи или строки uuid
     try:
         await execute_merge(
             db=db,

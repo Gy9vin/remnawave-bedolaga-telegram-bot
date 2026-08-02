@@ -18,10 +18,41 @@ import asyncio
 import aiohttp
 import structlog
 
+from app.config import settings
+
 from . import config as cfg
 
 
 logger = structlog.get_logger(__name__)
+
+
+# Кэш версии API per-panel: happ синкает несколько панелей, а главный
+# RemnaWaveAPI-клиент может смотреть в другую панель, поэтому версию определяем
+# на каждый panel_url отдельно (v2|3).
+_PANEL_API_VERSION_CACHE: dict[str, int] = {}
+
+
+async def _detect_panel_api_version(http: aiohttp.ClientSession, auth: dict, panel_url: str) -> int:
+    """Определяет версию панели (2|3). Форс из конфига важнее; 'auto' → лёгкий проб.
+
+    Проб — GET /api/users/stream?size=1: в v3 → 200, в v2 эндпоинта нет (404/иное).
+    Результат кэшируется на процесс. При любой ошибке — безопасный дефолт v2.
+    """
+    forced = settings.get_remnawave_api_version()
+    if forced in ('2', '3'):
+        return int(forced)
+    cached = _PANEL_API_VERSION_CACHE.get(panel_url)
+    if cached is not None:
+        return cached
+    version = 2
+    try:
+        async with http.get(f'{panel_url}/api/users/stream?size=1', headers=auth) as resp:
+            if resp.status == 200:
+                version = 3
+    except Exception:
+        version = 2
+    _PANEL_API_VERSION_CACHE[panel_url] = version
+    return version
 
 
 SQUAD_NAME_PREFIX = 'Happ-'
@@ -271,10 +302,14 @@ async def _update_squad(
     host_overrides: dict,
 ) -> None:
     """Обновляет заголовки и настройки External Squad с retry."""
-    payload = {
-        'uuid': squad_uuid,
-        'responseHeaders': response_headers,
-    }
+    panel_url = squads_url.rsplit('/api/', 1)[0]
+    version = await _detect_panel_api_version(http, auth, panel_url)
+    payload = {'uuid': squad_uuid}
+    if version == 3:
+        # v3: responseHeaders → responseHeadersAdd(object). Мы только задаём заголовки.
+        payload['responseHeadersAdd'] = response_headers
+    else:
+        payload['responseHeaders'] = response_headers
     if subscription_settings:
         payload['subscriptionSettings'] = subscription_settings
     if host_overrides:

@@ -2046,25 +2046,31 @@ async def wipe_trial_subscriptions(db: AsyncSession, subscriptions) -> int:
     if service.is_configured:
         semaphore = asyncio.Semaphore(5)
 
-        async with service.get_api_client() as api:
+        # LOCAL import: runtime-deferred, поэтому цикл crud.subscription ↔
+        # remnawave_service к моменту вызова уже разрешён (оба модуля загружены).
+        from app.services.remnawave_service import get_panel_user_ref
 
-            async def _delete_panel_user(subscription) -> bool:
-                panel_uuid = (
-                    subscription.remnawave_uuid
-                    if is_multi
-                    else (subscription.user.remnawave_uuid if subscription.user else None)
+        async with service.get_api_client() as api:
+            # Идентификаторы резолвим ПОСЛЕДОВАТЕЛЬНО до gather: на v3
+            # get_panel_user_ref может писать remna_id в общую сессию db —
+            # параллельный доступ к одной AsyncSession недопустим. На v2 хелпер
+            # db не трогает и возвращает (uuid, None), т.е. поведение прежнее.
+            refs = []
+            for subscription in subscriptions:
+                panel_uuid, remna_id = await get_panel_user_ref(
+                    api,
+                    db,
+                    user=(None if is_multi else subscription.user),
+                    subscription=subscription,
                 )
-                if not panel_uuid:
+                refs.append((subscription, panel_uuid, remna_id))
+
+            async def _delete_panel_user(subscription, panel_uuid, remna_id) -> bool:
+                if not panel_uuid and remna_id is None:
                     return True  # в панели нечего удалять
                 async with semaphore:
                     try:
-                        # TODO(v3): import cycle — cannot migrate here.
-                        # app.database.crud.subscription импортируется из remnawave_service,
-                        # поэтому LOCAL import get_panel_user_ref создаёт circular import.
-                        # Для v3 поддержки нужно перенести wipe_trial_subscriptions в
-                        # сервисный слой (например, remnawave_service или subscription_service),
-                        # где цикл отсутствует, и там уже вызывать get_panel_user_ref.
-                        await api.delete_user(panel_uuid)
+                        await api.delete_user(uuid=panel_uuid, remna_id=remna_id)
                         return True
                     except Exception as error:
                         msg = str(error).lower()
@@ -2073,13 +2079,14 @@ async def wipe_trial_subscriptions(db: AsyncSession, subscriptions) -> int:
                         logger.error(
                             'Не удалось удалить панель-юзера при сбросе триала',
                             user_uuid=panel_uuid,
+                            remna_id=remna_id,
                             subscription_id=subscription.id,
                             error=error,
                         )
                         return False
 
             panel_results = await asyncio.gather(
-                *(_delete_panel_user(subscription) for subscription in subscriptions),
+                *(_delete_panel_user(sub, uuid, rid) for sub, uuid, rid in refs),
                 return_exceptions=True,
             )
 

@@ -918,11 +918,12 @@ class TrafficMonitoringService:
             threshold_gb = self.get_traffic_threshold_gb()
             threshold_bytes = threshold_gb * (1024**3)
 
-            # Получаем пользователя из Remnawave
-            # TODO(v3): get_panel_user_ref недоступен здесь — нет ORM-объекта пользователя.
-            # Метод принимает только user_uuid: str; для v3-совместимости нужно либо
-            # передавать ORM-user через параметр, либо резолвить remna_id через
-            # client.resolve_user_id(short_uuid=...). Пока оставляем v2-путь.
+            # Получаем пользователя из Remnawave.
+            # NOTE(v3): это legacy-обёртка обратной совместимости без вызывателей в
+            # кодовой базе (проверено grep'ом). Оставлена v2-only: на v3 by-uuid GET
+            # недоступен, но метод не вызывается, поэтому миграция не требуется.
+            # Если он снова понадобится — резолвить remna_id через
+            # client.resolve_user_id(short_uuid=...) и передавать ORM-user.
             async with self.remnawave_service.get_api_client() as api:
                 user = await api.get_user_by_uuid(user_uuid)
 

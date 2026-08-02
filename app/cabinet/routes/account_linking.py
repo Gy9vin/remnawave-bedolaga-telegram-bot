@@ -1007,7 +1007,7 @@ async def execute_merge_endpoint(
     # RemnaWave user deletions are DEFERRED until after commit: an external delete
     # can't be rolled back with the DB, so deleting before commit would (on a
     # failed merge) leave a deleted panel user while the DB merge is rolled back.
-    deferred_deletions: list[str] = []
+    deferred_deletions: list = []  # (uuid, short_uuid[, remna_id])-кортежи или строки uuid
     from app.services.grace_access_runtime import GraceAccessDeletionBlocked
 
     try:

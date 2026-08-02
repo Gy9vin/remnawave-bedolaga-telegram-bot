@@ -1063,6 +1063,47 @@ _GRACE_OWNED_UPDATE_FIELDS = frozenset(
 )
 
 
+async def _augment_disabled_grace_kwargs_v3(
+    api: Any,
+    subscription_id: int,
+    update_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """v3-only: добавляет remna_id в kwargs, разрешив его по subscription_id.
+
+    Вызывается лишь на v3 из DISABLED/OBSERVE-ветки, где нет guard-сессии.
+    Открывает короткую сессию, грузит подписку с user и резолвит идентификатор
+    через get_panel_user_ref (best-effort: при неудаче возвращает kwargs как есть).
+    """
+    from app.services.remnawave_service import get_panel_user_ref
+
+    try:
+        async with AsyncSessionLocal() as own_db:
+            result = await own_db.execute(
+                select(Subscription)
+                .options(selectinload(Subscription.user))
+                .where(Subscription.id == subscription_id)
+            )
+            subscription = result.scalar_one_or_none()
+            if subscription is None:
+                return update_kwargs
+            _uuid, _remna_id = await get_panel_user_ref(
+                api, own_db, user=subscription.user, subscription=subscription
+            )
+        resolved = dict(update_kwargs)
+        if _remna_id is not None:
+            resolved['remna_id'] = _remna_id
+        if _uuid is not None:
+            resolved['uuid'] = _uuid
+        return resolved
+    except Exception as exc:  # pragma: no cover - defensive: не ломаем синк
+        logger.warning(
+            'Не удалось разрешить remna_id для grace-safe update (v3)',
+            subscription_id=subscription_id,
+            error=str(exc),
+        )
+        return update_kwargs
+
+
 async def update_panel_user_grace_safe(
     api: Any,
     subscription_id: int,
@@ -1080,7 +1121,13 @@ async def update_panel_user_grace_safe(
         # поведение и стоимость как до фичи. Оверлеи в этих режимах не защищаются:
         # рутинный синк приводит панель к каноническому биллингу (остаточные
         # открытые сессии отрапортованы CRITICAL-логом на старте).
-        # TODO(v3): callers must include remna_id= in update_kwargs for v3 support
+        #
+        # v3: если вызыватель не передал remna_id, разрешаем его по subscription_id
+        # (update_user на v3 идентифицирует юзера числовым id, а не uuid). Гейт на
+        # api_version==3 — на v2 ветка байт-в-байт прежняя; сам get_api_version()
+        # кэшируется и всё равно вызывается внутри update_user, лишней сети нет.
+        if 'remna_id' not in update_kwargs and await api.get_api_version() == 3:
+            update_kwargs = await _augment_disabled_grace_kwargs_v3(api, subscription_id, update_kwargs)
         return await api.update_user(**update_kwargs)
     async with grace_sensitive_panel_update(subscription_id) as lease:
         if lease.subscription is None:

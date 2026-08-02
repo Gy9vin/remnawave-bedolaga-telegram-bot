@@ -324,25 +324,41 @@ async def _get_remnawave_api() -> AsyncIterator[RemnaWaveAPI]:
         yield api
 
 
-async def _delete_remnawave_user_with_fallback(remnawave_uuid: str) -> None:
-    """Удаляет пользователя из RemnaWave. При неудаче — деактивирует как fallback."""
-    # TODO(v3): функция принимает только uuid-строку без db/user; разрешить remna_id
-    # невозможно без доступа к БД. Для v3 caller'ам (flush_remnawave_deletions) нужно
-    # передавать db + user/subscription, чтобы можно было вызвать get_panel_user_ref.
+async def _resolve_remna_id_for_delete(api, remna_id: int | None, short_uuid: str | None) -> int | None:
+    """v3-only: резолвит numeric id по short_uuid, если он не передан. v2 → None."""
+    if remna_id is not None:
+        return remna_id
+    if short_uuid and await api.get_api_version() == 3:
+        return await api.resolve_user_id(short_uuid=short_uuid)
+    return None
+
+
+async def _delete_remnawave_user_with_fallback(
+    remnawave_uuid: str | None,
+    short_uuid: str | None = None,
+    remna_id: int | None = None,
+) -> None:
+    """Удаляет пользователя из RemnaWave. При неудаче — деактивирует как fallback.
+
+    v3: юзер идентифицируется numeric id — резолвим его по short_uuid, если не передан.
+    v2: используется uuid как раньше (short_uuid/remna_id отсутствуют — байт-в-байт).
+    """
     try:
         async with _get_remnawave_api() as api:
-            deleted = await api.delete_user(remnawave_uuid)
+            resolved_id = await _resolve_remna_id_for_delete(api, remna_id, short_uuid)
+            deleted = await api.delete_user(uuid=remnawave_uuid or None, remna_id=resolved_id)
             if deleted:
                 logger.info(
                     'RemnaWave пользователь удалён при мерже',
                     remnawave_uuid=remnawave_uuid,
+                    remna_id=resolved_id,
                 )
             else:
                 logger.warning(
                     'RemnaWave delete_user вернул False, пробуем disable',
                     remnawave_uuid=remnawave_uuid,
                 )
-                await api.disable_user(remnawave_uuid)  # TODO(v3): needs remna_id= for v3
+                await api.disable_user(uuid=remnawave_uuid or None, remna_id=resolved_id)
                 logger.info(
                     'RemnaWave пользователь деактивирован как fallback при мерже',
                     remnawave_uuid=remnawave_uuid,
@@ -362,7 +378,8 @@ async def _delete_remnawave_user_with_fallback(remnawave_uuid: str) -> None:
         )
         try:
             async with _get_remnawave_api() as api:
-                await api.disable_user(remnawave_uuid)  # TODO(v3): needs remna_id= for v3
+                resolved_id = await _resolve_remna_id_for_delete(api, remna_id, short_uuid)
+                await api.disable_user(uuid=remnawave_uuid or None, remna_id=resolved_id)
                 logger.info(
                     'RemnaWave пользователь деактивирован как fallback при мерже',
                     remnawave_uuid=remnawave_uuid,
@@ -382,16 +399,25 @@ async def _delete_remnawave_user_with_fallback(remnawave_uuid: str) -> None:
             )
 
 
-async def flush_remnawave_deletions(remnawave_uuids: list[str]) -> None:
+async def flush_remnawave_deletions(remnawave_refs: list) -> None:
     """Удаляет (или деактивирует как fallback) пользователей RemnaWave.
 
     Вызывается caller'ом ПОСЛЕ успешного db.commit() мержа: внешнее удаление
     нельзя откатить вместе с транзакцией, поэтому его откладывают до коммита,
     чтобы упавший мерж не оставил удалённого юзера в панели при rollback.
     Каждое удаление изолировано — сбой одного не мешает остальным.
+
+    Каждый элемент — либо `(uuid, short_uuid)`-кортеж (для v3-резолва numeric id),
+    либо строка uuid (обратная совместимость: v2-путь).
     """
-    for remnawave_uuid in remnawave_uuids:
-        await _delete_remnawave_user_with_fallback(remnawave_uuid)
+    for ref in remnawave_refs:
+        if isinstance(ref, (tuple, list)):
+            uuid = ref[0] if len(ref) > 0 else None
+            short_uuid = ref[1] if len(ref) > 1 else None
+            remna_id = ref[2] if len(ref) > 2 else None
+        else:
+            uuid, short_uuid, remna_id = ref, None, None
+        await _delete_remnawave_user_with_fallback(uuid, short_uuid=short_uuid, remna_id=remna_id)
 
 
 async def _sync_transferred_subscriptions_to_panel(
@@ -561,7 +587,9 @@ async def _handle_subscription_merge(
                     if secondary_wins:
                         # Secondary sub wins → expire primary conflict, transfer secondary sub
                         if primary_conflict.remnawave_uuid:
-                            deferred_remnawave_deletions.append(primary_conflict.remnawave_uuid)
+                            deferred_remnawave_deletions.append(
+                                (primary_conflict.remnawave_uuid, getattr(primary_conflict, 'remnawave_short_uuid', None))
+                            )
                             primary_conflict.remnawave_uuid = None
                         await db.flush()
                         sub.user_id = primary.id
@@ -569,7 +597,9 @@ async def _handle_subscription_merge(
                     else:
                         # Primary sub wins → expire secondary sub, transfer it as expired
                         if sub.remnawave_uuid:
-                            deferred_remnawave_deletions.append(sub.remnawave_uuid)
+                            deferred_remnawave_deletions.append(
+                                (sub.remnawave_uuid, getattr(sub, 'remnawave_short_uuid', None))
+                            )
                             sub.remnawave_uuid = None
                         sub.user_id = primary.id
                         transferred.append(sub)
@@ -641,7 +671,9 @@ async def _handle_subscription_merge(
     # Подписка только у primary — удаляем RemnaWave юзера secondary (если есть)
     if has_primary_sub and not has_secondary_sub:
         if secondary.remnawave_uuid:
-            deferred_remnawave_deletions.append(secondary.remnawave_uuid)
+            deferred_remnawave_deletions.append(
+                (secondary.remnawave_uuid, None, getattr(secondary, 'remnawave_id', None))
+            )
             secondary.remnawave_uuid = None
         logger.info(
             'Мерж подписок: оставлена подписка primary, secondary не имел подписки',
@@ -742,7 +774,9 @@ async def _handle_subscription_merge(
 
     await cancel_platega_recurring_for_subscription_safe(db, loser_sub.id, commit=False)
     if loser_remnawave:
-        deferred_remnawave_deletions.append(loser_remnawave)
+        deferred_remnawave_deletions.append(
+            (loser_remnawave, getattr(loser_sub, 'remnawave_short_uuid', None))
+        )
 
     if secondary_wins:
         # Победитель — secondary_sub → переносим на primary, передаём remnawave_uuid
@@ -922,7 +956,8 @@ async def execute_merge(
     # Удаления пользователей из RemnaWave откладываем: внешний вызов нельзя
     # откатить вместе с БД. Если caller передал список — он выполнит удаления
     # ПОСЛЕ commit; иначе выполняем их в конце, когда вся работа с БД прошла.
-    pending_remnawave_deletions: list[str] = (
+    # Элементы — (uuid, short_uuid[, remna_id])-кортежи (для v3-резолва) или строки uuid.
+    pending_remnawave_deletions: list = (
         deferred_remnawave_deletions if deferred_remnawave_deletions is not None else []
     )
 

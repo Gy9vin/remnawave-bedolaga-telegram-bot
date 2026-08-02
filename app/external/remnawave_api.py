@@ -1169,7 +1169,13 @@ class RemnaWaveAPI:
         if host_overrides is not None:
             data['hostOverrides'] = host_overrides
         if response_headers is not None:
-            data['responseHeaders'] = response_headers
+            if await self.get_api_version() == 3:
+                # v3: responseHeaders разделён на responseHeadersAdd(object) +
+                # responseHeadersRemove(array). Мы только устанавливаем заголовки —
+                # весь набор уходит в Add.
+                data['responseHeadersAdd'] = response_headers
+            else:
+                data['responseHeaders'] = response_headers
         if hwid_settings is not None:
             data['hwidSettings'] = hwid_settings
         if custom_remarks is not None:
@@ -1211,7 +1217,7 @@ class RemnaWaveAPI:
             templates=squad_data.get('templates', []),
             subscription_settings=squad_data.get('subscriptionSettings'),
             host_overrides=squad_data.get('hostOverrides'),
-            response_headers=squad_data.get('responseHeaders'),
+            response_headers=squad_data.get('responseHeaders') or squad_data.get('responseHeadersAdd'),
             hwid_settings=squad_data.get('hwidSettings'),
             custom_remarks=squad_data.get('customRemarks'),
             subpage_config_uuid=squad_data.get('subpageConfigUuid'),
