@@ -347,8 +347,21 @@ class RemnaWaveAPI:
           - '2' → сразу вернуть 2 (без сетевого вызова)
           - '3' → сразу вернуть 3 (без сетевого вызова)
           - 'auto' → зондируем GET /api/users/stream?size=1:
-              * ответ содержит ключи 'users' и 'hasMore' → v3
-              * RemnaWaveAPIError (404 и др.) → v2 (безопасный фолбэк) + warning
+              * RemnaWaveAPIError (404 и др.) → панель старше 2.8 → v2
+              * успешный ответ → смотрим на схему первого юзера в стриме:
+                  - есть ключ 'uuid' → v2 (в 2.8.x стрим уже существует, но
+                    юзер-объект ещё содержит uuid+id — v3 убрал uuid);
+                  - ключа 'uuid' нет, есть 'id' → v3;
+                  - неопределённость (пустой users / неожиданная форма /
+                    не-JSON тело) → вторая проба (see below), а если и она
+                    не даёт ответа — фолбэк в v2 + explicit warning.
+
+        ВАЖНО: раньше любой успешный ответ стрима трактовался как «значит v3»
+        (эндпоинт «есть ТОЛЬКО в v3»). Это неверно — /api/users/stream появился
+        в 2.8.0 и есть во всех 2.8.x, поэтому на такой панели проба тоже отвечает
+        200, а её user-схема при этом ещё v2 (uuid+id). Ложный вывод v3 приводил
+        к тому, что все user-вызовы уходили в v3-форме (числовой id), а панель
+        валидировала запрос по v2-схеме (ждёт uuid) → 400 "Invalid uuid".
         """
         forced = settings.get_remnawave_api_version()
         if forced == '2':
@@ -358,28 +371,86 @@ class RemnaWaveAPI:
             logger.debug('RemnaWave API version forced to 3')
             return 3
 
-        # auto — зондируем. Эндпоинт /api/users/stream есть ТОЛЬКО в v3; в v2 он
-        # отдаёт 404 (→ RemnaWaveAPIError → v2). Поэтому любой УСПЕШНЫЙ ответ (без
-        # исключения) означает v3. Тело _make_request возвращает в конверте
-        # {'response': {...}} — данные стрима (users/hasMore/nextCursor) внутри него,
-        # поэтому проверять ключи надо в развёрнутом payload, а не в наружном dict.
+        # Тело _make_request возвращает конверт {'response': {...}} — данные
+        # стрима (users/hasMore/nextCursor) внутри него, поэтому схему юзера
+        # нужно смотреть в развёрнутом payload, а не в наружном dict.
         try:
             result = await self._make_request('GET', '/api/users/stream', params={'size': 1})
-            payload = result.get('response', result) if isinstance(result, dict) else result
-            if isinstance(payload, dict) and ('users' in payload or 'hasMore' in payload):
-                logger.info('RemnaWave version probe: detected v3 (stream endpoint available)')
-            else:
-                # 200 без ожидаемых ключей — эндпоинт всё равно существует (в v2 был бы
-                # 404), значит панель v3. НЕ откатываемся в v2 на успешном ответе.
-                logger.info(
-                    'RemnaWave version probe: stream endpoint responded 200 (payload keys=%r) → v3',
-                    list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
-                )
-            return 3
         except RemnaWaveAPIError as exc:
             logger.warning(
-                'RemnaWave version probe: stream endpoint unavailable (status=%s), defaulting to v2',
+                'RemnaWave version probe: stream endpoint unavailable (status=%s) -> v2 '
+                '(панель старше 2.8, стрима ещё нет)',
                 exc.status_code,
+            )
+            return 2
+
+        payload = result.get('response', result) if isinstance(result, dict) else result
+        users = payload.get('users') if isinstance(payload, dict) else None
+        if isinstance(users, list) and users and isinstance(users[0], dict):
+            first_user = users[0]
+            if 'uuid' in first_user:
+                logger.info(
+                    "RemnaWave version probe: stream user object has 'uuid' key -> v2 "
+                    '(панель 2.8.x — стрим уже есть, но схема юзера ещё v2)'
+                )
+                return 2
+            if 'id' in first_user:
+                logger.info(
+                    "RemnaWave version probe: stream user object has 'id' without "
+                    "'uuid' -> v3 (v3 убрал uuid из схемы юзера)"
+                )
+                return 3
+            logger.warning(
+                "RemnaWave version probe: stream user object has neither 'uuid' nor "
+                "'id' (keys=%r) -> inconclusive, running secondary probe",
+                list(first_user.keys()),
+            )
+        else:
+            logger.warning(
+                'RemnaWave version probe: stream responded 200 but users list is '
+                'empty/unexpected (payload=%r) -> inconclusive, running secondary probe',
+                list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+            )
+
+        # Вторая проба: GET /api/users/by-telegram-id/<sentinel>. Этот эндпоинт в
+        # v3 УДАЛЁН (см. get_user_by_telegram_id / get_user_by_email выше — на v3
+        # вызовы переведены на stream с фильтром) и заменяет собой на v2 полноценный
+        # маршрут, который отвечает 200 (пустым списком), даже если такого
+        # telegram_id ни у кого нет. Поэтому проверка не зависит от того, есть ли
+        # вообще пользователи на панели — только от факта существования маршрута:
+        #   - 200 (маршрут существует) → v2
+        #   - RemnaWaveAPIError со статусом 404 (маршрут не смэтчился) → v3
+        #   - что угодно ещё (транзиент, иной статус) → не смогли определить,
+        #     фолбэк в v2 (uuid-режим исторически совместим со всеми 2.x) с явным
+        #     warning, чтобы админ выставил REMNAWAVE_API_VERSION=2|3 вручную.
+        try:
+            await self._make_request('GET', '/api/users/by-telegram-id/0')
+        except RemnaWaveTransientError as exc:
+            logger.warning(
+                'RemnaWave version probe: secondary probe (by-telegram-id) failed '
+                'transiently (%s) -> could not auto-detect panel version, defaulting to v2. '
+                'Set REMNAWAVE_API_VERSION=2|3 explicitly to avoid guessing.',
+                exc,
+            )
+            return 2
+        except RemnaWaveAPIError as exc:
+            if exc.status_code == 404:
+                logger.info(
+                    'RemnaWave version probe: by-telegram-id route absent (404) -> v3 '
+                    '(route removed in v3)'
+                )
+                return 3
+            logger.warning(
+                'RemnaWave version probe: secondary probe inconclusive (status=%s) -> '
+                'could not auto-detect panel version, defaulting to v2. '
+                'Set REMNAWAVE_API_VERSION=2|3 explicitly to avoid guessing.',
+                exc.status_code,
+            )
+            return 2
+        else:
+            logger.info(
+                'RemnaWave version probe: by-telegram-id route responded 200 -> v2 '
+                '(route still exists)'
             )
             return 2
 
