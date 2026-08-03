@@ -372,6 +372,21 @@ class ChannelSubscriptionService:
                 logger.warning('Network error checking channel', channel_id=channel_id)
                 return None  # Uncertain — transient, the next check will probably succeed
             except Exception as e:
+                # Таймаут SOCKS-прокси до Telegram (aiohttp_socks.ProxyTimeoutError,
+                # python_socks.ProxyTimeoutError) прилетает мимо TelegramNetworkError,
+                # хотя это ровно такой же транзиент. Ловим по имени класса, чтобы не
+                # тянуть зависимость прокси-библиотеки в импорты: она опциональна и
+                # ставится только при использовании прокси. Логируем warning, а не
+                # error: error-логи форвардятся в админ-чат и при лежащем прокси
+                # превращаются в поток сообщений на каждую проверку канала.
+                if isinstance(e, TimeoutError) or 'timeout' in type(e).__name__.lower():
+                    logger.warning(
+                        'Proxy/network timeout checking channel',
+                        channel_id=channel_id,
+                        error_type=type(e).__name__,
+                        error=str(e)[:200],
+                    )
+                    return None
                 logger.error('Unexpected error checking channel', channel_id=channel_id, error=str(e))
                 return None  # Uncertain — same logic, do not deactivate on unknown failures
 

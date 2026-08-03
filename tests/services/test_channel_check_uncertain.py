@@ -152,3 +152,25 @@ async def test_check_user_subscriptions_preserves_last_known_on_uncertain() -> N
     assert result['-100123'] is True
     # And we never persisted the uncertain result
     upsert_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_proxy_timeout_is_uncertain_and_not_logged_as_error() -> None:
+    """Таймаут SOCKS-прокси — транзиент, а не повод будить админ-чат.
+
+    aiohttp_socks.ProxyTimeoutError не наследует TelegramNetworkError и раньше
+    падал в общий except с logger.error, который форвардится админам: при
+    лежащем прокси это давало поток сообщений на каждую проверку канала.
+    """
+
+    class ProxyTimeoutError(Exception):
+        """Копия формы исключения из aiohttp_socks (сама библиотека опциональна)."""
+
+    svc = ChannelSubscriptionService()
+    svc.bot = MagicMock()
+    svc.bot.get_chat_member = AsyncMock(side_effect=ProxyTimeoutError('Proxy connection timed out: 60'))
+
+    with patch('app.services.channel_subscription_service.logger') as mock_logger:
+        assert await svc._rate_limited_check(123, '-100123') is None
+        mock_logger.error.assert_not_called()
+        mock_logger.warning.assert_called_once()
