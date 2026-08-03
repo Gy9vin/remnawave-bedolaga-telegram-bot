@@ -45,6 +45,20 @@ from app.utils.timezone import get_local_timezone
 
 logger = structlog.get_logger(__name__)
 
+# Кэш определённой версии панели между экземплярами RemnaWaveAPI, ключ —
+# base_url. get_api_client() создаёт НОВЫЙ экземпляр RemnaWaveAPI на каждый
+# вызов (см. комментарий в __init__), поэтому его собственный per-instance
+# кэш (RemnaWaveAPI._api_version) обнуляется каждый раз. При
+# REMNAWAVE_API_VERSION=auto это означает, что КАЖДЫЙ panel-вызов из ~90 мест
+# в кодовой базе заново гоняет полный сетевой probe (_detect_api_version:
+# 1-2 HTTP-запроса) прежде чем сделать полезный запрос — а многие из этих
+# мест вызываются, пока где-то выше по стеку уже открыта DB-сессия
+# (async with AsyncSessionLocal()), так что лишние round-trip'ы напрямую
+# удлиняют время удержания соединения из пула. Кэшируем именно на этом
+# уровне (а не внутри RemnaWaveAPI), чтобы не трогать её собственные тесты
+# per-instance кэша (tests/external/test_remnawave_version_detect.py).
+_PANEL_API_VERSION_CACHE: dict[str, int] = {}
+
 
 async def get_panel_user_ref(
     client,
@@ -332,8 +346,25 @@ class RemnaWaveService:
         self._ensure_configured()
         assert self._api_kwargs is not None
         api = RemnaWaveAPI(**self._api_kwargs)
-        async with api:
-            yield api
+
+        # При forced-режиме (REMNAWAVE_API_VERSION=2|3) детект версии и так
+        # не делает сетевых вызовов — кэшировать нечего, и незачем рисковать
+        # рассинхроном, если форсированную версию сменят в рантайме.
+        # Кэш имеет смысл только для 'auto'.
+        cache_key = self._api_kwargs['base_url']
+        is_auto_version = (settings.get_remnawave_api_version() or 'auto').strip().lower() == 'auto'
+
+        if is_auto_version:
+            cached_version = _PANEL_API_VERSION_CACHE.get(cache_key)
+            if cached_version is not None:
+                api._api_version = cached_version
+
+        try:
+            async with api:
+                yield api
+        finally:
+            if is_auto_version and api._api_version is not None:
+                _PANEL_API_VERSION_CACHE[cache_key] = api._api_version
 
     def _now_utc(self) -> datetime:
         """Возвращает текущее время в UTC без привязки к часовому поясу."""
