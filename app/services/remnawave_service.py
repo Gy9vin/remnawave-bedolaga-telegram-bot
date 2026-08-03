@@ -2714,6 +2714,10 @@ class RemnaWaveService:
                                 panel_uuid = (
                                     sub.remnawave_uuid if settings.is_multi_tariff_enabled() else user.remnawave_uuid
                                 )
+                                # На v3 панель не отдаёт uuid, зато отдаёт числовой id —
+                                # запоминаем его прямо из найденного объекта, чтобы не
+                                # зависеть от того, успел ли забэкфилиться users.remnawave_id.
+                                panel_remna_id: int | None = None
 
                                 # Если нет UUID в базе, ищем пользователя по telegram_id в панели
                                 if not panel_uuid and user.telegram_id:
@@ -2732,18 +2736,21 @@ class RemnaWaveService:
                                                 )
                                                 if _matched:
                                                     panel_uuid = _matched.uuid
+                                                    panel_remna_id = _matched.id
                                             # else: no short_id — can't match safely, skip
                                         else:
                                             panel_uuid = existing_users[0].uuid
-                                        if panel_uuid:
+                                            panel_remna_id = existing_users[0].id
+                                        if panel_uuid or panel_remna_id:
                                             logger.debug(
                                                 'Найден пользователь в панели',
                                                 telegram_id=user.telegram_id,
                                                 panel_uuid=panel_uuid,
+                                                panel_remna_id=panel_remna_id,
                                             )
 
                                 # Fallback: поиск по email (для OAuth юзеров без telegram_id)
-                                if not panel_uuid and user.email:
+                                if not panel_uuid and not panel_remna_id and user.email:
                                     existing_users = await api.get_user_by_email(user.email)
                                     if existing_users:
                                         if settings.is_multi_tariff_enabled():
@@ -2759,17 +2766,20 @@ class RemnaWaveService:
                                                 )
                                                 if _matched:
                                                     panel_uuid = _matched.uuid
+                                                    panel_remna_id = _matched.id
                                             # else: no short_id — can't match safely, skip
                                         else:
                                             panel_uuid = existing_users[0].uuid
-                                        if panel_uuid:
+                                            panel_remna_id = existing_users[0].id
+                                        if panel_uuid or panel_remna_id:
                                             logger.debug(
                                                 'Найден пользователь в панели по email',
                                                 email=user.email,
                                                 panel_uuid=panel_uuid,
+                                                panel_remna_id=panel_remna_id,
                                             )
 
-                                if panel_uuid:
+                                if panel_uuid or panel_remna_id:
                                     # Для v3 разрешаем remna_id через get_panel_user_ref
                                     _bs_uuid, _bs_remna_id = await get_panel_user_ref(
                                         api, db, user=user, subscription=sub
@@ -2784,8 +2794,12 @@ class RemnaWaveService:
                                         description=create_kwargs['description'],
                                         active_internal_squads=sub.connected_squads,
                                     )
-                                    if _bs_remna_id is not None:
-                                        update_kwargs['remna_id'] = _bs_remna_id
+                                    # Ленивый резолв мог не сработать (users.remnawave_id ещё
+                                    # NULL и резолвить не по чему) — тогда берём id, который
+                                    # панель уже вернула при поиске выше.
+                                    _resolved_remna_id = _bs_remna_id if _bs_remna_id is not None else panel_remna_id
+                                    if _resolved_remna_id is not None:
+                                        update_kwargs['remna_id'] = _resolved_remna_id
 
                                     if hwid_limit is not None:
                                         update_kwargs['hwid_device_limit'] = hwid_limit
