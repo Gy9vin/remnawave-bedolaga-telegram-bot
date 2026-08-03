@@ -657,12 +657,9 @@ async def process_referral_registration(db: AsyncSession, new_user_id: int, refe
                 f'По вашей ссылке зарегистрировался пользователь <b>{html.escape(new_user.full_name)}</b>!\n\n'
                 f'💰 Когда он пополнит баланс от {settings.format_price(settings.REFERRAL_MINIMUM_TOPUP_KOPEKS)}, '
             )
-            if settings.REFERRAL_INVITER_BONUS_KOPEKS > 0 and commission_percent > 0:
-                inviter_notification += (
-                    f'вы получите {settings.format_price(settings.REFERRAL_INVITER_BONUS_KOPEKS)} + '
-                    f'{commission_percent}% от суммы пополнения.\n\n'
-                )
-            elif settings.REFERRAL_INVITER_BONUS_KOPEKS > 0:
+            if settings.REFERRAL_INVITER_BONUS_KOPEKS > 0:
+                # Фикс имеет приоритет: за первое пополнение начисляется только он,
+                # без добавления процента (см. process_referral_topup).
                 inviter_notification += (
                     f'вы получите {settings.format_price(settings.REFERRAL_INVITER_BONUS_KOPEKS)}.\n\n'
                 )
@@ -843,7 +840,15 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                     )
 
             commission_amount = int(topup_amount_kopeks * commission_percent / 100)
-            inviter_bonus = settings.REFERRAL_INVITER_BONUS_KOPEKS + commission_amount
+            # Первое пополнение реферала: рефереру начисляется ТОЛЬКО фиксированный
+            # бонус, без добавления процента (фикс имеет приоритет). Процент
+            # используется лишь как запасной вариант, если фикс не настроен (0),
+            # иначе владельцы с нулевым фиксом вовсе не получали бы выплату.
+            inviter_bonus_uses_commission_fallback = settings.REFERRAL_INVITER_BONUS_KOPEKS <= 0
+            if inviter_bonus_uses_commission_fallback:
+                inviter_bonus = commission_amount
+            else:
+                inviter_bonus = settings.REFERRAL_INVITER_BONUS_KOPEKS
 
             if inviter_bonus > 0:
                 balance_ok = await add_user_balance(
@@ -871,16 +876,12 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                     )
 
                     if bot:
-                        bonus_parts = []
-                        if settings.REFERRAL_INVITER_BONUS_KOPEKS > 0:
-                            bonus_parts.append(
-                                f'фикс. бонус {settings.format_price(settings.REFERRAL_INVITER_BONUS_KOPEKS)}'
+                        if inviter_bonus_uses_commission_fallback:
+                            bonus_breakdown = (
+                                f'комиссия {commission_percent}% с первого пополнения'
                             )
-                        if commission_amount > 0:
-                            bonus_parts.append(
-                                f'комиссия {commission_percent}% = {settings.format_price(commission_amount)}'
-                            )
-                        bonus_breakdown = ' + '.join(bonus_parts)
+                        else:
+                            bonus_breakdown = 'фиксированный бонус за первое пополнение'
                         inviter_bonus_notification = (
                             f'💰 <b>Реферальная награда!</b>\n\n'
                             f'Ваш реферал <b>{html.escape(user.full_name)}</b> сделал первое пополнение '
