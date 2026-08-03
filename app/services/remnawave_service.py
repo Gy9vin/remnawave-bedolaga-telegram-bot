@@ -721,8 +721,6 @@ class RemnaWaveService:
                 total_upload = sum(node.get('uploadBytes', 0) for node in realtime_usage)
                 total_realtime_traffic = total_download + total_upload
 
-                total_user_traffic = int(system_stats.get('users', {}).get('totalTrafficBytes', '0'))
-
                 nodes_weekly_data = []
                 if nodes_stats.get('lastSevenDays'):
                     nodes_by_name = {}
@@ -755,7 +753,6 @@ class RemnaWaveService:
                         'users_last_day': system_stats.get('onlineStats', {}).get('lastDay', 0),
                         'users_last_week': system_stats.get('onlineStats', {}).get('lastWeek', 0),
                         'users_never_online': system_stats.get('onlineStats', {}).get('neverOnline', 0),
-                        'total_user_traffic': total_user_traffic,
                     },
                     'users_by_status': system_stats.get('users', {}).get('statusCounts', {}),
                     'server_info': {
@@ -825,7 +822,6 @@ class RemnaWaveService:
                 logger.info(
                     'Статистика сформирована',
                     result=result['system']['total_users'],
-                    total_user_traffic=total_user_traffic,
                 )
                 return result
 
@@ -3130,7 +3126,7 @@ class RemnaWaveService:
                         'POST',
                         f'/api/internal-squads/{squad_uuid}/bulk-actions/add-users',
                     )
-                    return response.get('response', {}).get('eventSent', False)
+                    return api._is_event_sent(response)
         except Exception as e:
             logger.error('Error adding users to squad', error=e)
             return False
@@ -3148,7 +3144,7 @@ class RemnaWaveService:
                         'DELETE',
                         f'/api/internal-squads/{squad_uuid}/bulk-actions/remove-users',
                     )
-                    return response.get('response', {}).get('eventSent', False)
+                    return api._is_event_sent(response)
         except Exception as e:
             logger.error('Error removing users from squad', error=e)
             return False

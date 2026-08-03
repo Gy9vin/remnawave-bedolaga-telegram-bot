@@ -213,7 +213,6 @@ async def get_system_statistics(
             users_last_day=system_data.get('users_last_day', 0),
             users_last_week=system_data.get('users_last_week', 0),
             users_never_online=system_data.get('users_never_online', 0),
-            total_user_traffic=system_data.get('total_user_traffic', 0),
         ),
         users_by_status=stats.get('users_by_status', {}),
         server_info=ServerInfo(

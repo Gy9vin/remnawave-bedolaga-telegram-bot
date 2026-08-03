@@ -228,7 +228,18 @@ class KassaAiService:
                 raise Exception('KassaAI unexpected response format')
 
         except aiohttp.ClientError as e:
-            logger.exception('KassaAI API connection error', error=e)
+            # Внешний шлюз иногда рвёт соединение на середине запроса
+            # (ClientOSError/ConnectionResetError) — это транзиентный сетевой
+            # сбой, а не баг в коде. logger.exception пишет error с полным
+            # трейсбеком, а error-логи форвардятся в админ-чат: рвущийся
+            # шлюз спамил бы туда на каждый отвалившийся запрос. Понижаем
+            # такие сбои до warning, поведение (raise) не меняем — см.
+            # аналогичный подход в app/services/channel_subscription_service.py
+            # (except Exception: транзиентные сетевые/таймаут-ошибки → warning).
+            if isinstance(e, (aiohttp.ClientOSError, ConnectionResetError)):
+                logger.warning('KassaAI API network error (transient)', error=str(e))
+            else:
+                logger.exception('KassaAI API connection error', error=e)
             raise
 
     async def create_order_and_get_url(

@@ -1016,6 +1016,24 @@ class RemnaWaveAPI:
             return payload
         return True
 
+    @staticmethod
+    def _is_event_sent(response: dict | None) -> bool:
+        """Итог bulk-action/restart-запросов (eventSent) для v2 и v3.
+
+        v2 отдаёт `{'response': {'eventSent': true}}`. v3 на этих же эндпоинтах
+        (bulk-actions squads, nodes restart) отвечает 202 с пустым телом —
+        `_make_request` возвращает `{}`, и чтение `response['response']['eventSent']`
+        падало с KeyError, хотя панель запрос уже приняла. Пустое тело от
+        _make_request означает HTTP 2xx (иначе было бы брошено RemnaWaveAPIError),
+        то есть успех — отсутствие исключения уже означает, что запрос принят.
+        """
+        payload = response.get('response') if isinstance(response, dict) else None
+        if isinstance(payload, dict) and 'eventSent' in payload:
+            return bool(payload['eventSent'])
+        if isinstance(payload, bool):
+            return payload
+        return True
+
     async def delete_user(self, uuid: str | None = None, remna_id: int | None = None) -> bool:
         await self.get_api_version()
         path_id = self._resolve_user_path(uuid=uuid, remna_id=remna_id)
@@ -1206,12 +1224,12 @@ class RemnaWaveAPI:
     async def add_users_to_internal_squad(self, uuid: str) -> bool:
         """Добавляет всех пользователей в Internal Squad (bulk action)"""
         response = await self._make_request('POST', f'/api/internal-squads/{uuid}/bulk-actions/add-users')
-        return response['response']['eventSent']
+        return self._is_event_sent(response)
 
     async def remove_users_from_internal_squad(self, uuid: str) -> bool:
         """Удаляет всех пользователей из Internal Squad (bulk action)"""
         response = await self._make_request('DELETE', f'/api/internal-squads/{uuid}/bulk-actions/remove-users')
-        return response['response']['eventSent']
+        return self._is_event_sent(response)
 
     async def reorder_internal_squads(self, items: list[dict[str, Any]]) -> list[RemnaWaveInternalSquad]:
         """
@@ -1292,12 +1310,12 @@ class RemnaWaveAPI:
     async def add_users_to_external_squad(self, uuid: str) -> bool:
         """Добавляет всех пользователей в External Squad (bulk action)"""
         response = await self._make_request('POST', f'/api/external-squads/{uuid}/bulk-actions/add-users')
-        return response['response']['eventSent']
+        return self._is_event_sent(response)
 
     async def remove_users_from_external_squad(self, uuid: str) -> bool:
         """Удаляет всех пользователей из External Squad (bulk action)"""
         response = await self._make_request('DELETE', f'/api/external-squads/{uuid}/bulk-actions/remove-users')
-        return response['response']['eventSent']
+        return self._is_event_sent(response)
 
     async def reorder_external_squads(self, items: list[dict[str, Any]]) -> list[RemnaWaveExternalSquad]:
         data = {'items': items}
@@ -1349,12 +1367,12 @@ class RemnaWaveAPI:
         # запроса (раньше body не было). Старые панели игнорируют лишнее поле.
         data = {'forceRestart': force_restart}
         response = await self._make_request('POST', f'/api/nodes/{uuid}/actions/restart', data)
-        return response['response']['eventSent']
+        return self._is_event_sent(response)
 
     async def restart_all_nodes(self, force_restart: bool = False) -> bool:
         data = {'forceRestart': force_restart}
         response = await self._make_request('POST', '/api/nodes/actions/restart-all', data)
-        return response['response']['eventSent']
+        return self._is_event_sent(response)
 
     async def get_subscription_info(self, short_uuid: str) -> SubscriptionInfo:
         response = await self._make_request('GET', f'/api/sub/{short_uuid}/info')

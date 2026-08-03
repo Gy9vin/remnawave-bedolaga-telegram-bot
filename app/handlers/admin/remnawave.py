@@ -1023,8 +1023,6 @@ async def show_system_stats(callback: types.CallbackQuery, db_user: User, db: As
 
     text += f"""
 
-📈 <b>Общий трафик пользователей:</b> {format_bytes(system.get('total_user_traffic', 0))}
-
 📊 <b>Трафик по периодам:</b>
 - 2 дня: {format_bytes(traffic_periods.get('last_2_days', {}).get('current', 0))}{format_traffic_change(traffic_periods.get('last_2_days', {}).get('difference', ''))}
 - 7 дней: {format_bytes(traffic_periods.get('last_7_days', {}).get('current', 0))}{format_traffic_change(traffic_periods.get('last_7_days', {}).get('difference', ''))}

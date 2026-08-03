@@ -100,7 +100,7 @@ class RemnaWaveSystemSummary(BaseModel):
     users_last_day: int
     users_last_week: int
     users_never_online: int
-    total_user_traffic: int
+    total_user_traffic: int | None = None
 
 
 class RemnaWaveServerInfo(BaseModel):

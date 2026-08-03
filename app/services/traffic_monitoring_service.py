@@ -613,12 +613,18 @@ class TrafficMonitoringServiceV2:
         async def check_user_daily_traffic(user) -> TrafficViolation | None:
             async with semaphore:
                 try:
-                    if not user.uuid:
+                    # v3-юзеры не содержат uuid (только числовой id) — раньше
+                    # этот guard был написан под v2-only и резал ИХ ВСЕХ.
+                    if not user.uuid and not user.id:
                         return None
 
                     # Получаем статистику за период
+                    # v3: путь-параметр — числовой userId (user.id), не uuid
+                    # (см. app/cabinet/routes/admin_users.py:1091 — тот же resolve).
                     async with self.remnawave_service.get_api_client() as api:
-                        stats = await api.get_bandwidth_stats_user(user.uuid, start_date, end_date)
+                        await api.get_api_version()
+                        path_id = api._resolve_user_path(uuid=user.uuid, remna_id=user.id)
+                        stats = await api.get_bandwidth_stats_user(path_id, start_date, end_date)
 
                     if not stats:
                         return None
@@ -659,7 +665,9 @@ class TrafficMonitoringServiceV2:
                     return None
 
         # Параллельная проверка
-        tasks = [check_user_daily_traffic(user) for user in users if user.uuid]
+        # v3-юзеры идентифицируются числовым id, а не uuid (см. guard выше) —
+        # не отсекаем их здесь, иначе вся суточная проверка на v3 холостая.
+        tasks = [check_user_daily_traffic(user) for user in users if user.uuid or user.id]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for result in results:
