@@ -927,11 +927,29 @@ class RemnaWaveAPI:
         )
         return await self.enrich_user_with_happ_link(user)
 
+    @staticmethod
+    def _is_deleted(response: dict | None) -> bool:
+        """Итог DELETE-запроса для v2 и v3.
+
+        v2 отдаёт `{'response': {'isDeleted': true}}`. v3 (`HttpStatus.NO_CONTENT`
+        в контроллерах users / internal-squad / external-squads / subpage-configs)
+        отдаёт 204 с пустым телом — `_make_request` возвращает `{}`, и чтение
+        `response['response']['isDeleted']` падало с KeyError, хотя объект в панели
+        уже удалён. Пустое тело от _make_request означает HTTP 2xx (иначе было бы
+        брошено RemnaWaveAPIError), то есть успех.
+        """
+        payload = response.get('response') if isinstance(response, dict) else None
+        if isinstance(payload, dict) and 'isDeleted' in payload:
+            return bool(payload['isDeleted'])
+        if isinstance(payload, bool):
+            return payload
+        return True
+
     async def delete_user(self, uuid: str | None = None, remna_id: int | None = None) -> bool:
         await self.get_api_version()
         path_id = self._resolve_user_path(uuid=uuid, remna_id=remna_id)
         response = await self._make_request('DELETE', f'/api/users/{path_id}')
-        return response['response']['isDeleted']
+        return self._is_deleted(response)
 
     async def enable_user(self, uuid: str | None = None, remna_id: int | None = None) -> RemnaWaveUser:
         await self.get_api_version()
@@ -1102,7 +1120,7 @@ class RemnaWaveAPI:
 
     async def delete_internal_squad(self, uuid: str) -> bool:
         response = await self._make_request('DELETE', f'/api/internal-squads/{uuid}')
-        return response['response']['isDeleted']
+        return self._is_deleted(response)
 
     async def get_internal_squad_accessible_nodes(self, uuid: str) -> list[RemnaWaveAccessibleNode]:
         """Получает список доступных нод для Internal Squad"""
@@ -1198,7 +1216,7 @@ class RemnaWaveAPI:
     async def delete_external_squad(self, uuid: str) -> bool:
         """Удаляет External Squad"""
         response = await self._make_request('DELETE', f'/api/external-squads/{uuid}')
-        return response['response']['isDeleted']
+        return self._is_deleted(response)
 
     async def add_users_to_external_squad(self, uuid: str) -> bool:
         """Добавляет всех пользователей в External Squad (bulk action)"""
@@ -1520,7 +1538,7 @@ class RemnaWaveAPI:
 
     async def delete_subscription_page_config(self, uuid: str) -> bool:
         response = await self._make_request('DELETE', f'/api/subscription-page-configs/{uuid}')
-        return response['response']['isDeleted']
+        return self._is_deleted(response)
 
     async def reorder_subscription_page_configs(self, items: list[dict[str, Any]]) -> list[SubscriptionPageConfig]:
         data = {'items': items}

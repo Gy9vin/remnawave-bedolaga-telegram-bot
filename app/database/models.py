@@ -282,7 +282,7 @@ class SavedPaymentMethod(Base):
     created_at = Column(AwareDateTime(), nullable=False, server_default=func.now())
     updated_at = Column(AwareDateTime(), nullable=False, server_default=func.now(), onupdate=func.now())
 
-    user = relationship('User', backref='saved_payment_methods')
+    user = relationship('User', backref=backref('saved_payment_methods', cascade='all, delete-orphan'))
 
     def __repr__(self):
         return f'<SavedPaymentMethod(id={self.id}, user_id={self.user_id}, type={self.method_type}, last4={self.card_last4})>'
@@ -373,7 +373,7 @@ class AppleTransaction(Base):
     created_at = Column(AwareDateTime(), default=func.now())
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now())
 
-    user = relationship('User', backref='apple_transactions')
+    user = relationship('User', backref=backref('apple_transactions', cascade='all, delete-orphan'))
     transaction = relationship('Transaction', backref='apple_transaction')
 
     @property
@@ -398,7 +398,7 @@ class AppleIAPAccount(Base):
     rotated_at = Column(AwareDateTime(), nullable=True)
     disabled_at = Column(AwareDateTime(), nullable=True)
 
-    user = relationship('User', backref='apple_iap_account')
+    user = relationship('User', backref=backref('apple_iap_account', cascade='all, delete-orphan'))
 
     def __repr__(self):
         return f'<AppleIAPAccount(id={self.id}, user_id={self.user_id})>'
@@ -710,7 +710,7 @@ class PlategaSubscription(Base):
     created_at = Column(AwareDateTime(), default=func.now())
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now())
 
-    user = relationship('User', backref='platega_subscriptions')
+    user = relationship('User', backref=backref('platega_subscriptions', cascade='all, delete-orphan'))
     subscription = relationship('Subscription', backref='platega_subscriptions')
 
     __table_args__ = (
@@ -768,7 +768,7 @@ class LavaSubscription(Base):
     created_at = Column(AwareDateTime(), default=func.now())
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now())
 
-    user = relationship('User', backref='lava_subscriptions')
+    user = relationship('User', backref=backref('lava_subscriptions', cascade='all, delete-orphan'))
     subscription = relationship('Subscription', backref='lava_subscriptions')
 
     __table_args__ = (
@@ -2121,7 +2121,9 @@ class User(Base):
     referrals = relationship(
         'User', backref='referrer', remote_side=[id], foreign_keys='User.referred_by_id', post_update=True
     )
-    subscriptions = relationship('Subscription', back_populates='user', order_by='Subscription.created_at.desc()')
+    subscriptions = relationship(
+        'Subscription', back_populates='user', order_by='Subscription.created_at.desc()', cascade='all, delete-orphan'
+    )
 
     @property
     def subscription(self) -> 'Subscription | None':
@@ -2156,9 +2158,11 @@ class User(Base):
             return True
         return any(not sub.is_pending_trial for sub in (self.subscriptions or []))
 
-    transactions = relationship('Transaction', back_populates='user')
-    referral_earnings = relationship('ReferralEarning', foreign_keys='ReferralEarning.user_id', back_populates='user')
-    discount_offers = relationship('DiscountOffer', back_populates='user')
+    transactions = relationship('Transaction', back_populates='user', cascade='all, delete-orphan')
+    referral_earnings = relationship(
+        'ReferralEarning', foreign_keys='ReferralEarning.user_id', back_populates='user', cascade='all, delete-orphan'
+    )
+    discount_offers = relationship('DiscountOffer', back_populates='user', cascade='all, delete-orphan')
     promo_offer_logs = relationship('PromoOfferLog', back_populates='user')
     lifetime_used_traffic_bytes = Column(BigInteger, default=0)
     auto_promo_group_assigned = Column(Boolean, nullable=False, default=False)
@@ -2176,8 +2180,8 @@ class User(Base):
     promo_group_id = Column(Integer, ForeignKey('promo_groups.id', ondelete='RESTRICT'), nullable=True, index=True)
     promo_group = relationship('PromoGroup', back_populates='users')
     user_promo_groups = relationship('UserPromoGroup', back_populates='user', cascade='all, delete-orphan')
-    poll_responses = relationship('PollResponse', back_populates='user')
-    admin_roles_rel = relationship('UserRole', foreign_keys='[UserRole.user_id]', back_populates='user')
+    poll_responses = relationship('PollResponse', back_populates='user', cascade='all, delete-orphan')
+    admin_roles_rel = relationship('UserRole', foreign_keys='[UserRole.user_id]', back_populates='user', cascade='all, delete-orphan')
     notification_settings = Column(JSONB, nullable=True, default=dict)
     last_pinned_message_id = Column(Integer, nullable=True)
     last_seen_channel_post_id = Column(Integer, nullable=True)
@@ -2721,7 +2725,7 @@ class SubscriptionConversion(Base):
 
     created_at = Column(AwareDateTime(), default=func.now())
 
-    user = relationship('User', backref='subscription_conversions')
+    user = relationship('User', backref=backref('subscription_conversions', cascade='all, delete-orphan'))
 
     @property
     def first_payment_amount_rubles(self) -> float:
@@ -2925,7 +2929,7 @@ class WithdrawalRequest(Base):
     created_at = Column(AwareDateTime(), default=func.now())
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now())
 
-    user = relationship('User', foreign_keys=[user_id], backref='withdrawal_requests')
+    user = relationship('User', foreign_keys=[user_id], backref=backref('withdrawal_requests', cascade='all, delete-orphan'))
     admin = relationship('User', foreign_keys=[processed_by])
 
     @property
@@ -2959,7 +2963,7 @@ class PartnerApplication(Base):
     created_at = Column(AwareDateTime(), default=func.now())
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now())
 
-    user = relationship('User', foreign_keys=[user_id], backref='partner_applications')
+    user = relationship('User', foreign_keys=[user_id], backref=backref('partner_applications', cascade='all, delete-orphan'))
     admin = relationship('User', foreign_keys=[processed_by])
 
 
@@ -3282,7 +3286,7 @@ class SentNotification(Base):
     days_before = Column(Integer, nullable=True)
     created_at = Column(AwareDateTime(), default=func.now())
 
-    user = relationship('User', backref='sent_notifications')
+    user = relationship('User', backref=backref('sent_notifications', cascade='all, delete-orphan'))
     subscription = relationship('Subscription', backref=backref('sent_notifications', passive_deletes=True))
 
 
@@ -3301,7 +3305,7 @@ class SubscriptionEvent(Base):
     extra = Column(JSON, nullable=True)
     created_at = Column(AwareDateTime(), default=func.now())
 
-    user = relationship('User', backref='subscription_events')
+    user = relationship('User', backref=backref('subscription_events', cascade='all, delete-orphan'))
     subscription = relationship('Subscription', backref='subscription_events')
     transaction = relationship('Transaction', backref='subscription_events')
 
@@ -3438,7 +3442,7 @@ class UserClient(Base):
     last_seen_at = Column(AwareDateTime(), nullable=True)
     updated_at = Column(AwareDateTime(), nullable=False, default=func.now(), onupdate=func.now())
 
-    user = relationship('User', backref='user_clients')
+    user = relationship('User', backref=backref('user_clients', cascade='all, delete-orphan'))
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return f'<UserClient(id={self.id}, user_id={self.user_id}, app_name={self.app_name!r})>'
@@ -3786,7 +3790,7 @@ class Ticket(Base):
     ai_agent_name = Column(String(64), nullable=True)  # Имя AI-агента, зафиксированное при создании тикета
 
     # Связи
-    user = relationship('User', backref='tickets')
+    user = relationship('User', backref=backref('tickets', cascade='all, delete-orphan'))
     messages = relationship('TicketMessage', back_populates='ticket', cascade='all, delete-orphan')
 
     @property
@@ -4043,7 +4047,7 @@ class CabinetRefreshToken(Base):
     created_at = Column(AwareDateTime(), default=func.now())
     revoked_at = Column(AwareDateTime(), nullable=True)
 
-    user = relationship('User', backref='cabinet_tokens')
+    user = relationship('User', backref=backref('cabinet_tokens', cascade='all, delete-orphan'))
 
     @property
     def is_expired(self) -> bool:
@@ -4187,7 +4191,7 @@ class WheelSpin(Base):
 
     created_at = Column(AwareDateTime(), default=func.now())
 
-    user = relationship('User', backref='wheel_spins')
+    user = relationship('User', backref=backref('wheel_spins', cascade='all, delete-orphan'))
     prize = relationship('WheelPrize', back_populates='spins')
     generated_promocode = relationship('PromoCode')
 
@@ -4234,7 +4238,7 @@ class TicketNotification(Base):
     read_at = Column(AwareDateTime(), nullable=True)
 
     ticket = relationship('Ticket', backref='notifications')
-    user = relationship('User', backref='ticket_notifications')
+    user = relationship('User', backref=backref('ticket_notifications', cascade='all, delete-orphan'))
 
     def __repr__(self) -> str:
         return f'<TicketNotification id={self.id} type={self.notification_type} for_admin={self.is_for_admin}>'
