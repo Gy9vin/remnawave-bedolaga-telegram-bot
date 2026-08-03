@@ -66,6 +66,79 @@ def _resolve_panel_user_id(subscription: Subscription | None, user: User) -> int
     return user.remnawave_id
 
 
+async def _ensure_panel_user_id(
+    db: AsyncSession,
+    subscription: Subscription | None,
+    user: User,
+    api: Any,
+) -> int | None:
+    """Как ``_resolve_panel_user_id``, но дорезолвит id, если он ещё не сохранён.
+
+    Переход на RemnaWave 3.x заменил строковый uuid панельного пользователя на
+    числовой id, а миграция колонку только заводит — заполняет её отдельный
+    бэкфилл. До его прогона у всех записей, созданных раньше, id пустой, и
+    список устройств выглядел пустым, хотя в панели устройства на месте:
+    спросить панель было не по чему.
+
+    Поэтому при пустом id идём в панель сами — по short_uuid подписки (точный
+    ключ, панель хранит его как есть) и, если его нет, по telegram_id. Совпадение
+    по telegram_id принимаем только когда оно однозначно: несколько панельных
+    аккаунтов на один telegram_id означают мульти-тариф, и угадывать там нельзя —
+    чужой аккаунт показал бы человеку не его устройства.
+
+    Найденный id сразу сохраняется, так что поход в панель случается один раз на
+    запись. Ошибка сохранения не должна ронять выдачу списка — id уже известен и
+    в этом запросе используется, а в следующий раз резолв просто повторится.
+    """
+    panel_user_id = _resolve_panel_user_id(subscription, user)
+    if panel_user_id:
+        return panel_user_id
+
+    short_uuid = getattr(subscription, 'remnawave_short_uuid', None) if subscription else None
+    resolved_id: int | None = None
+    try:
+        if short_uuid:
+            resolved = await api.resolve_user(short_uuid=short_uuid)
+            resolved_id = (resolved or {}).get('id')
+        if not resolved_id and user.telegram_id:
+            candidates = await api.find_users_by_telegram_id(user.telegram_id)
+            unique_ids = {c.id for c in candidates or [] if getattr(c, 'id', None)}
+            if len(unique_ids) == 1:
+                resolved_id = unique_ids.pop()
+    except Exception as error:
+        logger.warning(
+            'Lazy panel identity resolve failed',
+            user_id=user.id,
+            subscription_id=getattr(subscription, 'id', None),
+            error=str(error)[:200],
+        )
+        return None
+
+    if not resolved_id:
+        return None
+
+    if settings.is_multi_tariff_enabled() and subscription is not None:
+        subscription.remnawave_id = resolved_id
+    else:
+        user.remnawave_id = resolved_id
+    try:
+        await db.commit()
+    except Exception as error:
+        logger.warning(
+            'Lazy panel identity resolved but not persisted',
+            user_id=user.id,
+            remnawave_id=resolved_id,
+            error=str(error)[:200],
+        )
+    logger.info(
+        'Lazy panel identity resolved',
+        user_id=user.id,
+        subscription_id=getattr(subscription, 'id', None),
+        remnawave_id=resolved_id,
+    )
+    return resolved_id
+
+
 @router.post('/devices')
 async def purchase_devices_legacy(
     request: DevicePurchaseRequest,
@@ -923,26 +996,30 @@ async def get_devices(
             detail='No subscription found',
         )
 
-    _panel_user_id = _resolve_panel_user_id(subscription, user)
-    if not _panel_user_id:
-        # Не гейтуем список устройств тихим пустым списком без следа — раньше
-        # решение "у юзера нет панель-аккаунта" не всегда логировалось, что
-        # затрудняло диагностику, когда список внезапно пуст. warning тут не
-        # мешает деградации (ответ всё равно пустой список), но виден в логах.
-        logger.warning(
-            'No panel identity resolved for device list',
-            user_id=user.id,
-            subscription_id=subscription.id,
-        )
-        return {
-            'devices': [],
-            'total': 0,
-            'device_limit': subscription.device_limit or 0,
-        }
-
     try:
         service = RemnaWaveService()
         async with service.get_api_client() as api:
+            # Резолв внутри клиента: если панельный id ещё не сохранён (бэкфилл
+            # после перехода на 3.x не прогнан), достаём его из панели на месте,
+            # иначе список выглядел бы пустым при живых устройствах.
+            _panel_user_id = await _ensure_panel_user_id(db, subscription, user, api)
+            if not _panel_user_id:
+                # Не гейтуем список устройств тихим пустым списком без следа —
+                # раньше решение "у юзера нет панель-аккаунта" не всегда
+                # логировалось, что затрудняло диагностику, когда список
+                # внезапно пуст. warning тут не мешает деградации (ответ всё
+                # равно пустой список), но виден в логах.
+                logger.warning(
+                    'No panel identity resolved for device list',
+                    user_id=user.id,
+                    subscription_id=subscription.id,
+                )
+                return {
+                    'devices': [],
+                    'total': 0,
+                    'device_limit': subscription.device_limit or 0,
+                }
+
             response = await api.get_user_devices_all(_panel_user_id)
 
             devices_list = response.get('devices', [])
@@ -1076,16 +1153,15 @@ async def delete_device(
             detail='No subscription found',
         )
 
-    _panel_user_id = _resolve_panel_user_id(subscription, user)
-    if not _panel_user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='Panel user not found',
-        )
-
     try:
         service = RemnaWaveService()
         async with service.get_api_client() as api:
+            _panel_user_id = await _ensure_panel_user_id(db, subscription, user, api)
+            if not _panel_user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='Panel user not found',
+                )
             # Тело запроса в 3.0.0 — {'userId': int, 'hwid': str}; собираем его не
             # руками, а клиентом: он валидирует идентификатор на границе и
             # проверяет, что hwid действительно пропал из ответа панели.
@@ -1130,16 +1206,15 @@ async def delete_all_devices(
             detail='No subscription found',
         )
 
-    _panel_user_id = _resolve_panel_user_id(subscription, user)
-    if not _panel_user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='Panel user not found',
-        )
-
     try:
         service = RemnaWaveService()
         async with service.get_api_client() as api:
+            _panel_user_id = await _ensure_panel_user_id(db, subscription, user, api)
+            if not _panel_user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='Panel user not found',
+                )
             # Get all devices first
             response = await api.get_user_devices_all(_panel_user_id)
 
@@ -1249,16 +1324,16 @@ async def get_device_reduction_info(
 
     # Get connected devices count
     connected_devices_count = 0
-    _panel_user_id = _resolve_panel_user_id(subscription, user)
-    if _panel_user_id:
-        try:
-            service = RemnaWaveService()
-            async with service.get_api_client() as api:
+    try:
+        service = RemnaWaveService()
+        async with service.get_api_client() as api:
+            _panel_user_id = await _ensure_panel_user_id(db, subscription, user, api)
+            if _panel_user_id:
                 response = await api.get_user_devices_all(_panel_user_id)
                 if response:
                     connected_devices_count = response.get('total', 0)
-        except Exception as e:
-            logger.warning('Failed to get connected devices count (panel slow/unavailable)', error=str(e)[:200])
+    except Exception as e:
+        logger.warning('Failed to get connected devices count (panel slow/unavailable)', error=str(e)[:200])
 
     can_reduce = current_device_limit - min_device_limit
 
@@ -1340,11 +1415,11 @@ async def reduce_devices(
     # Get connected devices and remove excess (last connected ones)
     connected_devices_count = 0
     devices_removed_count = 0
-    _panel_user_id = _resolve_panel_user_id(subscription, user)
-    if _panel_user_id:
-        try:
-            service = RemnaWaveService()
-            async with service.get_api_client() as api:
+    try:
+        service = RemnaWaveService()
+        async with service.get_api_client() as api:
+            _panel_user_id = await _ensure_panel_user_id(db, subscription, user, api)
+            if _panel_user_id:
                 response = await api.get_user_devices_all(_panel_user_id)
                 if response:
                     devices_list = response.get('devices', [])
@@ -1377,8 +1452,8 @@ async def reduce_devices(
                                         logger.info('Removed device for user', device_hwid=device_hwid, user_id=user.id)
                                 except Exception as del_error:
                                     logger.error('Error removing device', device_hwid=device_hwid, del_error=del_error)
-        except Exception as e:
-            logger.error('Error checking/removing devices', error=e)
+    except Exception as e:
+        logger.error('Error checking/removing devices', error=e)
 
     old_device_limit = current_device_limit
     user_id = user.id  # save before potential rollback (expires ORM objects)
