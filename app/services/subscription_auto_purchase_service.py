@@ -2005,7 +2005,7 @@ async def _auto_add_devices(
             else getattr(user, 'remnawave_uuid', None)
         )
         if _panel_uuid and subscription.status == 'active':
-            await subscription_service.enable_remnawave_user(_panel_uuid)
+            await subscription_service.enable_remnawave_user(_panel_uuid, user=user, subscription=subscription)
     except Exception as error:
         logger.warning(
             '⚠️ Автопокупка устройств: не удалось обновить Remnawave для пользователя',
@@ -2361,7 +2361,7 @@ async def _auto_add_traffic(
             else getattr(user, 'remnawave_uuid', None)
         )
         if _panel_uuid and subscription.status == 'active':
-            await subscription_service.enable_remnawave_user(_panel_uuid)
+            await subscription_service.enable_remnawave_user(_panel_uuid, user=user, subscription=subscription)
     except Exception as error:
         logger.warning(
             '⚠️ Автопокупка трафика: не удалось обновить Remnawave для пользователя',

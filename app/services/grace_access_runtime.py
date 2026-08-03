@@ -1266,6 +1266,27 @@ async def set_panel_user_enabled_state_grace_safe(
         # Non-mutating grace: не трогаем ни БД, ни suppression-маркеры —
         # поведение панельного enable/disable как до фичи. Остаточные открытые
         # сессии в этих режимах уже отрапортованы CRITICAL-логом на старте.
+        #
+        # Резолв remna_id (v3) — не нарушение "non-mutating": здесь пишется
+        # только users.remnawave_id, тот же ленивый бэкфилл, что и везде в
+        # проекте (get_panel_user_ref, _set_panel_user_enabled_state_locked
+        # ниже) — grace/suppression-состояние подписок эта ветка по-прежнему
+        # не трогает. Без резолва вызов api.enable_user/disable_user ниже
+        # упал бы с ValueError из _resolve_user_path (T4 backfill) на любой
+        # v3-панели, где remnawave_id ещё NULL, — а DISABLED является
+        # дефолтным режимом grace, так что это основной, а не редкий путь.
+        if remna_id is None and await api.get_api_version() == 3:
+            remna_id = await _resolve_remna_id_lazy(api, db, remnawave_uuid)
+            if remna_id is None:
+                logger.warning(
+                    'set_panel_user_enabled_state_grace_safe: remna_id не '
+                    'резолвится для v3 (нет db или пользователь не найден по '
+                    'remnawave_uuid) — enable/disable управляемо пропущен, а '
+                    'не падает необработанным ValueError',
+                    remnawave_uuid=remnawave_uuid,
+                    enabled=enabled,
+                )
+                return None
         if enabled:
             return await api.enable_user(uuid=remnawave_uuid or None, **_remna_kw(remna_id))
         return await api.disable_user(uuid=remnawave_uuid or None, **_remna_kw(remna_id))
@@ -1286,6 +1307,43 @@ async def set_panel_user_enabled_state_grace_safe(
     if deferred_disable_error is not None:
         raise deferred_disable_error
     return action_result
+
+
+async def _resolve_remna_id_lazy(
+    api: Any,
+    db: AsyncSession | None,
+    remnawave_uuid: str,
+) -> int | None:
+    """Ленивый бэкфилл remna_id (v3) для non-mutating grace-ветки.
+
+    Требует ``db``: здесь нет ORM-объекта User/Subscription под рукой (только
+    строка ``remnawave_uuid``), так что без сессии искать его негде — в
+    отличие от вызывающих на уровень выше (disable_remnawave_user/
+    enable_remnawave_user), которые могут резолвить remna_id и без db, если у
+    них уже есть ORM-объект User (см. get_panel_user_ref: short_uuid/
+    telegram_id резолвятся через API, db нужна только чтобы закоммитить).
+
+    ``selectinload(User.subscriptions)`` обязателен: get_panel_user_ref читает
+    ``user.subscriptions`` синхронно (не через await), и без предзагрузки
+    ленивая подгрузка на AsyncSession падает MissingGreenlet — то есть без
+    этого мы просто заменили бы один необработанный exception другим.
+    """
+    if db is None:
+        return None
+    from app.services.remnawave_service import get_panel_user_ref
+
+    user_row = (
+        await db.execute(
+            select(User)
+            .options(selectinload(User.subscriptions))
+            .where(User.remnawave_uuid == remnawave_uuid)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if user_row is None:
+        return None
+    _, resolved = await get_panel_user_ref(api, db, user=user_row)
+    return resolved
 
 
 async def _set_panel_user_enabled_state_locked(

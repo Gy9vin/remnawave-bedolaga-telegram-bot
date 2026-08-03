@@ -1172,7 +1172,9 @@ class MonitoringService:
                             )
                             if panel_uuid:
                                 try:
-                                    await self.subscription_service.disable_remnawave_user(panel_uuid)
+                                    await self.subscription_service.disable_remnawave_user(
+                                        panel_uuid, user=user, subscription=subscription
+                                    )
                                 except Exception as api_error:
                                     logger.error(
                                         'Failed to disable RemnaWave user',
@@ -1259,7 +1261,9 @@ class MonitoringService:
                                         else user.remnawave_uuid
                                     )
                                     if _enable_uuid:
-                                        await self.subscription_service.enable_remnawave_user(_enable_uuid)
+                                        await self.subscription_service.enable_remnawave_user(
+                                            _enable_uuid, user=user, subscription=subscription
+                                        )
                             except Exception as api_error:
                                 logger.error(
                                     'Failed to update RemnaWave user',

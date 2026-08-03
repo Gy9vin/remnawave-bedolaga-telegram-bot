@@ -829,20 +829,49 @@ class SubscriptionService:
                 '⚠️ Не удалось сбросить трафик RemnaWave', _format_user_log=self._format_user_log(user), error=exc
             )
 
-    async def disable_remnawave_user(self, user_uuid: str, db: AsyncSession | None = None) -> bool:
+    async def disable_remnawave_user(
+        self,
+        user_uuid: str,
+        db: AsyncSession | None = None,
+        *,
+        remna_id: int | None = None,
+        user: 'User | None' = None,
+        subscription: 'Subscription | None' = None,
+    ) -> bool:
         """``db`` — сессия вызывающего, уже держащего grace-локи (пути удаления
         после ensure_no_open_grace_*): без её проброса grace-обёртка открыла бы
-        вторую сессию и самодедлочилась об advisory-локи первой."""
+        вторую сессию и самодедлочилась об advisory-локи первой.
+
+        ``remna_id``/``user``/``subscription`` — опционально: если вызывающий
+        уже держит числовой id панели (v3) или ORM-объект User/Subscription,
+        передача убирает лишний резолв внутри
+        set_panel_user_enabled_state_grace_safe (отдельный SELECT по
+        remnawave_uuid). На v3 без ``db`` это ещё и единственный способ
+        вообще резолвнуть remna_id — get_panel_user_ref умеет достать его
+        через short_uuid/telegram_id по API, не трогая БД."""
         try:
             from app.services.grace_access_runtime import set_panel_user_enabled_state_grace_safe
 
             async with self.get_api_client() as api:
-                await set_panel_user_enabled_state_grace_safe(
+                if remna_id is None and (user is not None or subscription is not None):
+                    _, remna_id = await _get_panel_user_ref()(api, db, user=user, subscription=subscription)
+                action_result = await set_panel_user_enabled_state_grace_safe(
                     api,
                     user_uuid,
                     enabled=False,
                     db=db,
+                    remna_id=remna_id,
                 )
+                if action_result is None:
+                    # v3 + remna_id не резолвился (нет db и негде взять
+                    # short_uuid/telegram_id) — grace-обёртка управляемо
+                    # пропустила вызов панели вместо ValueError. Это реальная
+                    # неудача операции, а не идемпотентный успех.
+                    logger.warning(
+                        '⚠️ RemnaWave пользователь не отключен: remna_id не резолвлен (v3)',
+                        user_uuid=user_uuid,
+                    )
+                    return False
                 logger.info('✅ Отключен RemnaWave пользователь', user_uuid=user_uuid)
                 return True
 
@@ -879,21 +908,40 @@ class SubscriptionService:
             logger.error('Ошибка удаления RemnaWave пользователя', error=e, user_uuid=_log_uuid)
             return False
 
-    async def enable_remnawave_user(self, user_uuid: str, db: AsyncSession | None = None) -> bool:
+    async def enable_remnawave_user(
+        self,
+        user_uuid: str,
+        db: AsyncSession | None = None,
+        *,
+        remna_id: int | None = None,
+        user: 'User | None' = None,
+        subscription: 'Subscription | None' = None,
+    ) -> bool:
         """Включить пользователя в RemnaWave (реактивация).
 
         ``db`` — сессия вызывающего, уже держащего grace-локи этих подписок
-        (см. disable_remnawave_user)."""
+        (см. disable_remnawave_user). ``remna_id``/``user``/``subscription`` —
+        см. disable_remnawave_user."""
         try:
             from app.services.grace_access_runtime import set_panel_user_enabled_state_grace_safe
 
             async with self.get_api_client() as api:
-                await set_panel_user_enabled_state_grace_safe(
+                if remna_id is None and (user is not None or subscription is not None):
+                    _, remna_id = await _get_panel_user_ref()(api, db, user=user, subscription=subscription)
+                action_result = await set_panel_user_enabled_state_grace_safe(
                     api,
                     user_uuid,
                     enabled=True,
                     db=db,
+                    remna_id=remna_id,
                 )
+                if action_result is None:
+                    # v3 + remna_id не резолвился — см. disable_remnawave_user.
+                    logger.warning(
+                        '⚠️ RemnaWave пользователь не включен: remna_id не резолвлен (v3)',
+                        user_uuid=user_uuid,
+                    )
+                    return False
                 logger.info('✅ Включен RemnaWave пользователь', user_uuid=user_uuid)
                 return True
 

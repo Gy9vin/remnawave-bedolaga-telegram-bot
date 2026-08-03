@@ -651,8 +651,15 @@ async def cleanup_blocked_broadcast_users(blocked_telegram_ids: list[int]) -> No
                     await session.refresh(user, ['subscriptions'])
                     for sub in user.subscriptions or []:
                         if sub.remnawave_uuid:
-                            await subscription_service.disable_remnawave_user(sub.remnawave_uuid)
+                            await subscription_service.disable_remnawave_user(
+                                sub.remnawave_uuid, user=user, subscription=sub
+                            )
                 elif user.remnawave_uuid:
+                    # user.subscriptions не подгружены здесь (в отличие от ветки
+                    # multi-tariff выше) — не передаём user=, чтобы не спровоцировать
+                    # ленивую подгрузку не через await (MissingGreenlet на
+                    # AsyncSession); remna_id резолвится в grace_access_runtime
+                    # (fallback без db — управляемый пропуск, не исключение).
                     await subscription_service.disable_remnawave_user(user.remnawave_uuid)
 
                 logger.info(

@@ -697,7 +697,9 @@ class UserService:
                     panel_uuid = sub.remnawave_uuid
                     if panel_uuid:
                         try:
-                            await subscription_service.disable_remnawave_user(panel_uuid)
+                            await subscription_service.disable_remnawave_user(
+                                panel_uuid, user=user, subscription=sub
+                            )
                             logger.info(
                                 '✅ RemnaWave пользователь деактивирован при блокировке',
                                 remnawave_uuid=panel_uuid,
@@ -711,7 +713,7 @@ class UserService:
                             )
             elif user.remnawave_uuid:
                 try:
-                    await subscription_service.disable_remnawave_user(user.remnawave_uuid)
+                    await subscription_service.disable_remnawave_user(user.remnawave_uuid, user=user)
                     logger.info(
                         '✅ RemnaWave пользователь деактивирован при блокировке',
                         remnawave_uuid=user.remnawave_uuid,
@@ -918,7 +920,9 @@ class UserService:
                                 from app.services.subscription_service import SubscriptionService
 
                                 subscription_service = SubscriptionService()
-                                disabled = await subscription_service.disable_remnawave_user(panel_uuid, db=db)
+                                disabled = await subscription_service.disable_remnawave_user(
+                                    panel_uuid, db=db, user=user, subscription=uuid_to_sub.get(panel_uuid)
+                                )
                                 result.panel_deleted = disabled
                                 if disabled:
                                     logger.info(
@@ -947,7 +951,9 @@ class UserService:
                                     from app.services.subscription_service import SubscriptionService
 
                                     subscription_service = SubscriptionService()
-                                    disabled = await subscription_service.disable_remnawave_user(panel_uuid, db=db)
+                                    disabled = await subscription_service.disable_remnawave_user(
+                                        panel_uuid, db=db, user=user, subscription=uuid_to_sub.get(panel_uuid)
+                                    )
                                     if disabled:
                                         result.panel_deleted = True
                                         result.panel_error = 'Удаление не удалось, пользователь деактивирован'
