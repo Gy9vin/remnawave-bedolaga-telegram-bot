@@ -1662,8 +1662,17 @@ class RemnaWaveAPI:
         return response.get('response') or []
 
     async def get_user_devices(
-        self, user_uuid: str | None = None, remna_id: int | None = None
+        self,
+        user_uuid: str | None = None,
+        remna_id: int | None = None,
+        *,
+        uuid: str | None = None,
     ) -> dict[str, Any]:
+        # ``uuid`` — алиас ``user_uuid``: часть call-site'ов зовёт метод именно
+        # так (как остальные user-методы клиента), и рассинхрон имён давал
+        # TypeError уже в проде. Принимаем оба, чтобы имя параметра не было
+        # миной при каждой новой правке.
+        user_uuid = user_uuid if user_uuid is not None else uuid
         await self.get_api_version()
         path_id = self._resolve_user_path(uuid=user_uuid, remna_id=remna_id)
         try:
@@ -1675,9 +1684,18 @@ class RemnaWaveAPI:
             raise
 
     async def get_user_devices_all(
-        self, user_uuid: str | None = None, remna_id: int | None = None
+        self,
+        user_uuid: str | None = None,
+        remna_id: int | None = None,
+        *,
+        uuid: str | None = None,
     ) -> dict[str, Any]:
         """GET /api/hwid/devices/{user_uuid} — all devices for a user (paginated)."""
+        # ``uuid`` — алиас ``user_uuid``: часть call-site'ов зовёт метод именно
+        # так (как остальные user-методы клиента), и рассинхрон имён давал
+        # TypeError уже в проде. Принимаем оба, чтобы имя параметра не было
+        # миной при каждой новой правке.
+        user_uuid = user_uuid if user_uuid is not None else uuid
         await self.get_api_version()
         path_id = self._resolve_user_path(uuid=user_uuid, remna_id=remna_id)
         all_devices: list[dict[str, Any]] = []
@@ -1735,8 +1753,17 @@ class RemnaWaveAPI:
         )
 
     async def reset_user_devices(
-        self, user_uuid: str | None = None, remna_id: int | None = None
+        self,
+        user_uuid: str | None = None,
+        remna_id: int | None = None,
+        *,
+        uuid: str | None = None,
     ) -> bool:
+        # ``uuid`` — алиас ``user_uuid``: часть call-site'ов зовёт метод именно
+        # так (как остальные user-методы клиента), и рассинхрон имён давал
+        # TypeError уже в проде. Принимаем оба, чтобы имя параметра не было
+        # миной при каждой новой правке.
+        user_uuid = user_uuid if user_uuid is not None else uuid
         await self.get_api_version()
         path_id = self._resolve_user_path(uuid=user_uuid, remna_id=remna_id)
         try:
