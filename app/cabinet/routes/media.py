@@ -2,7 +2,6 @@
 
 import hashlib
 import hmac
-import mimetypes
 import re
 import time
 
@@ -30,7 +29,36 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 # as an opaque blob. User attachments are served from the app's own origin, so an
 # HTML/SVG file rendered inline would execute JS with access to the cabinet's
 # localStorage tokens (stored XSS → session/token theft).
-_SAFE_INLINE_IMAGE_TYPES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
+#
+# The type is decided from the downloaded bytes' magic signature, NOT from the
+# filename/extension. Telegram's `file.file_path` (from `getFile`) is not a
+# reliable source of truth: self-hosted/proxied Bot API servers and some
+# document-flavoured uploads can hand back a path with no extension at all, or
+# with an unhelpful one, which made every such photo mis-detected as
+# `application/octet-stream` and forced to download instead of rendering
+# inline. Magic-byte sniffing fixes that without reopening the XSS hole: HTML
+# and SVG payloads can never fake these specific byte signatures, and even a
+# file that lies about its extension (e.g. `evil.jpg` containing HTML) is
+# still caught, which the old extension-only check did not guarantee.
+_IMAGE_MAGIC_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b'\xff\xd8\xff', 'image/jpeg'),
+    (b'\x89PNG\r\n\x1a\n', 'image/png'),
+    (b'GIF87a', 'image/gif'),
+    (b'GIF89a', 'image/gif'),
+)
+
+
+def _sniff_safe_image_type(content: bytes) -> str | None:
+    """Return the MIME type if `content` starts with a known-safe raster
+    image signature, else None. Deliberately extension-independent — see the
+    module-level comment above `_IMAGE_MAGIC_SIGNATURES`."""
+    for magic, mime in _IMAGE_MAGIC_SIGNATURES:
+        if content.startswith(magic):
+            return mime
+    if content[:4] == b'RIFF' and content[8:12] == b'WEBP':
+        return 'image/webp'
+    return None
+
 
 # Active/scriptable content rejected at upload time (defense in depth — the
 # download endpoint already forces these to download, but refuse them at the door).
@@ -65,16 +93,18 @@ def _sanitize_download_filename(filename: str) -> str:
     return name[:128] or 'file'
 
 
-def _content_response_params(filename: str) -> tuple[str, dict[str, str]]:
+def _content_response_params(filename: str, content: bytes) -> tuple[str, dict[str, str]]:
     """Decide the safe Content-Type / disposition / hardening headers for a download.
 
-    Renders only a strict allow-list of raster images inline; forces everything
-    else to download as application/octet-stream. Adds nosniff + a locked-down CSP
-    so a user file can never execute script in the cabinet origin.
+    Renders only a strict allow-list of raster images inline — decided by sniffing
+    the actual downloaded bytes' magic signature, not the filename/extension (which
+    Telegram's `file_path` does not reliably provide, see `_sniff_safe_image_type`).
+    Forces everything else to download as application/octet-stream. Adds nosniff +
+    a locked-down CSP so a user file can never execute script in the cabinet origin.
     """
-    guessed_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-    if guessed_type in _SAFE_INLINE_IMAGE_TYPES:
-        media_type = guessed_type
+    sniffed_type = _sniff_safe_image_type(content)
+    if sniffed_type is not None:
+        media_type = sniffed_type
         disposition = 'inline'
     else:
         media_type = 'application/octet-stream'
@@ -311,7 +341,7 @@ async def download_media(
         content = buffer.read() if hasattr(buffer, 'read') else bytes(buffer)
         filename = file.file_path.split('/')[-1]
 
-        media_type, headers = _content_response_params(filename)
+        media_type, headers = _content_response_params(filename, content)
 
         return Response(content=content, media_type=media_type, headers=headers)
     except HTTPException:
