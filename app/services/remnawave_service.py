@@ -99,7 +99,30 @@ async def get_panel_user_ref(
     if resolved_id is not None and user is not None:
         user.remnawave_id = resolved_id
         if db is not None:
-            await db.commit()
+            # Лениво резолвнутый remna_id пишем в БД best-effort: этот хелпер
+            # вызывается из очень разных контекстов (в т.ч. параллельно —
+            # sync_users_to_panel гоняет process_subscription() через
+            # asyncio.gather на общей AsyncSession, и/или вызывающий уже
+            # держит собственную незавершённую транзакцию/flush на этой же
+            # сессии). commit() в таком контексте может упасть
+            # IllegalStateChangeError ("_prepare_impl() is already in
+            # progress") — SQLAlchemy не даёт надёжного предварительного
+            # признака "сессия сейчас свободна для commit", это видно только
+            # по факту попытки. Поэтому: коммитим, но любую ошибку сохранения
+            # гасим в warning — сам резолв remna_id уже произошёл в памяти и
+            # обязан дойти до вызывающего кода независимо от того, удалось
+            # ли его сохранить. Не сохранённое значение не страшно: при
+            # следующем вызове оно просто резолвится заново.
+            try:
+                await db.commit()
+            except Exception as commit_error:  # noqa: BLE001 - best-effort persist, must not propagate
+                logger.warning(
+                    'get_panel_user_ref: не удалось сохранить бэкфилл remnawave_id '
+                    '(возможно, чужая транзакция/сессия занята) — продолжаем без падения',
+                    telegram_id=getattr(user, 'telegram_id', None),
+                    remna_id=resolved_id,
+                    error=str(commit_error),
+                )
         return (None, resolved_id)
 
     if resolved_id is None:
