@@ -364,8 +364,20 @@ async def _process_referral_code(
     Handles two cases:
     - referred_by_id already set by create_user() → fire registration event
     - referred_by_id not set (resolution failed earlier) → resolve, set, fire
+
+    ``referral_code`` is the RAW client-supplied request body field, which
+    can be empty even when ``user.referred_by_id`` is already set — the
+    caller may have resolved the referrer from Redis ``pending_referral``
+    instead of the body (see the Telegram auth endpoints below). Case 1
+    must still run in that situation, so the gate only bails out early
+    when there is truly nothing to do: no code AND no pre-set referrer.
+    Case 2 (resolving a referrer FROM ``referral_code``) still requires a
+    non-empty code — widening that arm would let a client self-attach an
+    arbitrary referrer post-hoc.
     """
-    if not referral_code or not is_new_user:
+    if not is_new_user:
+        return
+    if not referral_code and not user.referred_by_id:
         return
     try:
         from app.bot_factory import create_bot

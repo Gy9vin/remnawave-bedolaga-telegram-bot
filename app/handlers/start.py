@@ -64,7 +64,11 @@ from app.services.referral_service import (
 )
 from app.services.subscription_service import SubscriptionService
 from app.services.support_settings_service import SupportSettingsService
-from app.services.web_auth_service import WEB_AUTH_TOKEN_MIN_LENGTH, link_web_auth_token
+from app.services.web_auth_service import (
+    WEB_AUTH_TOKEN_MIN_LENGTH,
+    link_web_auth_token,
+    poll_web_auth_token,
+)
 from app.states import RegistrationStates
 from app.utils.long_messages import answer_long_text, edit_long_text, send_long_text
 from app.utils.rich_menu import try_answer_rich_main_menu, try_send_rich_main_menu
@@ -1012,6 +1016,64 @@ async def _continue_registration_after_language(
     logger.info('📋 LANGUAGE: Правила отправлены после выбора языка')
 
 
+async def _save_pending_referral_from_webauth_token(
+    db: AsyncSession,
+    telegram_id: int,
+    web_auth_token: str,
+) -> None:
+    """Preserve a webauth deep-link's referral code for a NOT-YET-registered user.
+
+    Called when ``/start webauth_{token}`` is opened by a Telegram account
+    that has no DB row yet. The token (created via
+    ``create_web_auth_token(referral_code=...)``) may carry the referral
+    code from the cabinet's ``?ref=CODE`` link, but the "register first"
+    reply below used to just ``return`` — the code was never persisted
+    anywhere, so a later bare ``/start`` registration lost the referrer
+    permanently.
+
+    We peek the token non-destructively via ``poll_web_auth_token`` (NOT
+    ``link_web_auth_token``/``consume_web_auth_token`` — those are
+    one-time-use and reserved for the registered-user confirmation flow;
+    consuming the token here would break that flow for the actual login).
+    The resolved referrer is stashed as a Redis ``pending_referral`` entry,
+    which ``create_user()`` (``app/database/crud/user.py``) already reads
+    on registration — so no further wiring is needed for the referral to
+    attach once the user completes a normal ``/start`` registration.
+
+    Never raises — this must not break the "register first" reply.
+    """
+    try:
+        token_data = await poll_web_auth_token(web_auth_token)
+        if not token_data:
+            return
+        ref_code = token_data.get('referral_code')
+        if not ref_code:
+            return
+        referrer = await get_user_by_referral_code(db, ref_code)
+        if not referrer:
+            return
+        if referrer.telegram_id == telegram_id:
+            logger.warning(
+                'Self-referral attempt blocked via unregistered webauth deep link',
+                telegram_id=telegram_id,
+                referral_code=ref_code,
+            )
+            return
+        await save_pending_referral(telegram_id, ref_code, referrer.id)
+        logger.info(
+            'Pending referral saved from unregistered webauth attempt',
+            telegram_id=telegram_id,
+            referral_code=ref_code,
+            referrer_id=referrer.id,
+        )
+    except Exception as exc:
+        logger.warning(
+            'Failed to save pending referral from unregistered webauth attempt',
+            telegram_id=telegram_id,
+            error=exc,
+        )
+
+
 async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession, db_user=None):
     logger.info('🚀 START: Обработка /start от', from_user_id=message.from_user.id)
 
@@ -1151,6 +1213,7 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
                 )
             else:
                 logger.warning('Web auth attempt from unregistered user', telegram_id=message.from_user.id)
+                await _save_pending_referral_from_webauth_token(db, message.from_user.id, web_auth_token)
                 await message.answer('❌ Сначала зарегистрируйтесь в боте, затем попробуйте войти в кабинет.')
             return
         start_parameter = None  # Invalid token, ignore
