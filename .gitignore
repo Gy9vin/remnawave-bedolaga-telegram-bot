@@ -27,6 +27,8 @@
 # Скрипты
 !install_bot.sh
 !main.py
+# Разовый бэкфилл панельных id — нужен на проде, поэтому в репозитории
+!backfill_remnawave_ids.py
 
 # Статические файлы
 !vpn_logo.png

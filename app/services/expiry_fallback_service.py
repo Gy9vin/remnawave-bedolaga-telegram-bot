@@ -115,25 +115,79 @@ def _is_dev_user_allowed(subscription: Subscription) -> bool:
     return str(subscription.user_id) in ids
 
 
+async def _resolve_panel_ref(api, db, subscription) -> tuple[str | None, int | None]:
+    """Резолвит (uuid, remna_id) панельного пользователя подписки.
+
+    Юзер для get_panel_user_ref получается через ``get_user_by_id(db,
+    subscription.user_id)`` — с eager-load подписок, а НЕ через
+    ``subscription.user``: этот relationship в вызывающих местах этого модуля
+    (move_to_fallback/restore_from_fallback вызываются из webhook-сервиса,
+    monitoring, кабинета, крон-джоб reconcile и т.д.) далеко не всегда
+    предзагружен через selectinload, а синхронный доступ к незагруженному
+    relationship-атрибуту на AsyncSession валит ``MissingGreenlet`` вместо
+    аккуратного резолва (см. fe008155 — тот же класс бага). user_id — обычная
+    колонка, лишнего лениво загружаемого обращения не требует.
+
+    Без ``db`` (вызывающий не держит сессию) — best-effort пробуем
+    ``subscription.user``, если он уже был предзагружен вызывающим; иначе
+    отдаём get_panel_user_ref только uuid/short_uuid — резолв v3 через
+    telegram_id в этом случае недоступен.
+    """
+    from app.services.remnawave_service import get_panel_user_ref
+
+    if subscription is None:
+        return None, None
+
+    user = None
+    if db is not None and getattr(subscription, 'user_id', None):
+        from app.database.crud.user import get_user_by_id
+
+        try:
+            user = await get_user_by_id(db, subscription.user_id)
+        except Exception as exc:  # noqa: BLE001 - best-effort, резолв продолжится без user
+            logger.warning(
+                '_resolve_panel_ref: не удалось загрузить User по user_id',
+                user_id=subscription.user_id,
+                error=str(exc),
+            )
+
+    if user is None:
+        try:
+            user = subscription.user
+        except Exception:  # noqa: BLE001 - незагруженный relationship без db, не крашимся
+            user = None
+
+    return await get_panel_user_ref(api, db, subscription=subscription, user=user)
+
+
 async def _get_remnawave_user(remnawave_uuid: str, db=None, subscription=None):
     """Достаёт юзера из Remnawave.
 
     Возвращает None если:
       - 404 (юзер удалён в панели) — нормальный кейс, не логируем как ошибку
+      - v3 и remna_id не удалось резолвить — управляемая неудача (warning),
+        панель не дёргаем вовсе (без этого api.get_user_by_uuid падал бы
+        ValueError из _resolve_user_path)
       - сетевая/другая ошибка — лог error
 
     db + subscription используются для разрешения идентификатора на v3
     через get_panel_user_ref (v2: передаёт uuid без изменений).
     """
     from app.external.remnawave_api import RemnaWaveAPIError
-    from app.services.remnawave_service import remnawave_service, get_panel_user_ref
+    from app.services.remnawave_service import remnawave_service
     try:
         async with remnawave_service.get_api_client() as api:
             if db is not None and subscription is not None:
-                user = getattr(subscription, 'user', None)
-                uuid, remna_id = await get_panel_user_ref(api, db, subscription=subscription, user=user)
+                uuid, remna_id = await _resolve_panel_ref(api, db, subscription)
             else:
                 uuid, remna_id = remnawave_uuid, None
+            if remna_id is None and await api.get_api_version() == 3:
+                logger.warning(
+                    'expiry_fallback: remna_id не резолвлен для v3 — get_user '
+                    'пропущен (управляемая неудача вместо ValueError)',
+                    remnawave_uuid=remnawave_uuid,
+                )
+                return None
             return await api.get_user_by_uuid(uuid=uuid, remna_id=remna_id)
     except RemnaWaveAPIError as exc:
         if getattr(exc, 'status_code', None) == 404:
@@ -164,14 +218,20 @@ async def _patch_user_full(
     db + subscription используются для разрешения идентификатора на v3
     через get_panel_user_ref (v2: передаёт uuid без изменений).
     """
-    from app.services.remnawave_service import remnawave_service, get_panel_user_ref
+    from app.services.remnawave_service import remnawave_service
     try:
         async with remnawave_service.get_api_client() as api:
             if db is not None and subscription is not None:
-                user = getattr(subscription, 'user', None)
-                uuid, remna_id = await get_panel_user_ref(api, db, subscription=subscription, user=user)
+                uuid, remna_id = await _resolve_panel_ref(api, db, subscription)
             else:
                 uuid, remna_id = remnawave_uuid, None
+            if remna_id is None and await api.get_api_version() == 3:
+                logger.warning(
+                    'expiry_fallback: remna_id не резолвлен для v3 — update_user '
+                    'пропущен (управляемая неудача вместо ValueError)',
+                    remnawave_uuid=remnawave_uuid,
+                )
+                return False
             await api.update_user(
                 uuid=uuid,
                 remna_id=remna_id,
@@ -188,10 +248,11 @@ async def _patch_user_full(
             try:
                 async with remnawave_service.get_api_client() as api:
                     if db is not None and subscription is not None:
-                        user = getattr(subscription, 'user', None)
-                        uuid, remna_id = await get_panel_user_ref(api, db, subscription=subscription, user=user)
+                        uuid, remna_id = await _resolve_panel_ref(api, db, subscription)
                     else:
                         uuid, remna_id = remnawave_uuid, None
+                    if remna_id is None and await api.get_api_version() == 3:
+                        raise RuntimeError('remna_id unresolved for v3 verify — skip')
                     verified = await api.get_user_by_uuid(uuid=uuid, remna_id=remna_id)
                 if verified:
                     actual = set(_extract_squad_uuids(getattr(verified, 'active_internal_squads', None)))
@@ -227,14 +288,20 @@ async def _reset_remnawave_traffic(remnawave_uuid: str, db=None, subscription=No
     db + subscription используются для разрешения идентификатора на v3
     через get_panel_user_ref (v2: передаёт uuid без изменений).
     """
-    from app.services.remnawave_service import remnawave_service, get_panel_user_ref
+    from app.services.remnawave_service import remnawave_service
     try:
         async with remnawave_service.get_api_client() as api:
             if db is not None and subscription is not None:
-                user = getattr(subscription, 'user', None)
-                uuid, remna_id = await get_panel_user_ref(api, db, subscription=subscription, user=user)
+                uuid, remna_id = await _resolve_panel_ref(api, db, subscription)
             else:
                 uuid, remna_id = remnawave_uuid, None
+            if remna_id is None and await api.get_api_version() == 3:
+                logger.warning(
+                    'expiry_fallback: remna_id не резолвлен для v3 — '
+                    'reset_user_traffic пропущен (управляемая неудача вместо ValueError)',
+                    remnawave_uuid=remnawave_uuid,
+                )
+                return False
             await api.reset_user_traffic(uuid=uuid, remna_id=remna_id)
         logger.info('🔄 Сброшен трафик в Remnawave (move to fallback)', remnawave_uuid=remnawave_uuid)
         return True

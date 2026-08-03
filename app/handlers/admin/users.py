@@ -3168,6 +3168,8 @@ async def admin_user_fallback_restore(callback: types.CallbackQuery, db_user: Us
             squads=patch_target_squads,
             expire_at=patch_target_expire,
             verify_squad_in=patch_target_squads if patch_target_squads else None,
+            db=db,
+            subscription=active_sub,
         )
         patched = bool(ok)
         info_lines.append(
@@ -3184,6 +3186,8 @@ async def admin_user_fallback_restore(callback: types.CallbackQuery, db_user: Us
                 squads=patch_target_squads,
                 expire_at=patch_target_expire,
                 verify_squad_in=patch_target_squads,
+                db=db,
+                subscription=latest_fb,
             )
             patched = bool(ok)
             info_lines.append(
