@@ -383,8 +383,8 @@ async def is_user_dormant_for_autopay(db, subscription, user, now=None, remnawav
                 _uuid, _remna_id = await get_panel_user_ref(
                     api, db, user=user, subscription=subscription
                 )
-                if _uuid or _remna_id:
-                    panel_user = await api.get_user_by_uuid(_uuid, remna_id=_remna_id)
+                if _remna_id:
+                    panel_user = await api.get_user_by_id(_remna_id)
                 else:
                     panel_user = None
             if panel_user is not None:

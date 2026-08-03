@@ -31,7 +31,11 @@ from app.database.models import (
     User,
     UserStatus as DatabaseUserStatus,
 )
-from app.external.remnawave_api import UserStatus as PanelUserStatus
+from app.external.remnawave_api import (
+    RemnaWaveInvalidUserIdError,
+    UserStatus as PanelUserStatus,
+    coerce_panel_user_id,
+)
 from app.services.grace_access_service import (
     GraceAccessMode,
     GraceAccessPolicy,
@@ -63,7 +67,14 @@ _OPEN_STATES = (
     GraceSessionState.ACTIVE.value,
     GraceSessionState.RESTORING.value,
 )
-_SNAPSHOT_VERSION = 2
+_SNAPSHOT_VERSION = 3
+# Version 3 stores the numeric Remnawave 3.0.0 identity.  Version 2 rows are
+# still read: the backfill adds the numeric key *next to* the historical uuid
+# instead of replacing it, and a session that predates the panel upgrade must
+# stay reconcilable.  Refusing v2 here would make `_model_to_session` raise for
+# every such row, `list_open` would drop them from the batch, and their overlay
+# would never be rolled back — a permanently open door with no error report.
+_SUPPORTED_SNAPSHOT_VERSIONS = frozenset({2, _SNAPSHOT_VERSION})
 _POSTGRES_LOCK_NAMESPACE = 1_196_572_995
 _POSTGRES_GLOBAL_PANEL_LOCK_ID = 0
 
@@ -274,63 +285,42 @@ class _PanelTarget:
 class RemnawaveGracePanelGateway:
     """Changes only fields controlled by the temporary overlay."""
 
-    def __init__(self, db: AsyncSession | None = None) -> None:
-        self._db = db
-
-    async def _resolve_ref(self, api: Any, remnawave_uuid: str) -> tuple[str | None, int | None]:
-        """Разрешает (uuid, remna_id) для вызовов панельного API.
-
-        Без db (тесты, DISABLED/OBSERVE путь): возвращает (remnawave_uuid, None).
-        v2: возвращает (remnawave_uuid, None) — без запросов к БД.
-        v3: ищет User по remnawave_uuid, берёт remnawave_id или разрешает через API.
-        """
-        if self._db is None:
-            return (remnawave_uuid, None)
-        from app.services.remnawave_service import get_panel_user_ref
-
-        user_row = (
-            await self._db.execute(
-                select(User).where(User.remnawave_uuid == remnawave_uuid).limit(1)
-            )
-        ).scalar_one_or_none()
-        return await get_panel_user_ref(api, self._db, user=user_row)
-
-    async def read_snapshot(self, remnawave_uuid: str) -> GracePanelSnapshot | None:
+    async def read_snapshot(self, remnawave_id: int) -> GracePanelSnapshot | None:
         from app.services.remnawave_service import remnawave_service
 
+        # An unusable local identifier raises RemnaWaveInvalidUserIdError from the
+        # client boundary instead of returning None: that is a broken link in our
+        # database, not a deleted panel user, and must never be answered by
+        # "nothing left to restore".
         async with remnawave_service.get_api_client() as api:
-            uuid, remna_id = await self._resolve_ref(api, remnawave_uuid)
-            panel_user = await api.get_user_by_uuid(uuid, **_remna_kw(remna_id))
+            panel_user = await api.get_user_by_id(remnawave_id)
         if panel_user is None:
             return None
         return _panel_user_to_snapshot(panel_user)
 
-    async def apply_overlay(self, remnawave_uuid: str, overlay: GracePanelOverlay) -> None:
+    async def apply_overlay(self, remnawave_id: int, overlay: GracePanelOverlay) -> None:
         from app.services.remnawave_service import remnawave_service
 
         async with remnawave_service.get_api_client() as api:
-            uuid, remna_id = await self._resolve_ref(api, remnawave_uuid)
             # Detach an external squad in a standalone preflight PATCH.  The API
             # client may retry A039 without externalSquadUuid; doing this before
             # ACTIVE/expiry changes guarantees such a retry cannot accidentally
             # grant unrestricted access.
             detached = await api.update_user(
-                uuid=uuid,
+                user_id=remnawave_id,
                 external_squad_uuid=overlay.external_squad_uuid,
-                **_remna_kw(remna_id),
             )
             if detached.external_squad_uuid != overlay.external_squad_uuid:
-                verified_detach = await api.get_user_by_uuid(uuid, **_remna_kw(remna_id))
+                verified_detach = await api.get_user_by_id(remnawave_id)
                 if verified_detach is None or verified_detach.external_squad_uuid != overlay.external_squad_uuid:
                     raise GracePanelError('Remnawave did not detach the external squad; overlay was not granted')
 
             updated = await api.update_user(
-                uuid=uuid,
+                user_id=remnawave_id,
                 status=PanelUserStatus.ACTIVE,
                 expire_at=_as_utc(overlay.expire_at),
                 traffic_limit_bytes=overlay.traffic_limit_bytes,
                 active_internal_squads=list(overlay.squad_uuids),
-                **_remna_kw(remna_id),
             )
         if updated is None or not panel_matches_overlay(
             _panel_user_to_snapshot(updated),
@@ -341,7 +331,7 @@ class RemnawaveGracePanelGateway:
 
     async def restore_snapshot(
         self,
-        remnawave_uuid: str,
+        remnawave_id: int,
         snapshot: GracePanelSnapshot,
         expected_overlay: GracePanelOverlay,
     ) -> GraceRestoreOutcome:
@@ -351,8 +341,10 @@ class RemnawaveGracePanelGateway:
         target = _build_restore_target(snapshot, now=now)
 
         async with remnawave_service.get_api_client() as api:
-            uuid, remna_id = await self._resolve_ref(api, remnawave_uuid)
-            current_user = await api.get_user_by_uuid(uuid, **_remna_kw(remna_id))
+            # Only an explicit 404 reaches this as None.  A malformed local
+            # identifier raises instead, so a data fault can never be mistaken
+            # for "the panel user is gone, nothing to restore".
+            current_user = await api.get_user_by_id(remnawave_id)
             if current_user is None:
                 # A deleted panel user has no access left to revoke.
                 return GraceRestoreOutcome.ALREADY_RESTORED
@@ -370,8 +362,7 @@ class RemnawaveGracePanelGateway:
                     return GraceRestoreOutcome.CONFLICT
                 updated = await _apply_limited_target(
                     api,
-                    remnawave_uuid=uuid,
-                    remna_id=remna_id,
+                    remnawave_id=remnawave_id,
                     target=target,
                     expected_overlay=expected_overlay,
                     current_user=current_user,
@@ -388,11 +379,11 @@ class RemnawaveGracePanelGateway:
             ):
                 return GraceRestoreOutcome.CONFLICT
 
-            updated = await api.update_user(**_serialize_panel_target(uuid, target, remna_id=remna_id))
+            updated = await api.update_user(**_serialize_panel_target(remnawave_id, target))
             if updated is not None and _panel_matches_target(_panel_user_to_snapshot(updated), target):
                 return GraceRestoreOutcome.RESTORED
 
-            verified_user = await api.get_user_by_uuid(uuid, **_remna_kw(remna_id))
+            verified_user = await api.get_user_by_id(remnawave_id)
             if verified_user is not None and _panel_matches_target(
                 _panel_user_to_snapshot(verified_user),
                 target,
@@ -413,15 +404,14 @@ class RemnawaveGracePanelGateway:
     ) -> None:
         from app.services.remnawave_service import remnawave_service
 
-        if not billing.remnawave_uuid:
-            raise GracePanelError('Canonical subscription has no Remnawave UUID')
+        if not billing.remnawave_id:
+            raise GracePanelError('Canonical subscription has no Remnawave user id')
         now = datetime.now(UTC)
         target = _build_billing_target(billing, now=now)
 
         async with remnawave_service.get_api_client() as api:
-            uuid, remna_id = await self._resolve_ref(api, billing.remnawave_uuid)
             if target.status is PanelUserStatus.LIMITED:
-                current_user = await api.get_user_by_uuid(uuid, **_remna_kw(remna_id))
+                current_user = await api.get_user_by_id(billing.remnawave_id)
                 if current_user is None:
                     raise GracePanelTransitionConflict('Canonical Remnawave user disappeared during LIMITED restore')
                 current = _panel_user_to_snapshot(current_user)
@@ -429,12 +419,11 @@ class RemnawaveGracePanelGateway:
                     if _panel_user_matches_device_limit(current_user, target):
                         return
                     updated_device = await api.update_user(
-                        uuid=uuid,
+                        user_id=billing.remnawave_id,
                         hwid_device_limit=target.device_limit,
-                        **_remna_kw(remna_id),
                     )
                     if updated_device is None:
-                        updated_device = await api.get_user_by_uuid(uuid, **_remna_kw(remna_id))
+                        updated_device = await api.get_user_by_id(billing.remnawave_id)
                     if updated_device is not None and _panel_user_matches_target(updated_device, target):
                         return
                     raise GracePanelTransitionConflict('Remnawave did not confirm canonical LIMITED device limit')
@@ -449,19 +438,17 @@ class RemnawaveGracePanelGateway:
                     )
                 updated = await _apply_limited_target(
                     api,
-                    remnawave_uuid=uuid,
-                    remna_id=remna_id,
+                    remnawave_id=billing.remnawave_id,
                     target=target,
                     expected_overlay=expected_overlay,
                     current_user=current_user,
                 )
             else:
-                updated = await api.update_user(**_serialize_panel_target(uuid, target, remna_id=remna_id))
+                updated = await api.update_user(**_serialize_panel_target(billing.remnawave_id, target))
         if updated is None or not _panel_user_matches_target(updated, target):
             if target.status is PanelUserStatus.LIMITED:
                 raise GracePanelTransitionConflict('Remnawave changed while canonical LIMITED state was being applied')
             raise GracePanelError('Remnawave did not confirm canonical billing state')
-
 
 class _KeyedLocks:
     """Process-local part of the subscription operation lock."""
@@ -822,7 +809,7 @@ class GraceAccessRuntime:
                     else GraceReason.EXPIRED
                 )
                 billing = _subscription_to_billing(subscription)
-                if not billing.remnawave_uuid or not billing_is_eligible(billing, reason, policy):
+                if not billing.remnawave_id or not billing_is_eligible(billing, reason, policy):
                     continue
                 if subscription.id in open_subscription_ids:
                     continue
@@ -982,24 +969,17 @@ async def apply_recovered_grace_update_locked(
         return False, None
 
     billing = await SQLAlchemyGraceBillingGateway(db).get_subscription(subscription_id)
-    if billing is None or not billing.remnawave_uuid:
-        raise GracePanelError('Recovered canonical subscription has no Remnawave UUID')
+    if billing is None or not billing.remnawave_id:
+        raise GracePanelError('Recovered canonical subscription has no Remnawave user id')
 
     target = _build_billing_target(billing, now=datetime.now(UTC))
     if target.status not in {PanelUserStatus.ACTIVE, PanelUserStatus.DISABLED}:
         raise GracePanelError(f'Canonical renewal unexpectedly resolved to derived panel status {target.status.value}')
 
-    from app.services.remnawave_service import get_panel_user_ref
-
-    billing_user = (
-        await db.execute(select(User).where(User.remnawave_uuid == billing.remnawave_uuid).limit(1))
-    ).scalar_one_or_none()
-    uuid, remna_id = await get_panel_user_ref(api, db, user=billing_user)
     canonical_kwargs = _serialize_panel_target(
-        uuid,
+        billing.remnawave_id,
         target,
         base_kwargs=update_kwargs,
-        remna_id=remna_id,
     )
 
     updated = await api.update_user(**canonical_kwargs)
@@ -1063,47 +1043,6 @@ _GRACE_OWNED_UPDATE_FIELDS = frozenset(
 )
 
 
-async def _augment_disabled_grace_kwargs_v3(
-    api: Any,
-    subscription_id: int,
-    update_kwargs: dict[str, Any],
-) -> dict[str, Any]:
-    """v3-only: добавляет remna_id в kwargs, разрешив его по subscription_id.
-
-    Вызывается лишь на v3 из DISABLED/OBSERVE-ветки, где нет guard-сессии.
-    Открывает короткую сессию, грузит подписку с user и резолвит идентификатор
-    через get_panel_user_ref (best-effort: при неудаче возвращает kwargs как есть).
-    """
-    from app.services.remnawave_service import get_panel_user_ref
-
-    try:
-        async with AsyncSessionLocal() as own_db:
-            result = await own_db.execute(
-                select(Subscription)
-                .options(selectinload(Subscription.user))
-                .where(Subscription.id == subscription_id)
-            )
-            subscription = result.scalar_one_or_none()
-            if subscription is None:
-                return update_kwargs
-            _uuid, _remna_id = await get_panel_user_ref(
-                api, own_db, user=subscription.user, subscription=subscription
-            )
-        resolved = dict(update_kwargs)
-        if _remna_id is not None:
-            resolved['remna_id'] = _remna_id
-        if _uuid is not None:
-            resolved['uuid'] = _uuid
-        return resolved
-    except Exception as exc:  # pragma: no cover - defensive: не ломаем синк
-        logger.warning(
-            'Не удалось разрешить remna_id для grace-safe update (v3)',
-            subscription_id=subscription_id,
-            error=str(exc),
-        )
-        return update_kwargs
-
-
 async def update_panel_user_grace_safe(
     api: Any,
     subscription_id: int,
@@ -1121,62 +1060,42 @@ async def update_panel_user_grace_safe(
         # поведение и стоимость как до фичи. Оверлеи в этих режимах не защищаются:
         # рутинный синк приводит панель к каноническому биллингу (остаточные
         # открытые сессии отрапортованы CRITICAL-логом на старте).
-        #
-        # v3: если вызыватель не передал remna_id, разрешаем его по subscription_id
-        # (update_user на v3 идентифицирует юзера числовым id, а не uuid). Гейт на
-        # api_version==3 — на v2 ветка байт-в-байт прежняя; сам get_api_version()
-        # кэшируется и всё равно вызывается внутри update_user, лишней сети нет.
-        if 'remna_id' not in update_kwargs and await api.get_api_version() == 3:
-            update_kwargs = await _augment_disabled_grace_kwargs_v3(api, subscription_id, update_kwargs)
         return await api.update_user(**update_kwargs)
     async with grace_sensitive_panel_update(subscription_id) as lease:
         if lease.subscription is None:
             raise GracePanelError(f'Subscription {subscription_id} disappeared before its Remnawave update')
 
-        supplied_uuid = str(update_kwargs.get('uuid') or '')
+        # The kwarg the client identifies a panel user by is ``user_id`` since
+        # Remnawave 3.0.0.  Both sides go through the same coercion so a numeric
+        # string from FSM/JSON compares equal to the BigInteger column, and an
+        # unusable value stays falsy instead of accidentally matching.
+        supplied_id = _optional_panel_user_id(update_kwargs.get('user_id'))
         fresh_subscription = lease.subscription
-        expected_uuid = (
-            fresh_subscription.remnawave_uuid
+        expected_id = _optional_panel_user_id(
+            fresh_subscription.remnawave_id
             if settings.is_multi_tariff_enabled()
-            else (fresh_subscription.user.remnawave_uuid if fresh_subscription.user else None)
+            else (fresh_subscription.user.remnawave_id if fresh_subscription.user else None)
         )
-        if expected_uuid and supplied_uuid != str(expected_uuid):
-            raise GracePanelError(f'Remnawave UUID changed before subscription {subscription_id} update')
-
-        # Resolve (uuid, remna_id) using the fresh subscription loaded under the grace lock.
-        from app.services.remnawave_service import get_panel_user_ref
-
-        _fresh_user = fresh_subscription.user if fresh_subscription else None
-        _ref_uuid, _remna_id = await get_panel_user_ref(
-            api, lease.db, user=_fresh_user, subscription=fresh_subscription
-        )
-        # Augment update_kwargs with remna_id so all downstream api calls are v3-aware.
-        _resolved_kwargs = dict(update_kwargs)
-        if _remna_id is not None:
-            _resolved_kwargs['remna_id'] = _remna_id
-        if _ref_uuid is not None:
-            _resolved_kwargs['uuid'] = _ref_uuid
+        if expected_id and supplied_id != expected_id:
+            raise GracePanelError(f'Remnawave user id changed before subscription {subscription_id} update')
 
         if not lease.has_open_grace:
-            return await api.update_user(**_resolved_kwargs)
+            return await api.update_user(**update_kwargs)
 
         completed, updated = await apply_recovered_grace_update_locked(
             lease.db,
             api,
             subscription_id,
-            update_kwargs=_resolved_kwargs,
+            update_kwargs=update_kwargs,
             source='grace_safe_panel_update',
         )
         if completed:
             return updated
 
-        protected_present = _GRACE_OWNED_UPDATE_FIELDS.intersection(_resolved_kwargs)
+        protected_present = _GRACE_OWNED_UPDATE_FIELDS.intersection(update_kwargs)
         if not protected_present:
-            return await api.update_user(**_resolved_kwargs)
-        safe_kwargs = {key: value for key, value in _resolved_kwargs.items() if key not in _GRACE_OWNED_UPDATE_FIELDS}
-        # Always preserve remna_id so the safe partial update is also v3-aware.
-        if _remna_id is not None:
-            safe_kwargs['remna_id'] = _remna_id
+            return await api.update_user(**update_kwargs)
+        safe_kwargs = {key: value for key, value in update_kwargs.items() if key not in _GRACE_OWNED_UPDATE_FIELDS}
         logger.info(
             'Deferred grace-owned fields from routine Remnawave update',
             subscription_id=subscription_id,
@@ -1185,21 +1104,73 @@ async def update_panel_user_grace_safe(
         if len(safe_kwargs) > 1:
             return await api.update_user(**safe_kwargs)
 
-        current = await api.get_user_by_uuid(_ref_uuid, **_remna_kw(_remna_id))
+        current = await api.get_user_by_id(supplied_id)
         if current is None:
-            raise GracePanelError(f'Remnawave user {supplied_uuid} disappeared while grace was open')
+            raise GracePanelError(f'Remnawave user {supplied_id} disappeared while grace was open')
         return current
+
+
+def _create_payload_as_patch(create_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Превратить payload создания в безопасный payload обновления.
+
+    Две ловушки, из-за которых нельзя просто переслать create-тело в PATCH:
+
+    * ``username`` — в 3.0.0 это альтернативный идентификатор записи, а команда
+      требует ровно один; вместе с ``id`` он лишний.
+    * ``active_internal_squads`` — ``create_user`` пропускает пустой список
+      (``if active_internal_squads:``), а ``update_user`` — только ``None``
+      (``if ... is not None``). В контракте поле опционально: не прислать =
+      «не трогать», прислать ``[]`` = «снять все сквады». Переслав пустой
+      список, мы бы сняли у живого оплаченного аккаунта все инбаунды — он
+      остался бы ACTIVE, но ссылка на подписку отдавала бы ноль конфигов.
+      Ровно поэтому все остальные update-ветки в проекте гейтят это поле
+      через ``if subscription.connected_squads:``.
+    """
+    patch = {key: value for key, value in create_kwargs.items() if key != 'username'}
+    if not patch.get('active_internal_squads'):
+        patch.pop('active_internal_squads', None)
+    return patch
+
+
+async def _adopt_or_create(api: Any, adopt_short_uuid: str | None, create_kwargs: dict[str, Any]) -> Any:
+    """Опознать существующего панельного пользователя по shortUuid, иначе создать.
+
+    У строки, привязанной до апгрейда на Remnawave 3.0.0, числового id нет (его
+    проставляет бэкфил), но shortUuid панель по-прежнему знает. Без этой проверки
+    любое админское «создать/синхронизировать» заводит ВТОРОЙ панельный аккаунт,
+    затирает shortUuid новым — и оплаченный оригинал становится ненаходимым.
+
+    Проверка живёт здесь, потому что через этот хелпер проходят все админские
+    пути создания; дублировать её по call-site значит однажды забыть.
+    """
+    short_uuid = (adopt_short_uuid or '').strip()
+    if short_uuid:
+        # Только 404 (→ None) доказывает, что аккаунта нет. Любая другая ошибка
+        # пробрасывается: создать нового «на всякий случай» — это и есть дубль.
+        adopted = await api.get_user_by_short_uuid(short_uuid)
+        if adopted is not None:
+            # Подхватить аккаунт мало — вызывающий просил ПРИВЕСТИ панель к
+            # переданному состоянию и трактует результат как «панель теперь
+            # такая». Без PATCH админское «продлить» отрапортовало бы успех,
+            # оставив в панели старые статус/дату/лимиты, а у клиента —
+            # нерабочий VPN. `username` в PATCH не идёт: это create-only поле,
+            # переименовывать существующий аккаунт мы не собираемся.
+            update_kwargs = _create_payload_as_patch(create_kwargs)
+            return await api.update_user(user_id=adopted.id, **update_kwargs)
+    return await api.create_user(**create_kwargs)
 
 
 async def create_panel_user_grace_safe(
     api: Any,
     subscription_id: int,
+    *,
+    adopt_short_uuid: str | None = None,
     **create_kwargs: Any,
 ) -> Any:
     """Create a panel user only while the subscription cannot have an overlay."""
     if grace_access_runtime.mode in (GraceAccessMode.DISABLED, GraceAccessMode.OBSERVE):
         # Non-mutating grace: оверлеев не существует/не защищаются — создаём напрямую.
-        return await api.create_user(**create_kwargs)
+        return await _adopt_or_create(api, adopt_short_uuid, create_kwargs)
     async with grace_sensitive_panel_update(subscription_id) as lease:
         if lease.subscription is None:
             raise GracePanelError(f'Subscription {subscription_id} disappeared before Remnawave user creation')
@@ -1207,7 +1178,7 @@ async def create_panel_user_grace_safe(
             raise GracePanelError(
                 f'Remnawave user creation deferred while subscription {subscription_id} has open grace'
             )
-        return await api.create_user(**create_kwargs)
+        return await _adopt_or_create(api, adopt_short_uuid, create_kwargs)
 
 
 @asynccontextmanager
@@ -1244,11 +1215,10 @@ async def grace_sensitive_global_panel_update():
 
 async def set_panel_user_enabled_state_grace_safe(
     api: Any,
-    remnawave_uuid: str,
+    remnawave_id: int,
     *,
     enabled: bool,
     db: AsyncSession | None = None,
-    remna_id: int | None = None,
 ) -> Any:
     """Serialize an intentional enable/disable and its grace suppression marker.
 
@@ -1259,41 +1229,22 @@ async def set_panel_user_enabled_state_grace_safe(
     режиме коммитит транзакция вызывающего (откат удаления откатит и их — тогда
     и намеренного отключения не было).
 
-    ``remna_id`` — числовой id пользователя панели (v3). Передаётся вызывающим,
-    уже имеющим доступ к ORM-объекту User/Subscription.
+    Идентификатор приводится к числу СРАЗУ: ниже он уходит не только в панель,
+    но и в ``WHERE remnawave_id = :value``. Непригодное значение там дало бы
+    ``IS NULL`` — то есть совпадение со ВСЕМИ неслинкованными подписками.
     """
+    panel_user_id = coerce_panel_user_id(remnawave_id)
     if grace_access_runtime.mode in (GraceAccessMode.DISABLED, GraceAccessMode.OBSERVE):
         # Non-mutating grace: не трогаем ни БД, ни suppression-маркеры —
         # поведение панельного enable/disable как до фичи. Остаточные открытые
         # сессии в этих режимах уже отрапортованы CRITICAL-логом на старте.
-        #
-        # Резолв remna_id (v3) — не нарушение "non-mutating": здесь пишется
-        # только users.remnawave_id, тот же ленивый бэкфилл, что и везде в
-        # проекте (get_panel_user_ref, _set_panel_user_enabled_state_locked
-        # ниже) — grace/suppression-состояние подписок эта ветка по-прежнему
-        # не трогает. Без резолва вызов api.enable_user/disable_user ниже
-        # упал бы с ValueError из _resolve_user_path (T4 backfill) на любой
-        # v3-панели, где remnawave_id ещё NULL, — а DISABLED является
-        # дефолтным режимом grace, так что это основной, а не редкий путь.
-        if remna_id is None and await api.get_api_version() == 3:
-            remna_id = await _resolve_remna_id_lazy(api, db, remnawave_uuid)
-            if remna_id is None:
-                logger.warning(
-                    'set_panel_user_enabled_state_grace_safe: remna_id не '
-                    'резолвится для v3 (нет db или пользователь не найден по '
-                    'remnawave_uuid) — enable/disable управляемо пропущен, а '
-                    'не падает необработанным ValueError',
-                    remnawave_uuid=remnawave_uuid,
-                    enabled=enabled,
-                )
-                return None
         if enabled:
-            return await api.enable_user(uuid=remnawave_uuid or None, **_remna_kw(remna_id))
-        return await api.disable_user(uuid=remnawave_uuid or None, **_remna_kw(remna_id))
+            return await api.enable_user(panel_user_id)
+        return await api.disable_user(panel_user_id)
 
     if db is not None:
         action_result, deferred_disable_error = await _set_panel_user_enabled_state_locked(
-            db, api, remnawave_uuid, enabled=enabled, remna_id=remna_id
+            db, api, panel_user_id, enabled=enabled
         )
         if deferred_disable_error is not None:
             raise deferred_disable_error
@@ -1302,78 +1253,32 @@ async def set_panel_user_enabled_state_grace_safe(
     async with AsyncSessionLocal() as guard_db:
         async with guard_db.begin():
             action_result, deferred_disable_error = await _set_panel_user_enabled_state_locked(
-                guard_db, api, remnawave_uuid, enabled=enabled, remna_id=remna_id
+                guard_db, api, panel_user_id, enabled=enabled
             )
     if deferred_disable_error is not None:
         raise deferred_disable_error
     return action_result
 
 
-async def _resolve_remna_id_lazy(
-    api: Any,
-    db: AsyncSession | None,
-    remnawave_uuid: str,
-) -> int | None:
-    """Ленивый бэкфилл remna_id (v3) для non-mutating grace-ветки.
-
-    Требует ``db``: здесь нет ORM-объекта User/Subscription под рукой (только
-    строка ``remnawave_uuid``), так что без сессии искать его негде — в
-    отличие от вызывающих на уровень выше (disable_remnawave_user/
-    enable_remnawave_user), которые могут резолвить remna_id и без db, если у
-    них уже есть ORM-объект User (см. get_panel_user_ref: short_uuid/
-    telegram_id резолвятся через API, db нужна только чтобы закоммитить).
-
-    ``selectinload(User.subscriptions)`` обязателен: get_panel_user_ref читает
-    ``user.subscriptions`` синхронно (не через await), и без предзагрузки
-    ленивая подгрузка на AsyncSession падает MissingGreenlet — то есть без
-    этого мы просто заменили бы один необработанный exception другим.
-    """
-    if db is None:
-        return None
-    from app.services.remnawave_service import get_panel_user_ref
-
-    user_row = (
-        await db.execute(
-            select(User)
-            .options(selectinload(User.subscriptions))
-            .where(User.remnawave_uuid == remnawave_uuid)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if user_row is None:
-        return None
-    _, resolved = await get_panel_user_ref(api, db, user=user_row)
-    return resolved
-
-
 async def _set_panel_user_enabled_state_locked(
     guard_db: AsyncSession,
     api: Any,
-    remnawave_uuid: str,
+    remnawave_id: int,
     *,
     enabled: bool,
-    remna_id: int | None = None,
 ) -> tuple[Any, BaseException | None]:
     action_result: Any = None
     deferred_disable_error: BaseException | None = None
-    uuid_mapping_filter = (
-        Subscription.remnawave_uuid == remnawave_uuid
+    identity_mapping_filter = (
+        Subscription.remnawave_id == remnawave_id
         if settings.is_multi_tariff_enabled()
-        else User.remnawave_uuid == remnawave_uuid
+        else User.remnawave_id == remnawave_id
     )
-    # Resolve remna_id for v3 if not supplied by the caller.
-    if remna_id is None:
-        from app.services.remnawave_service import get_panel_user_ref
-
-        _enable_user_row = (
-            await guard_db.execute(select(User).where(User.remnawave_uuid == remnawave_uuid).limit(1))
-        ).scalar_one_or_none()
-        _ref_uuid, remna_id = await get_panel_user_ref(api, guard_db, user=_enable_user_row)
     mapped_ids = {
         int(value)
         for value in (
             await guard_db.execute(
-                select(Subscription.id).join(User, Subscription.user_id == User.id).where(uuid_mapping_filter)
+                select(Subscription.id).join(User, Subscription.user_id == User.id).where(identity_mapping_filter)
             )
         ).scalars()
     }
@@ -1382,7 +1287,7 @@ async def _set_panel_user_enabled_state_locked(
         for value in (
             await guard_db.execute(
                 select(GraceAccessSessionModel.subscription_id).where(
-                    GraceAccessSessionModel.remnawave_uuid == remnawave_uuid,
+                    GraceAccessSessionModel.remnawave_id == remnawave_id,
                     GraceAccessSessionModel.state.in_(_OPEN_STATES),
                 )
             )
@@ -1432,9 +1337,9 @@ async def _set_panel_user_enabled_state_locked(
 
     try:
         if enabled:
-            action_result = await api.enable_user(uuid=remnawave_uuid or None, **_remna_kw(remna_id))
+            action_result = await api.enable_user(remnawave_id)
         else:
-            action_result = await api.disable_user(uuid=remnawave_uuid or None, **_remna_kw(remna_id))
+            action_result = await api.disable_user(remnawave_id)
     except asyncio.CancelledError as error:
         if enabled:
             raise
@@ -1452,9 +1357,9 @@ async def _set_panel_user_enabled_state_locked(
             # an intentionally revoked client, then report the error.
             deferred_disable_error = error
         else:
-            current = await api.get_user_by_uuid(remnawave_uuid or None, **_remna_kw(remna_id))
+            current = await api.get_user_by_id(remnawave_id)
             if current is None:
-                state_error = GracePanelError(f'Remnawave user {remnawave_uuid} disappeared during status update')
+                state_error = GracePanelError(f'Remnawave user {remnawave_id} disappeared during status update')
                 if enabled:
                     raise state_error from error
                 deferred_disable_error = state_error
@@ -1537,7 +1442,7 @@ async def ensure_no_open_grace_for_users(db: AsyncSession, user_ids: Sequence[in
 def _build_core(db: AsyncSession, *, subscription_id: int | None = None) -> GraceAccessService:
     return GraceAccessService(
         store=SQLAlchemyGraceSessionStore(db, subscription_id=subscription_id),
-        panel=RemnawaveGracePanelGateway(db),
+        panel=RemnawaveGracePanelGateway(),
         billing=SQLAlchemyGraceBillingGateway(db),
         policy=_build_policy(),
     )
@@ -1592,12 +1497,12 @@ async def _acquire_database_lock(db: AsyncSession, subscription_id: int) -> None
 def _subscription_to_billing(subscription: Subscription) -> GraceBillingState:
     user = subscription.user
     tariff = subscription.tariff
-    remnawave_uuid = subscription.remnawave_uuid if settings.is_multi_tariff_enabled() else user.remnawave_uuid
+    remnawave_id = subscription.remnawave_id if settings.is_multi_tariff_enabled() else user.remnawave_id
     traffic_limit_gb = max(0, int(subscription.traffic_limit_gb or 0))
     traffic_used_gb = max(0.0, float(subscription.traffic_used_gb or 0.0))
     return GraceBillingState(
         subscription_id=subscription.id,
-        remnawave_uuid=remnawave_uuid,
+        remnawave_id=remnawave_id,
         status=subscription.actual_status,
         end_at=_as_utc(subscription.end_date) if subscription.end_date else None,
         traffic_limit_bytes=traffic_limit_gb * 1024**3,
@@ -1617,7 +1522,9 @@ def _subscription_to_billing(subscription: Subscription) -> GraceBillingState:
 
 def _panel_user_to_snapshot(panel_user: Any) -> GracePanelSnapshot:
     return GracePanelSnapshot(
-        remnawave_uuid=str(panel_user.uuid),
+        # coerce вместо str(): панель 3.0.0 обязана вернуть числовой id, а
+        # прежний str(panel_user.uuid) на None молча записывал строку 'None'.
+        remnawave_id=coerce_panel_user_id(panel_user.id),
         status=_normalize(panel_user.status),
         expire_at=_as_utc(panel_user.expire_at) if panel_user.expire_at else None,
         traffic_limit_bytes=int(panel_user.traffic_limit_bytes or 0),
@@ -1677,24 +1584,21 @@ def _build_billing_target(billing: GraceBillingState, *, now: datetime) -> _Pane
 
 
 def _serialize_panel_target(
-    remnawave_uuid: str | None,
+    remnawave_id: int,
     target: _PanelTarget,
     *,
     base_kwargs: Mapping[str, Any] | None = None,
-    remna_id: int | None = None,
 ) -> dict[str, Any]:
     """Build a writable Remnawave payload without sending derived statuses."""
     kwargs = dict(base_kwargs or {})
     kwargs.pop('status', None)
     kwargs.update(
-        uuid=remnawave_uuid,
+        user_id=remnawave_id,
         expire_at=target.expire_at,
         traffic_limit_bytes=target.traffic_limit_bytes,
         active_internal_squads=list(target.squad_uuids),
         external_squad_uuid=target.external_squad_uuid,
     )
-    if remna_id is not None:
-        kwargs['remna_id'] = remna_id
     if target.status in {PanelUserStatus.ACTIVE, PanelUserStatus.DISABLED}:
         kwargs['status'] = target.status
     elif target.status not in {PanelUserStatus.LIMITED, PanelUserStatus.EXPIRED}:
@@ -1745,8 +1649,7 @@ def _limited_transition_source_is_safe(
 async def _apply_limited_target(
     api: Any,
     *,
-    remnawave_uuid: str | None,
-    remna_id: int | None = None,
+    remnawave_id: int,
     target: _PanelTarget,
     expected_overlay: GracePanelOverlay,
     current_user: Any,
@@ -1759,18 +1662,17 @@ async def _apply_limited_target(
         expected_overlay,
     ) or not _panel_user_matches_device_limit(current_user, target):
         phase_a_kwargs: dict[str, Any] = {
-            'uuid': remnawave_uuid,
+            'user_id': remnawave_id,
             'expire_at': target.expire_at,
             'traffic_limit_bytes': target.traffic_limit_bytes,
             'active_internal_squads': list(expected_overlay.squad_uuids),
             'external_squad_uuid': expected_overlay.external_squad_uuid,
         }
-        phase_a_kwargs.update(_remna_kw(remna_id))
         if target.device_limit is not None:
             phase_a_kwargs['hwid_device_limit'] = target.device_limit
         phase_a_user = await api.update_user(**phase_a_kwargs)
         if phase_a_user is None:
-            phase_a_user = await api.get_user_by_uuid(remnawave_uuid, **_remna_kw(remna_id))
+            phase_a_user = await api.get_user_by_id(remnawave_id)
         if phase_a_user is None:
             return None
         intermediate = _panel_user_to_snapshot(phase_a_user)
@@ -1793,15 +1695,14 @@ async def _apply_limited_target(
         return None
 
     phase_b_user = await api.update_user(
-        uuid=remnawave_uuid,
+        user_id=remnawave_id,
         active_internal_squads=list(target.squad_uuids),
         external_squad_uuid=target.external_squad_uuid,
-        **_remna_kw(remna_id),
     )
     if phase_b_user is not None and _panel_user_matches_target(phase_b_user, target):
         return phase_b_user
 
-    verified_user = await api.get_user_by_uuid(remnawave_uuid, **_remna_kw(remna_id))
+    verified_user = await api.get_user_by_id(remnawave_id)
     if verified_user is not None and _panel_user_matches_target(verified_user, target):
         return verified_user
     return None
@@ -1871,9 +1772,12 @@ def _copy_session_to_model(
 
 
 def _session_values(session: GraceAccessSession) -> dict[str, Any]:
+    # ``remnawave_uuid`` is deliberately absent: a new row cannot know a uuid the
+    # panel no longer returns, and an UPDATE that omits the key keeps whatever
+    # historical value a pre-3.0.0 row still carries for auditing.
     return {
         'subscription_id': session.subscription_id,
-        'remnawave_uuid': session.remnawave_uuid,
+        'remnawave_id': session.remnawave_id,
         'reason': session.reason.value,
         'incident_key': session.incident_key,
         'state': session.state.value,
@@ -1891,19 +1795,22 @@ def _session_values(session: GraceAccessSession) -> dict[str, Any]:
 
 
 def _model_to_session(model: GraceAccessSessionModel) -> GraceAccessSession:
-    if model.snapshot_version != _SNAPSHOT_VERSION:
-        raise GraceSnapshotError(
-            f'Unsupported grace snapshot version {model.snapshot_version}; expected {_SNAPSHOT_VERSION}'
-        )
+    if model.snapshot_version not in _SUPPORTED_SNAPSHOT_VERSIONS:
+        supported = ', '.join(str(version) for version in sorted(_SUPPORTED_SNAPSHOT_VERSIONS))
+        raise GraceSnapshotError(f'Unsupported grace snapshot version {model.snapshot_version}; supported: {supported}')
+    # An empty column means the identity backfill never reached this row.  That
+    # is a data fault — never "the panel user is gone" — so it surfaces as a
+    # snapshot error with last_error instead of a silent restore-less close.
+    remnawave_id = _panel_user_id(model.remnawave_id, 'grace_access_sessions.remnawave_id')
     return GraceAccessSession(
         id=model.id,
         subscription_id=model.subscription_id,
-        remnawave_uuid=model.remnawave_uuid,
+        remnawave_id=remnawave_id,
         reason=GraceReason(model.reason),
         incident_key=model.incident_key,
         state=GraceSessionState(model.state),
         billing_before=_billing_from_json(model.billing_before),
-        panel_before=_panel_from_json(model.panel_before),
+        panel_before=_panel_from_json(model.panel_before, fallback_remnawave_id=remnawave_id),
         overlay=_overlay_from_json(model.overlay),
         started_at=_as_utc(model.started_at),
         grace_until=_as_utc(model.grace_until),
@@ -1918,7 +1825,7 @@ def _model_to_session(model: GraceAccessSessionModel) -> GraceAccessSession:
 def _billing_to_json(value: GraceBillingState) -> dict[str, Any]:
     return {
         'subscription_id': value.subscription_id,
-        'remnawave_uuid': value.remnawave_uuid,
+        'remnawave_id': value.remnawave_id,
         'status': value.status,
         'end_at': _datetime_to_json(value.end_at),
         'traffic_limit_bytes': value.traffic_limit_bytes,
@@ -1938,7 +1845,9 @@ def _billing_from_json(raw: Any) -> GraceBillingState:
     data = _mapping(raw, 'billing_before')
     return GraceBillingState(
         subscription_id=_integer(data, 'subscription_id'),
-        remnawave_uuid=_optional_string(data.get('remnawave_uuid')),
+        # v2 blobs carry only the legacy uuid string here; it is unusable in
+        # 3.0.0 and no decision reads this field, so ``None`` is correct.
+        remnawave_id=_optional_panel_user_id(data.get('remnawave_id')),
         status=_string(data, 'status'),
         end_at=_datetime_from_json(data.get('end_at')),
         traffic_limit_bytes=_integer(data, 'traffic_limit_bytes'),
@@ -1956,7 +1865,7 @@ def _billing_from_json(raw: Any) -> GraceBillingState:
 
 def _panel_to_json(value: GracePanelSnapshot) -> dict[str, Any]:
     return {
-        'remnawave_uuid': value.remnawave_uuid,
+        'remnawave_id': value.remnawave_id,
         'status': value.status,
         'expire_at': _datetime_to_json(value.expire_at),
         'traffic_limit_bytes': value.traffic_limit_bytes,
@@ -1968,10 +1877,16 @@ def _panel_to_json(value: GracePanelSnapshot) -> dict[str, Any]:
     }
 
 
-def _panel_from_json(raw: Any) -> GracePanelSnapshot:
+def _panel_from_json(raw: Any, *, fallback_remnawave_id: int | None = None) -> GracePanelSnapshot:
     data = _mapping(raw, 'panel_before')
     return GracePanelSnapshot(
-        remnawave_uuid=_string(data, 'remnawave_uuid'),
+        # A v2 blob predates the numeric identity and only holds the legacy uuid
+        # string.  Its session row was backfilled from the same subscription, so
+        # the session column is the correct — and only — replacement.
+        remnawave_id=_panel_user_id(
+            data.get('remnawave_id') or fallback_remnawave_id,
+            'panel_before.remnawave_id',
+        ),
         status=_string(data, 'status'),
         expire_at=_datetime_from_json(data.get('expire_at')),
         traffic_limit_bytes=_integer(data, 'traffic_limit_bytes'),
@@ -2035,6 +1950,29 @@ def _optional_integer(value: Any) -> int | None:
     return value
 
 
+def _panel_user_id(value: Any, label: str) -> int:
+    """Read a required numeric Remnawave user id from a snapshot or a column.
+
+    Accepts the digit strings a one-shot backfill script may write into JSON.
+    Everything else is a broken link in our own data, which is why it raises a
+    snapshot error rather than degrading to "no panel user".
+    """
+    try:
+        return coerce_panel_user_id(value)
+    except RemnaWaveInvalidUserIdError as error:
+        raise GraceSnapshotError(f'{label} must be a positive Remnawave user id, got {value!r}') from error
+
+
+def _optional_panel_user_id(value: Any) -> int | None:
+    """Same coercion for identifiers that are legitimately absent."""
+    if value is None:
+        return None
+    try:
+        return coerce_panel_user_id(value)
+    except RemnaWaveInvalidUserIdError:
+        return None
+
+
 def _optional_string(value: Any) -> str | None:
     if value is None:
         return None
@@ -2076,15 +2014,6 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
-
-
-def _remna_kw(remna_id: int | None) -> dict[str, Any]:
-    """Возвращает {'remna_id': remna_id} только когда remna_id задан (v3).
-
-    Используется через распаковку (**_remna_kw(remna_id)) чтобы не передавать
-    лишний kwarg=None в API-вызовы на v2-путях и в тестах.
-    """
-    return {'remna_id': remna_id} if remna_id is not None else {}
 
 
 def _normalize(value: object) -> str:

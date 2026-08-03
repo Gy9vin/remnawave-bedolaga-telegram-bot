@@ -7,10 +7,10 @@ subtly different fallback logic in the past.
 
 Multi-tariff correctness: a single user can own multiple subscriptions
 each pointing to a different RemnaWave panel user (different
-`remnawave_uuid`s). The previous "take the first non-null uuid"
+`remnawave_id`s). The previous "take the first non-null id"
 heuristic produced spurious 404s when the device the user was renaming
 was attached to a NON-first subscription. This helper unions device
-lists across ALL distinct panel UUIDs the user holds.
+lists across ALL distinct panel user ids the user holds.
 """
 
 from __future__ import annotations
@@ -18,42 +18,35 @@ from __future__ import annotations
 import structlog
 
 from app.database.models import User
+from app.external.remnawave_api import RemnaWaveInvalidUserIdError
 
 
 logger = structlog.get_logger(__name__)
 
 
-def _collect_panel_refs(user: User) -> list[tuple[str | None, str | None]]:
-    """Return every distinct panel user the user is attached to, as (uuid, short_uuid).
+def _collect_panel_user_ids(user: User) -> list[int]:
+    """Return every distinct RemnaWave panel user id the user is attached to.
 
-    Includes the legacy single-tariff `user.remnawave_uuid` (short_uuid=None —
-    user-level, so v3 uses `user.remnawave_id`) AND each multi-tariff
-    subscription's `(remnawave_uuid, remnawave_short_uuid)`. De-duped by uuid
-    while preserving insertion order so the most-likely-active user is queried
-    first. On v3 an entry may have uuid=None but a short_uuid for resolution.
+    Includes the legacy single-tariff `user.remnawave_id` AND each
+    multi-tariff subscription's `remnawave_id`. De-duped while
+    preserving insertion order so the most-likely-active id is queried
+    first.
     """
-    seen: dict[str, None] = {}  # ordered set on uuid
-    refs: list[tuple[str | None, str | None]] = []
-    uuid = getattr(user, 'remnawave_uuid', None)
-    if uuid:
-        seen[uuid] = None
-        refs.append((uuid, None))
+    seen: dict[int, None] = {}  # ordered set
+    panel_user_id = getattr(user, 'remnawave_id', None)
+    if panel_user_id:
+        seen[panel_user_id] = None
     for sub in getattr(user, 'subscriptions', None) or []:
-        sub_uuid = getattr(sub, 'remnawave_uuid', None)
-        sub_short = getattr(sub, 'remnawave_short_uuid', None)
-        if sub_uuid and sub_uuid not in seen:
-            seen[sub_uuid] = None
-            refs.append((sub_uuid, sub_short))
-        elif not sub_uuid and sub_short:
-            # v3 без uuid, но с short_uuid — резолвим по нему.
-            refs.append((None, sub_short))
-    return refs
+        sub_panel_user_id = getattr(sub, 'remnawave_id', None)
+        if sub_panel_user_id:
+            seen.setdefault(sub_panel_user_id, None)
+    return list(seen.keys())
 
 
 async def verify_hwid_belongs_to_user(user: User, hwid: str) -> bool:
     """Best-effort check that `hwid` is on one of the user's RemnaWave panels.
 
-    Multi-tariff aware: queries EVERY distinct panel UUID the user owns
+    Multi-tariff aware: queries EVERY distinct panel user id the user owns
     and unions the device sets. Short-circuits on the first match.
 
     Degrade-open policy: if RemnaWave is unreachable while iterating,
@@ -62,33 +55,34 @@ async def verify_hwid_belongs_to_user(user: User, hwid: str) -> bool:
     privacy or authorization concern from accepting a write under
     degraded conditions; at worst we get an orphan alias row.
 
+    Degrade-open НЕ распространяется на непригодный локальный идентификатор
+    (`RemnaWaveInvalidUserIdError`): это битая ссылка в нашей же БД, а не сбой
+    панели, и запрос до неё вообще не доходит. Принимать по такому поводу любой
+    hwid значило бы отключить проверку владения целиком, поэтому такой id
+    просто пропускается — проверка остаётся закрытой.
+
     Returns False only when we successfully fetched ALL the panel's
     device lists and the hwid appeared in none of them.
     """
     from app.services.remnawave_service import RemnaWaveService
 
-    panel_refs = _collect_panel_refs(user)
-    if not panel_refs:
+    panel_user_ids = _collect_panel_user_ids(user)
+    if not panel_user_ids:
         return False
 
     try:
         service = RemnaWaveService()
         async with service.get_api_client() as api:
-            is_v3 = await api.get_api_version() == 3
-            user_remna_id = getattr(user, 'remnawave_id', None)
-            for panel_uuid, short_uuid in panel_refs:
-                # v3: панель идентифицирует юзера числовым id. User-level ref
-                # (short_uuid=None) → user.remnawave_id; per-sub → резолвим
-                # remna_id по short_uuid. v2: как раньше, по uuid.
-                remna_id = None
-                if is_v3:
-                    if short_uuid is None:
-                        remna_id = user_remna_id
-                    else:
-                        remna_id = await api.resolve_user_id(short_uuid=short_uuid)
-                    if remna_id is None and not panel_uuid:
-                        continue
-                response = await api.get_user_devices_all(user_uuid=panel_uuid, remna_id=remna_id)
+            for panel_user_id in panel_user_ids:
+                try:
+                    response = await api.get_user_devices_all(panel_user_id)
+                except RemnaWaveInvalidUserIdError as invalid_id_error:
+                    logger.warning(
+                        'Unusable panel user id during hwid validation, skipping',
+                        user_id=getattr(user, 'id', None),
+                        error=str(invalid_id_error)[:200],
+                    )
+                    continue
                 hwids_on_panel = {
                     (d.get('hwid') or d.get('deviceId') or d.get('id')) for d in (response or {}).get('devices', [])
                 }
@@ -99,7 +93,7 @@ async def verify_hwid_belongs_to_user(user: User, hwid: str) -> bool:
         logger.warning(
             'RemnaWave unreachable during hwid validation, degrading open',
             user_id=getattr(user, 'id', None),
-            panel_uuid_count=len(panel_refs),
+            panel_user_id_count=len(panel_user_ids),
             error=str(remnawave_error)[:200],
         )
         return True

@@ -485,7 +485,7 @@ async def get_squads_status(
 
 
 async def _get_remnawave_client_ids_from_db() -> list[str]:
-    """Возвращает remnawave_uuid для пользователей с привязанным Remnawave-аккаунтом."""
+    """Возвращает remnawave_id для пользователей с привязанным Remnawave-аккаунтом."""
     from sqlalchemy import select
 
     from app.database.database import AsyncSessionLocal
@@ -493,9 +493,9 @@ async def _get_remnawave_client_ids_from_db() -> list[str]:
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(User.remnawave_uuid).where(User.remnawave_uuid.isnot(None)).where(User.remnawave_uuid != '')
+            select(User.remnawave_id).where(User.remnawave_id.isnot(None))
         )
-        return [row[0] for row in result.all() if row[0]]
+        return [str(row[0]) for row in result.all() if row[0] is not None]
 
 
 async def assign_unassigned_users(

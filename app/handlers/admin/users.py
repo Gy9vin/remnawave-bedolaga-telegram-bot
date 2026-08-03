@@ -58,7 +58,7 @@ from app.services.referral_service import (
     process_referral_registration,
     process_referral_topup,
 )
-from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
+from app.services.remnawave_service import RemnaWaveService
 from app.services.subscription_service import SubscriptionService
 from app.services.user_service import UserService
 from app.states import AdminStates
@@ -3156,7 +3156,7 @@ async def admin_user_fallback_restore(callback: types.CallbackQuery, db_user: Us
     patch_target_squads = None
     patch_target_expire = None
 
-    if active_sub and active_sub.remnawave_uuid:
+    if active_sub and (active_sub.remnawave_id or active_sub.remnawave_short_uuid):
         patch_target_squads = active_sub.connected_squads or []
         end_dt = active_sub.end_date
         if end_dt is not None and end_dt.tzinfo is None:
@@ -3164,7 +3164,7 @@ async def admin_user_fallback_restore(callback: types.CallbackQuery, db_user: Us
         patch_target_expire = end_dt
 
         ok = await _patch_user_full(
-            active_sub.remnawave_uuid,
+            active_sub.remnawave_id,
             squads=patch_target_squads,
             expire_at=patch_target_expire,
             verify_squad_in=patch_target_squads if patch_target_squads else None,
@@ -3178,11 +3178,11 @@ async def admin_user_fallback_restore(callback: types.CallbackQuery, db_user: Us
     elif fallback_subs:
         # Активной нет — пробуем по самой свежей fallback-сабке
         latest_fb = fallback_subs[0]
-        if latest_fb.remnawave_uuid and latest_fb.pre_expiry_squads:
+        if (latest_fb.remnawave_id or latest_fb.remnawave_short_uuid) and latest_fb.pre_expiry_squads:
             patch_target_squads = list(latest_fb.pre_expiry_squads)
             patch_target_expire = latest_fb.pre_expiry_expire_at
             ok = await _patch_user_full(
-                latest_fb.remnawave_uuid,
+                latest_fb.remnawave_id,
                 squads=patch_target_squads,
                 expire_at=patch_target_expire,
                 verify_squad_in=patch_target_squads,
@@ -4274,12 +4274,13 @@ async def delete_user_subscription(callback: types.CallbackQuery, db_user: User,
         return
 
     # Удалить из RemnaWave
-    if subscription.remnawave_uuid:
+    panel_user_id = getattr(subscription, 'remnawave_id', None)
+    if panel_user_id:
         try:
             from app.services.subscription_service import SubscriptionService
 
             service = SubscriptionService()
-            await service.delete_remnawave_user(subscription, db=db)
+            await service.delete_remnawave_user(panel_user_id)
         except Exception as e:
             logger.warning('Failed to delete RemnaWave user', error=e)
 
@@ -4655,19 +4656,17 @@ async def toggle_user_server(callback: types.CallbackQuery, db_user: User, db: A
         await db.commit()
         await db.refresh(subscription)
 
-        _uuid = (
-            getattr(subscription, 'remnawave_uuid', None)
-            if settings.is_multi_tariff_enabled() and subscription
-            else None
-        ) or getattr(user, 'remnawave_uuid', None)
-        if _uuid:
+        panel_user_id = (
+            getattr(subscription, 'remnawave_id', None) if settings.is_multi_tariff_enabled() and subscription else None
+        ) or getattr(user, 'remnawave_id', None)
+        if panel_user_id:
             try:
                 remnawave_service = RemnaWaveService()
                 async with remnawave_service.get_api_client() as api:
                     await update_panel_user_grace_safe(
                         api,
                         subscription.id,
-                        uuid=_uuid,
+                        user_id=panel_user_id,
                         active_internal_squads=current_squads,
                         description=settings.format_remnawave_user_description(
                             full_name=user.full_name, username=user.username, telegram_id=user.telegram_id
@@ -5090,29 +5089,25 @@ async def reset_user_devices(callback: types.CallbackQuery, db_user: User, db: A
     )
 
     try:
-        from app.services.remnawave_service import get_panel_user_ref
-
         user = await get_user_by_id(db, user_id)
-        _uuid = None
-        subscription = None
+        panel_user_id = None
         if subscription_id and settings.is_multi_tariff_enabled():
             from app.database.crud.subscription import get_subscription_by_id_for_user
 
             subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
-            _uuid = getattr(subscription, 'remnawave_uuid', None) if subscription else None
+            panel_user_id = getattr(subscription, 'remnawave_id', None) if subscription else None
         elif settings.is_multi_tariff_enabled():
             subscription = await _resolve_admin_subscription(db, user_id)
-            _uuid = getattr(subscription, 'remnawave_uuid', None) if subscription else None
-        if not _uuid:
-            _uuid = getattr(user, 'remnawave_uuid', None)
-        if not user or not _uuid:
+            panel_user_id = getattr(subscription, 'remnawave_id', None) if subscription else None
+        if not panel_user_id:
+            panel_user_id = getattr(user, 'remnawave_id', None)
+        if not user or not panel_user_id:
             await callback.answer('❌ Пользователь не найден или не связан с RemnaWave', show_alert=True)
             return
 
         remnawave_service = RemnaWaveService()
         async with remnawave_service.get_api_client() as api:
-            uuid, remna_id = await get_panel_user_ref(api, db, user=user, subscription=subscription)
-            success = await api.reset_user_devices(uuid=uuid, remna_id=remna_id)
+            success = await api.reset_user_devices(panel_user_id)
 
         if success:
             await callback.message.edit_text(
@@ -5155,23 +5150,23 @@ async def _update_user_devices(
 
         await db.commit()
 
-        try:
-            remnawave_service = RemnaWaveService()
-            async with remnawave_service.get_api_client() as api:
-                # Resolve panel identifier (v2: uuid, v3: remna_id)
-                _rw_uuid, _rw_remna_id = await get_panel_user_ref(api, db, user=user, subscription=subscription)
-                if _rw_uuid or _rw_remna_id:
+        panel_user_id = (
+            getattr(subscription, 'remnawave_id', None) if settings.is_multi_tariff_enabled() and subscription else None
+        ) or getattr(user, 'remnawave_id', None)
+        if panel_user_id:
+            try:
+                remnawave_service = RemnaWaveService()
+                async with remnawave_service.get_api_client() as api:
                     await api.update_user(
-                        uuid=_rw_uuid,
-                        remna_id=_rw_remna_id,
+                        user_id=panel_user_id,
                         hwid_device_limit=devices,
                         description=settings.format_remnawave_user_description(
                             full_name=user.full_name, username=user.username, telegram_id=user.telegram_id
                         ),
                     )
-            logger.info('✅ Обновлен лимит устройств в RemnaWave для пользователя', telegram_id=user.telegram_id)
-        except Exception as rw_error:
-            logger.error('❌ Ошибка обновления лимита устройств в RemnaWave', rw_error=rw_error)
+                logger.info('✅ Обновлен лимит устройств в RemnaWave для пользователя', telegram_id=user.telegram_id)
+            except Exception as rw_error:
+                logger.error('❌ Ошибка обновления лимита устройств в RemnaWave', rw_error=rw_error)
 
         logger.info(
             'Админ изменил лимит устройств пользователя',
@@ -5204,12 +5199,10 @@ async def _update_user_traffic(
 
         await db.commit()
 
-        _uuid = (
-            getattr(subscription, 'remnawave_uuid', None)
-            if settings.is_multi_tariff_enabled() and subscription
-            else None
-        ) or getattr(user, 'remnawave_uuid', None)
-        if _uuid:
+        panel_user_id = (
+            getattr(subscription, 'remnawave_id', None) if settings.is_multi_tariff_enabled() and subscription else None
+        ) or getattr(user, 'remnawave_id', None)
+        if panel_user_id:
             try:
                 from app.services.subscription_service import get_traffic_reset_strategy
 
@@ -5218,7 +5211,7 @@ async def _update_user_traffic(
                     await update_panel_user_grace_safe(
                         api,
                         subscription.id,
-                        uuid=_uuid,
+                        user_id=panel_user_id,
                         traffic_limit_bytes=traffic_gb * (1024**3) if traffic_gb > 0 else 0,
                         traffic_limit_strategy=get_traffic_reset_strategy(
                             subscription.tariff if subscription else None
@@ -5363,14 +5356,14 @@ async def _add_subscription_traffic(
 
         # Явно включаем пользователя на панели (PATCH может не снять LIMITED-статус)
         if subscription.status == 'active':
-            _uuid = getattr(subscription, 'remnawave_uuid', None) if settings.is_multi_tariff_enabled() else None
-            if not _uuid:
+            panel_user_id = getattr(subscription, 'remnawave_id', None) if settings.is_multi_tariff_enabled() else None
+            if not panel_user_id:
                 from app.database.crud.user import get_user_by_id
 
                 user = await get_user_by_id(db, user_id)
-                _uuid = getattr(user, 'remnawave_uuid', None)
-            if _uuid:
-                await subscription_service.enable_remnawave_user(_uuid)
+                panel_user_id = getattr(user, 'remnawave_id', None)
+            if panel_user_id:
+                await subscription_service.enable_remnawave_user(panel_user_id)
 
         traffic_text = 'безлимитный' if gb == 0 else f'{gb} ГБ'
         logger.info('Админ добавил трафик пользователю', admin_id=admin_id, traffic_text=traffic_text, user_id=user_id)
@@ -5398,12 +5391,12 @@ async def _deactivate_user_subscription(
         await deactivate_subscription(db, subscription)
 
         subscription_service = SubscriptionService()
-        _uuid = getattr(subscription, 'remnawave_uuid', None) if settings.is_multi_tariff_enabled() else None
-        if not _uuid:
+        panel_user_id = getattr(subscription, 'remnawave_id', None) if settings.is_multi_tariff_enabled() else None
+        if not panel_user_id:
             user = await get_user_by_id(db, user_id)
-            _uuid = getattr(user, 'remnawave_uuid', None)
-        if _uuid:
-            await subscription_service.disable_remnawave_user(_uuid)
+            panel_user_id = getattr(user, 'remnawave_id', None)
+        if panel_user_id:
+            await subscription_service.disable_remnawave_user(panel_user_id)
 
         logger.info('Админ деактивировал подписку пользователя', admin_id=admin_id, user_id=user_id)
         return True
@@ -5951,13 +5944,19 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
                     pass
                 ext_squad_uuid = subscription.tariff.external_squad_uuid if subscription.tariff else None
 
-                _uuid = (
-                    getattr(subscription, 'remnawave_uuid', None) if settings.is_multi_tariff_enabled() else None
-                ) or getattr(target_user, 'remnawave_uuid', None)
-                if _uuid:
+                # В multi-tariff фолбэка на user-уровень быть не должно: у каждой
+                # подписки СВОЙ панельный аккаунт, и продление «не той» строки
+                # переписало бы соседнему тарифу дату, лимиты и сквады, а нужный
+                # так и остался бы непродлённым. Пустой id уводит в ветку ниже,
+                # которая опознаёт аккаунт по shortUuid.
+                if settings.is_multi_tariff_enabled():
+                    panel_user_id = getattr(subscription, 'remnawave_id', None)
+                else:
+                    panel_user_id = getattr(target_user, 'remnawave_id', None)
+                if panel_user_id:
                     async with remnawave_service.get_api_client() as api:
                         update_kwargs = dict(
-                            uuid=_uuid,
+                            user_id=panel_user_id,
                             status=UserStatus.ACTIVE if subscription.is_active else UserStatus.DISABLED,
                             expire_at=subscription.end_date,
                             traffic_limit_bytes=subscription.traffic_limit_gb * (1024**3)
@@ -5973,6 +5972,12 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
                             ),
                             active_internal_squads=subscription.connected_squads,
                         )
+
+                        # Пустой список сквадов НЕ отправляем: `[]` в PATCH означает
+                        # «снять все инбаунды», а пустота в connected_squads — это
+                        # дефолт колонки/результат сброса, а не намерение админа.
+                        if not subscription.connected_squads:
+                            update_kwargs.pop('active_internal_squads', None)
 
                         if hwid_limit is not None:
                             update_kwargs['hwid_device_limit'] = hwid_limit
@@ -6034,14 +6039,17 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
                         remnawave_user = await create_panel_user_grace_safe(
                             api,
                             subscription.id,
+                            adopt_short_uuid=subscription.remnawave_short_uuid,
                             **create_kwargs,
                         )
 
-                    if remnawave_user and hasattr(remnawave_user, 'uuid'):
+                    # Идентичность обязана сохраниться: без неё следующий админский
+                    # extend снова уйдёт в create-ветку и наплодит дублей в панели.
+                    if remnawave_user and getattr(remnawave_user, 'id', None):
                         if settings.is_multi_tariff_enabled() and subscription:
-                            subscription.remnawave_uuid = remnawave_user.uuid
+                            subscription.remnawave_id = remnawave_user.id
                         else:
-                            target_user.remnawave_uuid = remnawave_user.uuid
+                            target_user.remnawave_id = remnawave_user.id
                         await db.commit()
 
                 if remnawave_user:

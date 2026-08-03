@@ -454,7 +454,7 @@ async def link_oauth_provider(
     if existing and existing.id != user.id:
         # If the other user is "empty" (no telegram, no subscription, no balance),
         # auto-transfer the provider_id to the current user
-        is_empty = not existing.telegram_id and not existing.remnawave_uuid and (existing.balance_kopeks or 0) == 0
+        is_empty = not existing.telegram_id and not existing.remnawave_id and (existing.balance_kopeks or 0) == 0
         if is_empty:
             logger.info(
                 'Auto-transferring provider from empty user',

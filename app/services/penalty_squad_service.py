@@ -28,54 +28,59 @@ def _extract_squad_uuids(raw) -> list[str]:
     return out
 
 
-async def _get_user_squads(remnawave_uuid: str, db=None, user=None) -> list[str] | None:
+async def _get_user_squads(remna_id_hint: int | None, db=None, user=None) -> list[str] | None:
     """Возвращает текущий список UUID activeInternalSquads пользователя из Remnawave.
 
-    db + user используются для разрешения идентификатора на v3
-    через get_panel_user_ref (v2: передаёт uuid без изменений).
+    db + user используются для разрешения числового remna_id через
+    get_panel_user_ref (панельного uuid в 3.0.0 больше нет — идентичность
+    целиком по remnawave_id).
     """
     from app.services.remnawave_service import remnawave_service, get_panel_user_ref
+    remna_id = remna_id_hint
     try:
         async with remnawave_service.get_api_client() as api:
             if db is not None and user is not None:
-                uuid, remna_id = await get_panel_user_ref(api, db, user=user)
-            else:
-                uuid, remna_id = remnawave_uuid, None
-            panel_user = await api.get_user_by_uuid(uuid=uuid, remna_id=remna_id)
+                _, remna_id = await get_panel_user_ref(api, db, user=user)
+            if not remna_id:
+                return None
+            panel_user = await api.get_user_by_id(remna_id)
         if not panel_user:
             return None
         return _extract_squad_uuids(getattr(panel_user, 'active_internal_squads', None))
     except Exception as exc:
-        logger.error('Ошибка получения сквадов юзера', remnawave_uuid=remnawave_uuid, exc=str(exc))
+        logger.error('Ошибка получения сквадов юзера', remna_id=remna_id, exc=str(exc))
         return None
 
 
-async def _set_user_squads(remnawave_uuid: str, squads: list[str], db=None, user=None) -> bool:
+async def _set_user_squads(remna_id_hint: int | None, squads: list[str], db=None, user=None) -> bool:
     """Заменяет activeInternalSquads у пользователя в Remnawave.
 
     Верифицирует результат: после PATCH перечитывает юзера и сверяет состав UUID.
 
-    db + user используются для разрешения идентификатора на v3
-    через get_panel_user_ref (v2: передаёт uuid без изменений).
+    db + user используются для разрешения числового remna_id через
+    get_panel_user_ref (панельного uuid в 3.0.0 больше нет — идентичность
+    целиком по remnawave_id).
     """
     from app.services.remnawave_service import remnawave_service, get_panel_user_ref
+    remna_id = remna_id_hint
     try:
         async with remnawave_service.get_api_client() as api:
             if db is not None and user is not None:
-                uuid, remna_id = await get_panel_user_ref(api, db, user=user)
-            else:
-                uuid, remna_id = remnawave_uuid, None
-            await api.update_user(uuid=uuid, remna_id=remna_id, active_internal_squads=squads)
-            updated = await api.get_user_by_uuid(uuid=uuid, remna_id=remna_id)
+                _, remna_id = await get_panel_user_ref(api, db, user=user)
+            if not remna_id:
+                logger.error('Нет remna_id для смены сквадов')
+                return False
+            await api.update_user(user_id=remna_id, active_internal_squads=squads)
+            updated = await api.get_user_by_id(remna_id)
         if updated is None:
-            logger.error('Не удалось перечитать юзера после смены сквадов', remnawave_uuid=remnawave_uuid)
+            logger.error('Не удалось перечитать юзера после смены сквадов', remna_id=remna_id)
             return False
         actual = set(_extract_squad_uuids(getattr(updated, 'active_internal_squads', None)))
         expected = set(squads)
         if actual != expected:
             logger.error(
                 'Смена сквадов не применилась (UUID не существует в панели?)',
-                remnawave_uuid=remnawave_uuid,
+                remna_id=remna_id,
                 expected=sorted(expected),
                 actual=sorted(actual),
             )
@@ -84,7 +89,7 @@ async def _set_user_squads(remnawave_uuid: str, squads: list[str], db=None, user
     except Exception as exc:
         logger.error(
             'Ошибка смены сквадов в Remnawave',
-            remnawave_uuid=remnawave_uuid,
+            remna_id=remna_id,
             squads=squads,
             exc=str(exc),
         )
@@ -106,8 +111,8 @@ async def penalize_user(db: AsyncSession, user: User) -> bool:
         logger.error('PENALTY_SQUAD_UUID не задан')
         return False
 
-    if not user.remnawave_uuid:
-        logger.warning('У пользователя нет remnawave_uuid', user_id=user.id)
+    if not user.remnawave_id:
+        logger.warning('У пользователя нет remnawave_id', user_id=user.id)
         return False
 
     if user.is_penalized:
@@ -115,12 +120,12 @@ async def penalize_user(db: AsyncSession, user: User) -> bool:
         return True
 
     # Сохраняем текущий список сквадов перед заменой
-    current_squads = await _get_user_squads(user.remnawave_uuid, db=db, user=user)
+    current_squads = await _get_user_squads(user.remnawave_id, db=db, user=user)
     if current_squads is None:
         logger.error('Не удалось получить текущие сквады юзера', user_id=user.id)
         return False
 
-    ok = await _set_user_squads(user.remnawave_uuid, [penalty_uuid], db=db, user=user)
+    ok = await _set_user_squads(user.remnawave_id, [penalty_uuid], db=db, user=user)
     if not ok:
         return False
 
@@ -150,7 +155,7 @@ async def restore_user(db: AsyncSession, user: User) -> bool:
     if not user.is_penalized:
         return True
 
-    if not user.remnawave_uuid:
+    if not user.remnawave_id:
         await db.execute(
             update(User)
             .where(User.id == user.id)
@@ -167,7 +172,7 @@ async def restore_user(db: AsyncSession, user: User) -> bool:
         else:
             saved = []
 
-    ok = await _set_user_squads(user.remnawave_uuid, saved, db=db, user=user)
+    ok = await _set_user_squads(user.remnawave_id, saved, db=db, user=user)
     if not ok:
         return False
 

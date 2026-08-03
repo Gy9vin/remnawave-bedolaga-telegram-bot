@@ -77,14 +77,16 @@ async def _hwid_path_id(api, db_user, subscription, fallback_uuid):
         rid = None
         short = getattr(subscription, 'remnawave_short_uuid', None) if subscription is not None else None
         if short:
-            rid = await api.resolve_user_id(short_uuid=short)
+            _resolved = await api.resolve_user(short_uuid=short)
+            rid = _resolved.get('id') if _resolved else None
         if rid is None:
             rid = getattr(db_user, 'remnawave_id', None)
         if rid is None:
             for _s in getattr(db_user, 'subscriptions', None) or []:
                 _sh = getattr(_s, 'remnawave_short_uuid', None)
                 if _sh:
-                    rid = await api.resolve_user_id(short_uuid=_sh)
+                    _resolved = await api.resolve_user(short_uuid=_sh)
+                    rid = _resolved.get('id') if _resolved else None
                     if rid is not None:
                         break
         return str(rid) if rid is not None else fallback_uuid
@@ -338,22 +340,20 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
 
     if show_devices:
         try:
-            _device_uuid = (
-                getattr(subscription, 'remnawave_uuid', None)
+            _device_panel_id = (
+                getattr(subscription, 'remnawave_id', None)
                 if settings.is_multi_tariff_enabled() and subscription
                 else None
-            ) or db_user.remnawave_uuid
-            if _device_uuid:
+            ) or db_user.remnawave_id
+            if _device_panel_id:
                 from app.services.remnawave_service import RemnaWaveService
 
                 service = RemnaWaveService()
 
                 async with service.get_api_client() as api:
-                    _pid = await _hwid_path_id(api, db_user, subscription, _device_uuid)
-                    response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
+                    devices_info = await api.get_user_devices(_device_panel_id)
 
-                    if response and 'response' in response:
-                        devices_info = response['response']
+                    if isinstance(devices_info, dict):
                         devices_count = devices_info.get('total', 0)
                         devices_list = devices_info.get('devices', [])
                         devices_used_str = str(devices_count)
@@ -2580,11 +2580,11 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
 
             # Сбрасываем HWID только при уменьшении лимита устройств
             hwid_was_reset = False
-            if db_user.remnawave_uuid and should_update_devices and selected_devices < old_device_limit_bot:
+            if db_user.remnawave_id and should_update_devices and selected_devices < old_device_limit_bot:
                 try:
                     service = RemnaWaveService()
                     async with service.get_api_client() as api:
-                        _pid = await _hwid_path_id(api, db_user, subscription, db_user.remnawave_uuid)
+                        _pid = await _hwid_path_id(api, db_user, subscription, str(db_user.remnawave_id))
                         response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
                         devices_list = []
                         if response and 'response' in response:
@@ -2677,9 +2677,9 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
         subscription_service = SubscriptionService()
         # При покупке подписки ВСЕГДА сбрасываем трафик в панели
         if settings.is_multi_tariff_enabled():
-            _should_create = not subscription.remnawave_uuid
+            _should_create = not subscription.remnawave_id
         else:
-            _should_create = not getattr(db_user, 'remnawave_uuid', None)
+            _should_create = not getattr(db_user, 'remnawave_id', None)
 
         if _should_create:
             remnawave_user = await subscription_service.create_remnawave_user(
@@ -3247,7 +3247,15 @@ async def handle_toggle_daily_subscription_pause(callback: types.CallbackQuery, 
             from app.services.subscription_service import SubscriptionService
 
             subscription_service = SubscriptionService()
-            if getattr(db_user, 'remnawave_uuid', None):
+            # В multi-tariff панельная идентичность живёт на подписке, а
+            # User.remnawave_id не заполняется вовсе. Гейт только по User здесь
+            # означал бы новый панельный дубль на каждом возобновлении.
+            _panel_user_id = (
+                subscription.remnawave_id
+                if settings.is_multi_tariff_enabled() and subscription.remnawave_id
+                else getattr(db_user, 'remnawave_id', None)
+            )
+            if _panel_user_id:
                 await subscription_service.update_remnawave_user(
                     db,
                     subscription,
@@ -3264,7 +3272,12 @@ async def handle_toggle_daily_subscription_pause(callback: types.CallbackQuery, 
                 )
                 # POST может игнорировать activeInternalSquads — отправляем PATCH
                 await db.refresh(db_user)
-                if getattr(db_user, 'remnawave_uuid', None) and subscription.connected_squads:
+                _panel_user_id = (
+                    subscription.remnawave_id
+                    if settings.is_multi_tariff_enabled() and subscription.remnawave_id
+                    else getattr(db_user, 'remnawave_id', None)
+                )
+                if _panel_user_id and subscription.connected_squads:
                     try:
                         await subscription_service.update_remnawave_user(
                             db,

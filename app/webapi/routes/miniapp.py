@@ -2789,13 +2789,13 @@ async def _resolve_connected_servers(
 
 async def _load_devices_info(user: User, subscription=None) -> tuple[int, list[MiniAppDevice]]:
     # Multi-tariff: каждая подписка — свой пользователь панели, поэтому берём
-    # UUID подписки, а не общий user.remnawave_uuid (иначе показали бы устройства
+    # id подписки в панели, а не общий user.remnawave_id (иначе показали бы устройства
     # другого тарифа и лимит выглядел бы общим). Single-tariff: один пользователь.
     if subscription is not None and settings.is_multi_tariff_enabled():
-        remnawave_uuid = getattr(subscription, 'remnawave_uuid', None)
+        panel_user_id = getattr(subscription, 'remnawave_id', None)
     else:
-        remnawave_uuid = getattr(user, 'remnawave_uuid', None)
-    if not remnawave_uuid and not getattr(user, 'remnawave_id', None):
+        panel_user_id = getattr(user, 'remnawave_id', None)
+    if not panel_user_id:
         return 0, []
 
     try:
@@ -2809,26 +2809,7 @@ async def _load_devices_info(user: User, subscription=None) -> tuple[int, list[M
 
     try:
         async with service.get_api_client() as api:
-            # v2/v3-совместимый резолв идентификатора БЕЗ db-сессии.
-            # v3: remna_id из user.remnawave_id, иначе резолвим по short_uuid.
-            # v2: uuid как раньше (remna_id=None).
-            _remna_id = None
-            if await api.get_api_version() == 3:
-                _remna_id = getattr(user, 'remnawave_id', None)
-                if _remna_id is None:
-                    _short = getattr(subscription, 'remnawave_short_uuid', None)
-                    if not _short:
-                        for _s in getattr(user, 'subscriptions', None) or []:
-                            _cand = getattr(_s, 'remnawave_short_uuid', None)
-                            if _cand:
-                                _short = _cand
-                                break
-                    if _short:
-                        _remna_id = await api.resolve_user_id(short_uuid=_short)
-            response = await api.get_user_devices_all(
-                user_uuid=remnawave_uuid if _remna_id is None else None,
-                remna_id=_remna_id,
-            )
+            response = await api.get_user_devices_all(panel_user_id)
     except RemnaWaveConfigurationError:
         logger.debug('RemnaWave configuration missing while loading devices')
         return 0, []
@@ -4395,8 +4376,12 @@ async def remove_connected_device(
             detail={'code': 'user_not_found', 'message': 'User not found'},
         )
 
-    remnawave_uuid = getattr(user, 'remnawave_uuid', None)
-    if not remnawave_uuid and not getattr(user, 'remnawave_id', None):
+    # NB: pre-existing — в multi-tariff панельная идентичность живёт на подписке, а не
+    # на User (ср. _load_devices_info), но запрос не несёт subscription_id, поэтому
+    # выбрать нужного панель-юзера не из чего и хендлер отдаёт 409. Поведение то же,
+    # что и до 3.0.0; починка требует расширения контракта миниаппа.
+    panel_user_id = getattr(user, 'remnawave_id', None)
+    if not panel_user_id:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             detail={'code': 'remnawave_unavailable', 'message': 'RemnaWave user is not linked'},
@@ -4418,11 +4403,7 @@ async def remove_connected_device(
 
     try:
         async with service.get_api_client() as api:
-            from app.services.remnawave_service import get_panel_user_ref
-
-            _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=None)
-            _path_id = str(_p_id) if _p_id is not None else (_p_uuid or remnawave_uuid)
-            success = await api.remove_device(_path_id, hwid)
+            success = await api.remove_device(panel_user_id, hwid)
     except RemnaWaveConfigurationError as error:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -7384,13 +7365,13 @@ async def purchase_traffic_topup_endpoint(
         service = SubscriptionService()
         await service.update_remnawave_user(db, subscription)
         # Явно включаем пользователя на панели (PATCH может не снять LIMITED-статус)
-        _en_uuid = (
-            subscription.remnawave_uuid
-            if settings.is_multi_tariff_enabled() and subscription.remnawave_uuid
-            else getattr(user, 'remnawave_uuid', None)
+        _en_panel_user_id = (
+            subscription.remnawave_id
+            if settings.is_multi_tariff_enabled() and subscription.remnawave_id
+            else getattr(user, 'remnawave_id', None)
         )
-        if _en_uuid and subscription.status == 'active':
-            await service.enable_remnawave_user(_en_uuid)
+        if _en_panel_user_id and subscription.status == 'active':
+            await service.enable_remnawave_user(_en_panel_user_id)
     except Exception as e:
         logger.error('Ошибка синхронизации с RemnaWave при докупке трафика', error=e)
         from app.services.remnawave_retry_queue import remnawave_retry_queue
@@ -7610,7 +7591,16 @@ async def toggle_daily_subscription_pause_endpoint(
         # Sync with RemnaWave
         try:
             service = SubscriptionService()
-            if getattr(user, 'remnawave_uuid', None):
+            # Гейт «обновлять или создавать» обязан смотреть на ту же идентичность,
+            # которой оперирует синк: в multi-tariff панель-юзер привязан к подписке,
+            # а User.remnawave_id не заполняется вовсе. Гейт только по User здесь
+            # означал бы новый панельный дубль на каждом возобновлении.
+            _panel_user_id = (
+                subscription.remnawave_id
+                if settings.is_multi_tariff_enabled() and subscription.remnawave_id
+                else getattr(user, 'remnawave_id', None)
+            )
+            if _panel_user_id:
                 await service.update_remnawave_user(
                     db,
                     subscription,
@@ -7628,7 +7618,13 @@ async def toggle_daily_subscription_pause_endpoint(
                 # POST /api/users may ignore activeInternalSquads —
                 # follow up with PATCH to ensure internal squads are assigned
                 await db.refresh(user)
-                if getattr(user, 'remnawave_uuid', None) and subscription.connected_squads:
+                await db.refresh(subscription)
+                _created_panel_user_id = (
+                    subscription.remnawave_id
+                    if settings.is_multi_tariff_enabled() and subscription.remnawave_id
+                    else getattr(user, 'remnawave_id', None)
+                )
+                if _created_panel_user_id and subscription.connected_squads:
                     try:
                         await service.update_remnawave_user(
                             db,

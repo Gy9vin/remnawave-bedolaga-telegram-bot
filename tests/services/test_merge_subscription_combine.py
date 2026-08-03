@@ -2,6 +2,11 @@
 
 Uses the same SimpleNamespace mock pattern as test_account_merge_service.py.
 No DB connection needed — _combine_subscription_end_dates is pure.
+
+3.0.0 полностью убрал панельный uuid — идентичность чисто числовая
+(``remnawave_id``), поэтому фикстуры и ассерты здесь используют её, а не
+легаси ``remnawave_uuid`` (который ``_handle_subscription_merge`` больше не
+читает — только обнуляет как тумбстоун вторичного аккаунта).
 """
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -65,15 +70,16 @@ class TestCombineSubscriptionEndDates:
 from app.services.account_merge_service import _handle_subscription_merge  # noqa: E402
 
 
-def _make_user(id, remnawave_uuid=None, subscriptions=None):
+def _make_user(id, remnawave_id=None, subscriptions=None):
     return SimpleNamespace(
         id=id,
-        remnawave_uuid=remnawave_uuid,
+        remnawave_id=remnawave_id,
+        remnawave_uuid=None,
         subscriptions=subscriptions or [],
     )
 
 
-def _make_sub(id, user_id, end_date, status='active', tariff_id=None, remnawave_uuid=None):
+def _make_sub(id, user_id, end_date, status='active', tariff_id=None, remnawave_id=None):
     return SimpleNamespace(
         id=id,
         user_id=user_id,
@@ -81,7 +87,8 @@ def _make_sub(id, user_id, end_date, status='active', tariff_id=None, remnawave_
         status=status,
         tariff_id=tariff_id,
         autopay_enabled=False,
-        remnawave_uuid=remnawave_uuid,
+        remnawave_id=remnawave_id,
+        remnawave_uuid=None,
         tariff=SimpleNamespace(name='Basic'),
         traffic_limit_gb=100.0,
         traffic_used_gb=0.0,
@@ -105,6 +112,9 @@ _WINNER_END = datetime(2026, 9, 1, 0, 0, 0, tzinfo=UTC)   # Sep 1 ends later
 _LOSER_END  = datetime(2026, 8, 10, 0, 0, 0, tzinfo=UTC)  # loser ends Aug 10 (16d remain from Jul 25)
 # Rule: winner = later end_date; _WINNER_END (Sep 1) > _LOSER_END (Aug 10) → correct
 
+_RW_PRIMARY_ID = 101
+_RW_SECONDARY_ID = 202
+
 
 def _patch_single_tariff():
     """Patch Settings.is_multi_tariff_enabled to return False (single-tariff mode).
@@ -116,12 +126,12 @@ def _patch_single_tariff():
 class TestSingleTariffCombine:
     async def test_both_active_winner_end_date_extended(self):
         """Both subs active: winner end_date grows by loser's remaining days."""
-        primary_sub = _make_sub(1, 1, _WINNER_END, remnawave_uuid='rw-p')
-        loser_sub   = _make_sub(2, 2, _LOSER_END,  remnawave_uuid='rw-s')
-        primary  = _make_user(1, remnawave_uuid='rw-p', subscriptions=[primary_sub])
-        secondary = _make_user(2, remnawave_uuid='rw-s', subscriptions=[loser_sub])
+        primary_sub = _make_sub(1, 1, _WINNER_END, remnawave_id=_RW_PRIMARY_ID)
+        loser_sub   = _make_sub(2, 2, _LOSER_END,  remnawave_id=_RW_SECONDARY_ID)
+        primary  = _make_user(1, remnawave_id=_RW_PRIMARY_ID, subscriptions=[primary_sub])
+        secondary = _make_user(2, remnawave_id=_RW_SECONDARY_ID, subscriptions=[loser_sub])
         db = _make_db()
-        deferred: list[str] = []
+        deferred: list[int] = []
 
         with _patch_single_tariff(), \
              patch('app.services.account_merge_service.datetime') as mock_dt:
@@ -134,13 +144,13 @@ class TestSingleTariffCombine:
         assert primary_sub.end_date == expected_new_end
 
     async def test_both_active_loser_remnawave_deferred_for_deletion(self):
-        """Loser's RemnaWave UUID is collected for deferred deletion."""
-        primary_sub = _make_sub(1, 1, _WINNER_END, remnawave_uuid='rw-p')
-        loser_sub   = _make_sub(2, 2, _LOSER_END,  remnawave_uuid='rw-s')
-        primary   = _make_user(1, remnawave_uuid='rw-p', subscriptions=[primary_sub])
-        secondary = _make_user(2, remnawave_uuid='rw-s', subscriptions=[loser_sub])
+        """Loser's RemnaWave panel id is collected for deferred deletion."""
+        primary_sub = _make_sub(1, 1, _WINNER_END, remnawave_id=_RW_PRIMARY_ID)
+        loser_sub   = _make_sub(2, 2, _LOSER_END,  remnawave_id=_RW_SECONDARY_ID)
+        primary   = _make_user(1, remnawave_id=_RW_PRIMARY_ID, subscriptions=[primary_sub])
+        secondary = _make_user(2, remnawave_id=_RW_SECONDARY_ID, subscriptions=[loser_sub])
         db = _make_db()
-        deferred: list[str] = []
+        deferred: list[int] = []
 
         with _patch_single_tariff(), \
              patch('app.services.account_merge_service.datetime') as mock_dt:
@@ -148,8 +158,8 @@ class TestSingleTariffCombine:
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             await _handle_subscription_merge(db, primary, secondary, deferred)
 
-        assert 'rw-s' in deferred
-        assert secondary.remnawave_uuid is None
+        assert _RW_SECONDARY_ID in deferred
+        assert secondary.remnawave_id is None
 
     async def test_subscription_event_written(self):
         """A SubscriptionEvent row with event_type='renewal' is added to the session."""
@@ -158,7 +168,7 @@ class TestSingleTariffCombine:
         primary   = _make_user(1, subscriptions=[primary_sub])
         secondary = _make_user(2, subscriptions=[loser_sub])
         db = _make_db()
-        deferred: list[str] = []
+        deferred: list[int] = []
         added_objects = []
         db.add = lambda obj: added_objects.append(obj)
 
@@ -188,7 +198,7 @@ class TestSingleTariffCombine:
         primary   = _make_user(1, subscriptions=[primary_sub])
         secondary = _make_user(2, subscriptions=[loser_sub])
         db = _make_db()
-        deferred: list[str] = []
+        deferred: list[int] = []
         added_objects = []
         db.add = lambda obj: added_objects.append(obj)
 
@@ -205,32 +215,32 @@ class TestSingleTariffCombine:
 
     async def test_only_primary_sub_no_combine(self):
         """Only primary has sub — no combine, secondary's RemnaWave deferred."""
-        primary_sub = _make_sub(1, 1, _WINNER_END, remnawave_uuid='rw-p')
-        primary   = _make_user(1, remnawave_uuid='rw-p', subscriptions=[primary_sub])
-        secondary = _make_user(2, remnawave_uuid='rw-s', subscriptions=[])
+        primary_sub = _make_sub(1, 1, _WINNER_END, remnawave_id=_RW_PRIMARY_ID)
+        primary   = _make_user(1, remnawave_id=_RW_PRIMARY_ID, subscriptions=[primary_sub])
+        secondary = _make_user(2, remnawave_id=_RW_SECONDARY_ID, subscriptions=[])
         db = _make_db()
-        deferred: list[str] = []
+        deferred: list[int] = []
 
         with _patch_single_tariff():
             await _handle_subscription_merge(db, primary, secondary, deferred)
 
-        assert 'rw-s' in deferred
+        assert _RW_SECONDARY_ID in deferred
         assert primary_sub.end_date == _WINNER_END  # unchanged
 
     async def test_only_secondary_sub_transferred(self):
         """Only secondary has sub — it's transferred to primary, no combine."""
-        loser_sub   = _make_sub(2, 2, _LOSER_END, remnawave_uuid='rw-s')
+        loser_sub   = _make_sub(2, 2, _LOSER_END, remnawave_id=_RW_SECONDARY_ID)
         primary   = _make_user(1, subscriptions=[])
-        secondary = _make_user(2, remnawave_uuid='rw-s', subscriptions=[loser_sub])
+        secondary = _make_user(2, remnawave_id=_RW_SECONDARY_ID, subscriptions=[loser_sub])
         db = _make_db()
-        deferred: list[str] = []
+        deferred: list[int] = []
 
         with _patch_single_tariff():
             await _handle_subscription_merge(db, primary, secondary, deferred)
 
         assert loser_sub.user_id == 1
-        assert primary.remnawave_uuid == 'rw-s'
-        assert secondary.remnawave_uuid is None
+        assert primary.remnawave_id == _RW_SECONDARY_ID
+        assert secondary.remnawave_id is None
 
     async def test_secondary_wins_sub_reassigned_to_primary(self):
         """Secondary has the later end_date → secondary_sub becomes winner,
@@ -239,12 +249,12 @@ class TestSingleTariffCombine:
         primary_end  = datetime(2026, 8, 10, 0, 0, 0, tzinfo=UTC)   # earlier — loser
         secondary_end = datetime(2026, 9, 1,  0, 0, 0, tzinfo=UTC)  # later   — winner
         # primary remaining: Aug 10 - Jul 25 = 16 days
-        primary_sub   = _make_sub(1, 1, primary_end,   remnawave_uuid='rw-p')
-        secondary_sub = _make_sub(2, 2, secondary_end, remnawave_uuid='rw-s')
-        primary   = _make_user(1, remnawave_uuid='rw-p', subscriptions=[primary_sub])
-        secondary = _make_user(2, remnawave_uuid='rw-s', subscriptions=[secondary_sub])
+        primary_sub   = _make_sub(1, 1, primary_end,   remnawave_id=_RW_PRIMARY_ID)
+        secondary_sub = _make_sub(2, 2, secondary_end, remnawave_id=_RW_SECONDARY_ID)
+        primary   = _make_user(1, remnawave_id=_RW_PRIMARY_ID, subscriptions=[primary_sub])
+        secondary = _make_user(2, remnawave_id=_RW_SECONDARY_ID, subscriptions=[secondary_sub])
         db = _make_db()
-        deferred: list[str] = []
+        deferred: list[int] = []
 
         with _patch_single_tariff(), \
              patch('app.services.account_merge_service.datetime') as mock_dt:
@@ -265,13 +275,13 @@ class TestSingleTariffCombine:
         assert primary_sub.status == 'expired', (
             f"primary_sub.status should be 'expired', got {primary_sub.status!r}"
         )
-        # Primary's remnawave_uuid now holds winner's (secondary's) old remnawave uuid
-        assert primary.remnawave_uuid == 'rw-s', (
-            f"primary.remnawave_uuid should be 'rw-s', got {primary.remnawave_uuid!r}"
+        # Primary's remnawave_id now holds winner's (secondary's) old panel id
+        assert primary.remnawave_id == _RW_SECONDARY_ID, (
+            f"primary.remnawave_id should be {_RW_SECONDARY_ID}, got {primary.remnawave_id!r}"
         )
-        # Secondary's remnawave_uuid cleared
-        assert secondary.remnawave_uuid is None, (
-            f"secondary.remnawave_uuid should be None, got {secondary.remnawave_uuid!r}"
+        # Secondary's remnawave_id cleared
+        assert secondary.remnawave_id is None, (
+            f"secondary.remnawave_id should be None, got {secondary.remnawave_id!r}"
         )
 
 
@@ -289,12 +299,12 @@ class TestMultiTariffCombine:
         primary_end   = datetime(2026, 9, 1, 0, 0, 0, tzinfo=UTC)   # winner (later)
         secondary_end = datetime(2026, 8, 10, 0, 0, 0, tzinfo=UTC)  # loser (earlier)
         # secondary remaining: Aug 10 - Jul 25 = 16 days
-        primary_sub   = _make_sub(1, 1, primary_end,   tariff_id=TARIFF_ID, remnawave_uuid='rw-p')
-        secondary_sub = _make_sub(2, 2, secondary_end, tariff_id=TARIFF_ID, remnawave_uuid='rw-s')
-        primary   = _make_user(1, remnawave_uuid='rw-p', subscriptions=[primary_sub])
-        secondary = _make_user(2, remnawave_uuid='rw-s', subscriptions=[secondary_sub])
+        primary_sub   = _make_sub(1, 1, primary_end,   tariff_id=TARIFF_ID, remnawave_id=_RW_PRIMARY_ID)
+        secondary_sub = _make_sub(2, 2, secondary_end, tariff_id=TARIFF_ID, remnawave_id=_RW_SECONDARY_ID)
+        primary   = _make_user(1, remnawave_id=_RW_PRIMARY_ID, subscriptions=[primary_sub])
+        secondary = _make_user(2, remnawave_id=_RW_SECONDARY_ID, subscriptions=[secondary_sub])
         db = _make_db()
-        deferred: list[str] = []
+        deferred: list[int] = []
         added_objects = []
         db.add = lambda obj: added_objects.append(obj)
 

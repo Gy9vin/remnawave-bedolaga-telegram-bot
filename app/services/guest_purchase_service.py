@@ -1530,7 +1530,7 @@ async def activate_purchase(db: AsyncSession, purchase_token: str, *, skip_notif
                         api, db, user=user, subscription=subscription
                     )
                     if _uuid or _remna_id:
-                        await api.reset_user_devices(user_uuid=_uuid, remna_id=_remna_id)
+                        await api.reset_user_devices(_remna_id)
                         logger.info(
                             'HWID devices reset on gift activation',
                             purchase_id=purchase.id,

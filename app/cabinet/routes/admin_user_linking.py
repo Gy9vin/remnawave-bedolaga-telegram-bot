@@ -432,18 +432,18 @@ async def admin_merge_preview(
         subs = getattr(user, 'subscriptions', None) or []
         previews: list[AdminMergeSubPreview] = []
         for sub in subs:
-            remnawave_uuid = getattr(sub, 'remnawave_uuid', None)
+            sub_remnawave_id = getattr(sub, 'remnawave_id', None)
             devices_count: int | None = None
             devices: list[AdminMergeDeviceInfo] = []
-            if remnawave_uuid or getattr(user, 'remnawave_id', None):
+            if sub_remnawave_id or getattr(user, 'remnawave_id', None):
                 try:
                     from app.services.remnawave_service import get_panel_user_ref
 
                     async with _get_remnawave_api() as api:
                         _p_uuid, _p_id = await get_panel_user_ref(api, db, user=user, subscription=sub)
-                        data = await api.get_user_devices_all(
-                            user_uuid=_p_uuid or remnawave_uuid, remna_id=_p_id
-                        )
+                        if not _p_id:
+                            raise ValueError('No panel user id resolved for subscription')
+                        data = await api.get_user_devices_all(_p_id)
                     raw_devices = data.get('devices', [])
                     devices_count = data.get('total', len(raw_devices))
                     for d in raw_devices:
@@ -457,7 +457,7 @@ async def admin_merge_preview(
                     logger.warning(
                         'Failed to fetch devices for subscription in merge preview',
                         subscription_id=sub.id,
-                        remnawave_uuid=remnawave_uuid,
+                        remnawave_id=sub_remnawave_id,
                         exc_info=True,
                     )
                     # devices_count stays None, devices stays []

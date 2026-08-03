@@ -9,6 +9,7 @@ POST /subscription/traffic/save-cart
 
 from __future__ import annotations
 
+import asyncio
 import math
 from datetime import UTC, datetime
 from typing import Any
@@ -37,6 +38,12 @@ from .helpers import _apply_addon_discount, resolve_subscription
 
 
 logger = structlog.get_logger(__name__)
+
+# Cap inline RemnaWave panel sync on user-facing cabinet requests. The product is
+# committed before the sync, so a slow/unavailable panel must not hold the HTTP
+# response open (the cabinet pay button is bound to the request and would spin
+# after delivery). Past this budget the sync is deferred to remnawave_retry_queue.
+REMNAWAVE_SYNC_TIMEOUT = 10.0
 
 router = APIRouter()
 
@@ -340,22 +347,23 @@ async def purchase_traffic(
     try:
         subscription_service = SubscriptionService()
         if settings.is_multi_tariff_enabled():
-            _should_create = not subscription.remnawave_uuid
+            _should_create = not subscription.remnawave_id
         else:
-            _should_create = not getattr(user, 'remnawave_uuid', None)
+            _should_create = not getattr(user, 'remnawave_id', None)
 
-        if _should_create:
-            await subscription_service.create_remnawave_user(db, subscription)
-        else:
-            await subscription_service.update_remnawave_user(db, subscription)
-            if subscription.status == 'active':
-                _enable_uuid = (
-                    subscription.remnawave_uuid
-                    if settings.is_multi_tariff_enabled()
-                    else getattr(user, 'remnawave_uuid', None)
-                )
-                if _enable_uuid:
-                    await subscription_service.enable_remnawave_user(_enable_uuid)
+        async with asyncio.timeout(REMNAWAVE_SYNC_TIMEOUT):
+            if _should_create:
+                await subscription_service.create_remnawave_user(db, subscription)
+            else:
+                await subscription_service.update_remnawave_user(db, subscription)
+                if subscription.status == 'active':
+                    _enable_panel_user_id = (
+                        subscription.remnawave_id
+                        if settings.is_multi_tariff_enabled()
+                        else getattr(user, 'remnawave_id', None)
+                    )
+                    if _enable_panel_user_id:
+                        await subscription_service.enable_remnawave_user(_enable_panel_user_id)
     except Exception as e:
         logger.error('Failed to sync traffic with RemnaWave', error=e)
         from app.services.remnawave_retry_queue import remnawave_retry_queue
@@ -659,9 +667,9 @@ async def switch_traffic_package(
     try:
         subscription_service = SubscriptionService()
         if settings.is_multi_tariff_enabled():
-            _should_create = not subscription.remnawave_uuid
+            _should_create = not subscription.remnawave_id
         else:
-            _should_create = not getattr(user, 'remnawave_uuid', None)
+            _should_create = not getattr(user, 'remnawave_id', None)
 
         if _should_create:
             await subscription_service.create_remnawave_user(db, subscription)
@@ -772,18 +780,16 @@ async def refresh_traffic(
     try:
         remnawave_service = RemnaWaveService()
 
-        # Resolve panel UUID for traffic lookup
-        _traffic_uuid = (
-            subscription.remnawave_uuid
-            if settings.is_multi_tariff_enabled() and subscription.remnawave_uuid
-            else user.remnawave_uuid
+        # Resolve panel user id for traffic lookup
+        _traffic_panel_user_id = (
+            subscription.remnawave_id
+            if settings.is_multi_tariff_enabled() and subscription.remnawave_id
+            else user.remnawave_id
         )
         if user.telegram_id and not settings.is_multi_tariff_enabled():
             traffic_stats = await remnawave_service.get_user_traffic_stats(user.telegram_id)
-        elif _traffic_uuid:
-            # Preserve v2 fallback quirk: use sub only when multi-tariff AND sub has uuid, else use user
-            _traffic_obj = subscription if (settings.is_multi_tariff_enabled() and subscription.remnawave_uuid) else user
-            traffic_stats = await remnawave_service.get_user_traffic_stats_by_uuid(_traffic_obj, db)
+        elif _traffic_panel_user_id:
+            traffic_stats = await remnawave_service.get_user_traffic_stats_by_panel_id(_traffic_panel_user_id)
         else:
             traffic_stats = None
 

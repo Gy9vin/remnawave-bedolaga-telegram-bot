@@ -41,6 +41,7 @@ def _make_user(
     status='active',
     subscriptions=None,
     remnawave_uuid=None,
+    remnawave_id=None,
     balance_kopeks=0,
     referred_by_id=None,
     referral_code=None,
@@ -75,6 +76,7 @@ def _make_user(
         status=status,
         subscriptions=subs,
         remnawave_uuid=remnawave_uuid,
+        remnawave_id=remnawave_id,
         balance_kopeks=balance_kopeks,
         referred_by_id=referred_by_id,
         referral_code=referral_code,
@@ -97,6 +99,7 @@ def _make_sub(id, user_id, end_date=None):
         status='active', is_trial=False,
         autopay_enabled=False, tariff_id=None,
         remnawave_uuid=None,
+        remnawave_id=None,
         tariff=SimpleNamespace(name='Basic'),
         traffic_limit_gb=100.0, traffic_used_gb=0.0, device_limit=3,
     )

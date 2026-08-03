@@ -161,6 +161,14 @@ class UsersListResponse(BaseModel):
     limit: int = 50
 
 
+class UserByRemnawaveResponse(BaseModel):
+    """Subscription-level owner resolved from an exact Remnawave user id."""
+
+    user_id: int
+    subscription_id: int
+    matched_remnawave_id: int | None = None
+
+
 # === User Detail ===
 
 
@@ -280,8 +288,8 @@ class UserDetailResponse(BaseModel):
     # Recent transactions
     recent_transactions: list[UserTransactionItem] = []
 
-    # Remnawave UUID
-    remnawave_uuid: str | None = None
+    # Remnawave panel user id
+    remnawave_id: int | None = None
 
 
 # === Panel Info ===
@@ -704,7 +712,7 @@ class UserAvailableTariffsResponse(BaseModel):
 class PanelUserInfo(BaseModel):
     """User info from panel."""
 
-    uuid: str | None = None
+    id: int
     short_uuid: str | None = None
     username: str | None = None
     status: str | None = None
@@ -752,7 +760,7 @@ class SyncToPanelResponse(BaseModel):
     success: bool
     message: str
     action: str = ''  # created, updated, no_changes
-    panel_uuid: str | None = None
+    panel_user_id: int | None = None
     changes: dict[str, Any] = {}
     errors: list[str] = []
 
@@ -762,7 +770,7 @@ class PanelSyncStatusResponse(BaseModel):
 
     user_id: int
     telegram_id: int | None = None
-    remnawave_uuid: str | None = None
+    remnawave_id: int | None = None
     last_sync: datetime | None = None
 
     # Multi-tariff context

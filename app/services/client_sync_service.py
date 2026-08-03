@@ -2,9 +2,8 @@
 
 Тянет все HWID-устройства из панели одним агрегированным запросом,
 парсит клиентское приложение из поля userAgent (формат App/Version/OS/DeviceId),
-маппит устройство на bot-user_id через User.remnawave_uuid (фолбэк:
-Subscription.remnawave_uuid), и делает upsert+prune в таблицу
-user_clients. Используется для таргетирования рассылок по клиентскому
+маппит устройство на bot-user_id через User.remnawave_id, и делает upsert+prune
+в таблицу user_clients. Используется для таргетирования рассылок по клиентскому
 приложению (Happ, v2rayNG, Streisand …).
 
 Поле platform содержит ОС (Android/iOS) — НЕ является именем клиента.
@@ -17,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from app.database.models import Subscription, User, UserClient
+from app.database.models import User, UserClient
 from app.utils.client_detect import parse_client_app
 
 if TYPE_CHECKING:
@@ -88,32 +87,20 @@ async def sync_user_clients(db: 'AsyncSession') -> dict:
         )
         return {'skipped': 'not_configured'}
 
-    # ── 2. Предзагрузка карт panel_uuid → user_id (без N+1) ─────────────────
+    # ── 2. Предзагрузка карты remnawave_id → user_id (без N+1) ──────────────
+    # v2 (userUuid) полностью выпилен из 4.0.0: панель отдаёт только числовой
+    # userId, а users.remnawave_uuid/subscriptions.remnawave_uuid — мёртвые
+    # исторические колонки (читает только одноразовый бэкфилл).
     try:
         from sqlalchemy import select as sa_select
 
-        # Карта по User.remnawave_uuid (приоритет)
-        user_rows = await db.execute(
-            sa_select(User.id, User.remnawave_uuid).where(User.remnawave_uuid.isnot(None))
-        )
-        user_uuid_map: dict[str, int] = {row.remnawave_uuid: row.id for row in user_rows}
-
-        # Карта по Subscription.remnawave_uuid (фолбэк)
-        sub_rows = await db.execute(
-            sa_select(Subscription.user_id, Subscription.remnawave_uuid).where(
-                Subscription.remnawave_uuid.isnot(None)
-            )
-        )
-        sub_uuid_map: dict[str, int] = {row.remnawave_uuid: row.user_id for row in sub_rows}
-
-        # Карта по User.remnawave_id (v3: HWID-устройство несёт userId:number, не userUuid)
         user_rid_rows = await db.execute(
             sa_select(User.id, User.remnawave_id).where(User.remnawave_id.isnot(None))
         )
         user_remna_id_map: dict[int, int] = {row.remnawave_id: row.id for row in user_rid_rows}
 
     except Exception as e:
-        logger.error('client_sync: ошибка загрузки карт uuid→user_id', error=e)
+        logger.error('client_sync: ошибка загрузки карты remnawave_id→user_id', error=e)
         return {'skipped': 'db_error'}
 
     # ── 3. Получить все HWID-устройства из панели ───────────────────────────
@@ -141,14 +128,11 @@ async def sync_user_clients(db: 'AsyncSession') -> dict:
     _sample_logged = False  # один раз за синк
 
     for device in all_devices:
-        puuid = device.get('userUuid')
         pid = device.get('userId')  # v3: числовой id панель-юзера (userUuid удалён)
 
-        # Резолв user_id: v2 — по userUuid (User→Subscription карты); v3 — по userId→remnawave_id
+        # Резолв user_id: userId → remnawave_id
         user_id = None
-        if puuid:
-            user_id = user_uuid_map.get(puuid) or sub_uuid_map.get(puuid)
-        if user_id is None and pid is not None:
+        if pid is not None:
             user_id = user_remna_id_map.get(pid)
         if user_id is None:
             continue

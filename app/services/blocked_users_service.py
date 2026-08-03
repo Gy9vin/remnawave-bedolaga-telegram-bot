@@ -54,6 +54,7 @@ from app.database.models import (
     WithdrawalRequest,
     YooKassaPayment,
 )
+from app.external.remnawave_api import RemnaWaveInvalidUserIdError
 from app.services.remnawave_service import RemnaWaveService
 
 
@@ -88,12 +89,9 @@ class BlockCheckResult:
     full_name: str
     status: BlockCheckStatus
     error_message: str | None = None
-    remnawave_uuid: str | None = None
-    remnawave_uuids: list[str] = field(default_factory=list)
-    # v3-идентификаторы для резолва numeric id, когда uuid недоступен/невалиден в v3.
-    remnawave_id: int | None = None  # user-level numeric id панели
-    remnawave_short_uuid: str | None = None  # primary shortUuid (стабилен в v2 и v3)
-    remnawave_short_uuids: list[str] = field(default_factory=list)  # выровнен по remnawave_uuids
+    # Панельная идентичность (Remnawave 3.0.0: числовой id).
+    remnawave_id: int | None = None
+    remnawave_ids: list[int] = field(default_factory=list)
     subscription_end_date: datetime | None = None
 
 
@@ -167,23 +165,8 @@ class BlockedUsersService:
     async def _check_single_user(self, user: User) -> BlockCheckResult:
         """Проверяет одного пользователя."""
         subscriptions = getattr(user, 'subscriptions', None) or []
-        sub_pairs = [
-            (s.remnawave_uuid, getattr(s, 'remnawave_short_uuid', None))
-            for s in subscriptions
-            if s.remnawave_uuid
-        ]
-        if sub_pairs:
-            remnawave_uuids = [u for u, _ in sub_pairs]
-            remnawave_short_uuids = [sh for _, sh in sub_pairs]
-        else:
-            remnawave_uuids = [user.remnawave_uuid] if user.remnawave_uuid else []
-            remnawave_short_uuids = []
-        # primary shortUuid (для v3-резолва user-level удаления) и numeric id из БД
-        primary_short_uuid = next(
-            (getattr(s, 'remnawave_short_uuid', None) for s in subscriptions if getattr(s, 'remnawave_short_uuid', None)),
-            None,
-        )
-        user_remnawave_id = getattr(user, 'remnawave_id', None)
+        sub_ids = [s.remnawave_id for s in subscriptions if s.remnawave_id]
+        remnawave_ids = sub_ids or ([user.remnawave_id] if user.remnawave_id else [])
 
         active_ends = [
             s.end_date
@@ -199,11 +182,8 @@ class BlockedUsersService:
                 username=user.username,
                 full_name=user.full_name,
                 status=BlockCheckStatus.NO_TELEGRAM_ID,
-                remnawave_uuid=user.remnawave_uuid,
-                remnawave_uuids=remnawave_uuids,
-                remnawave_id=user_remnawave_id,
-                remnawave_short_uuid=primary_short_uuid,
-                remnawave_short_uuids=remnawave_short_uuids,
+                remnawave_id=user.remnawave_id,
+                remnawave_ids=remnawave_ids,
                 subscription_end_date=subscription_end_date,
             )
 
@@ -215,11 +195,8 @@ class BlockedUsersService:
             username=user.username,
             full_name=user.full_name,
             status=status,
-            remnawave_uuid=user.remnawave_uuid,
-            remnawave_uuids=remnawave_uuids,
-            remnawave_id=user_remnawave_id,
-            remnawave_short_uuid=primary_short_uuid,
-            remnawave_short_uuids=remnawave_short_uuids,
+            remnawave_id=user.remnawave_id,
+            remnawave_ids=remnawave_ids,
             subscription_end_date=subscription_end_date,
         )
 
@@ -321,19 +298,9 @@ class BlockedUsersService:
 
         return result
 
-    async def delete_user_from_remnawave(
-        self,
-        remnawave_uuid: str | None,
-        *,
-        remna_id: int | None = None,
-        short_uuid: str | None = None,
-    ) -> bool:
-        """Удаляет пользователя из панели Remnawave.
-
-        v3: юзер идентифицируется numeric id. Если remna_id не передан — резолвим
-        по short_uuid. На v2 резолв не активируется и используется uuid (как раньше).
-        """
-        if not remnawave_uuid and remna_id is None and not short_uuid:
+    async def delete_user_from_remnawave(self, remnawave_id: int) -> bool:
+        """Удаляет пользователя из панели Remnawave."""
+        if not remnawave_id:
             return False
 
         try:
@@ -342,22 +309,21 @@ class BlockedUsersService:
                 return False
 
             async with self.remnawave_service.get_api_client() as api:
-                resolved_id = remna_id
-                if resolved_id is None and short_uuid and await api.get_api_version() == 3:
-                    resolved_id = await api.resolve_user_id(short_uuid=short_uuid)
-                await api.delete_user(uuid=remnawave_uuid or None, remna_id=resolved_id)
-                logger.info(
-                    'Удален пользователь из Remnawave',
-                    remnawave_uuid=remnawave_uuid,
-                    remna_id=resolved_id,
-                )
+                # 3.0.0: DELETE отвечает 204/202 без тела — успех это отсутствие исключения.
+                await api.delete_user(remnawave_id)
+                logger.info('Удален пользователь из Remnawave', remnawave_id=remnawave_id)
                 return True
+        except RemnaWaveInvalidUserIdError as e:
+            # Битая панельная ссылка в БД бота — это не «пользователя уже нет»,
+            # иначе строка молча зачлась бы как успешная очистка панели.
+            logger.error('Непригодный панельный id, удаление пропущено', remnawave_id=remnawave_id, error=e)
+            return False
         except Exception as e:
             error_msg = str(e).lower()
             if 'not found' in error_msg or '404' in error_msg:
-                logger.info('Пользователь уже удален из Remnawave', remnawave_uuid=remnawave_uuid)
+                logger.info('Пользователь уже удален из Remnawave', remnawave_id=remnawave_id)
                 return True
-            logger.error('Ошибка удаления из Remnawave', remnawave_uuid=remnawave_uuid, error=e)
+            logger.error('Ошибка удаления из Remnawave', remnawave_id=remnawave_id, error=e)
             return False
 
     async def delete_user_from_db(self, db: AsyncSession, user_id: int) -> bool:
@@ -526,26 +492,16 @@ class BlockedUsersService:
                         continue
 
                 if action in (BlockedUserAction.DELETE_FROM_REMNAWAVE, BlockedUserAction.DELETE_BOTH):
-                    uuids_to_delete = user_result.remnawave_uuids or (
-                        [user_result.remnawave_uuid] if user_result.remnawave_uuid else []
+                    ids_to_delete = user_result.remnawave_ids or (
+                        [user_result.remnawave_id] if user_result.remnawave_id else []
                     )
-                    short_list = user_result.remnawave_short_uuids or (
-                        [user_result.remnawave_short_uuid] if user_result.remnawave_short_uuid else []
-                    )
-                    # user-level numeric id применим только когда удаляем единственного
-                    # user-level юзера (не per-subscription multi-tariff).
-                    is_user_level = not user_result.remnawave_uuids
-                    for idx, rw_uuid in enumerate(uuids_to_delete):
-                        rw_short = short_list[idx] if idx < len(short_list) else None
-                        rw_remna_id = user_result.remnawave_id if is_user_level else None
-                        success = await self.delete_user_from_remnawave(
-                            rw_uuid, remna_id=rw_remna_id, short_uuid=rw_short
-                        )
+                    for rw_id in ids_to_delete:
+                        success = await self.delete_user_from_remnawave(rw_id)
                         if success:
                             result.deleted_from_remnawave += 1
                         else:
                             result.errors.append(
-                                f'Ошибка удаления {user_result.telegram_id} (uuid={rw_uuid}) из Remnawave'
+                                f'Ошибка удаления {user_result.telegram_id} (panel_id={rw_id}) из Remnawave'
                             )
                         # Задержка для избежания rate limit
                         await asyncio.sleep(self.API_DELAY_SECONDS)

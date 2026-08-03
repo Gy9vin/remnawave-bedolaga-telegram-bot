@@ -18,7 +18,10 @@
    самое: no raise, warning в лог, remna_id возвращается.
 3. commit() отрабатывает нормально (обычный, "свой" контекст) -> бэкфилл
    по-прежнему сохраняется как раньше (commit реально вызывается).
-4. v2 не звонит commit() вообще (поведение не изменилось).
+
+3.0.0 полностью выпилил панельный uuid (только числовой remnawave_id), поэтому
+v2/uuid-ветка (и мок resolve_user_id/get_user_by_telegram_id — переименованных
+в resolve_user/find_users_by_telegram_id) сюда больше не входит.
 """
 
 from __future__ import annotations
@@ -35,7 +38,6 @@ from app.services.remnawave_service import get_panel_user_ref
 def _make_user(*, telegram_id: int = 111, remnawave_id: int | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         telegram_id=telegram_id,
-        remnawave_uuid='panel-uuid',
         remnawave_id=remnawave_id,
         subscriptions=[],
     )
@@ -45,12 +47,13 @@ def _make_subscription(*, remnawave_short_uuid: str | None = 'shortXYZ') -> Simp
     return SimpleNamespace(remnawave_short_uuid=remnawave_short_uuid)
 
 
-def _make_client(*, api_version: int = 3, resolved_id: int | None = 42) -> MagicMock:
+def _make_client(*, resolved_id: int | None = 42) -> MagicMock:
     client = MagicMock()
-    client.get_api_version = AsyncMock(return_value=api_version)
-    client.resolve_user_id = AsyncMock(return_value=resolved_id)
+    client.resolve_user = AsyncMock(
+        return_value=({'id': resolved_id} if resolved_id is not None else None)
+    )
     mock_panel_user = SimpleNamespace(id=resolved_id)
-    client.get_user_by_telegram_id = AsyncMock(return_value=[mock_panel_user])
+    client.find_users_by_telegram_id = AsyncMock(return_value=[mock_panel_user])
     return client
 
 
@@ -63,7 +66,7 @@ async def test_commit_illegal_state_change_error_does_not_propagate():
     """Воспроизводит прод-баг: commit() внутри чужой/конкурентной транзакции."""
     user = _make_user(remnawave_id=None)
     sub = _make_subscription()
-    client = _make_client(api_version=3, resolved_id=4242)
+    client = _make_client(resolved_id=4242)
 
     db = AsyncMock()
     db.commit = AsyncMock(
@@ -92,7 +95,7 @@ async def test_commit_illegal_state_change_error_does_not_propagate():
 async def test_commit_arbitrary_error_does_not_propagate():
     user = _make_user(remnawave_id=None)
     sub = _make_subscription()
-    client = _make_client(api_version=3, resolved_id=99)
+    client = _make_client(resolved_id=99)
 
     db = AsyncMock()
     db.commit = AsyncMock(side_effect=RuntimeError('connection reset by peer'))
@@ -113,7 +116,7 @@ async def test_commit_arbitrary_error_does_not_propagate():
 async def test_commit_success_still_persists_as_before():
     user = _make_user(remnawave_id=None)
     sub = _make_subscription()
-    client = _make_client(api_version=3, resolved_id=7)
+    client = _make_client(resolved_id=7)
 
     db = AsyncMock()
     db.commit = AsyncMock()
@@ -123,23 +126,3 @@ async def test_commit_success_still_persists_as_before():
     assert result == (None, 7)
     assert user.remnawave_id == 7
     db.commit.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# 4: v2 — commit() не вызывается вообще, поведение не изменилось.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_v2_never_calls_commit():
-    user = _make_user(remnawave_id=None)
-    user.remnawave_uuid = 'v2-uuid'
-    sub = _make_subscription()
-    client = _make_client(api_version=2)
-
-    db = AsyncMock()
-    db.commit = AsyncMock()
-
-    result = await get_panel_user_ref(client, db, user=user, subscription=sub)
-
-    assert result == ('v2-uuid', None)
-    db.commit.assert_not_awaited()

@@ -12,12 +12,12 @@ from app.cabinet.routes.admin_user_linking import admin_merge_preview
 _NOW = datetime(2026, 7, 30, 0, 0, 0, tzinfo=UTC)
 
 
-def _make_sub(id, user_id, remnawave_uuid=None, subscription_url=None,
+def _make_sub(id, user_id, remnawave_id=None, subscription_url=None,
               subscription_crypto_link=None, remnawave_short_uuid=None,
               end_date=None, status='active', tariff_name='Basic'):
     return SimpleNamespace(
         id=id, user_id=user_id,
-        remnawave_uuid=remnawave_uuid,
+        remnawave_id=remnawave_id,
         subscription_url=subscription_url,
         subscription_crypto_link=subscription_crypto_link,
         remnawave_short_uuid=remnawave_short_uuid,
@@ -37,7 +37,7 @@ def _make_user(id, subs=None, telegram_id=None, email=None):
         balance_kopeks=1000, subscriptions=subs,
         created_at=datetime(2025, 1, 1, tzinfo=UTC),
         status='active', referral_code='ref', referred_by_id=None,
-        remnawave_uuid=None,
+        remnawave_id=None,
     )
 
 
@@ -55,10 +55,10 @@ def _make_admin():
 
 async def test_preview_route_returns_both_users():
     """Preview returns primary and secondary user info."""
-    primary_sub = _make_sub(10, 1, remnawave_uuid='rw-p',
+    primary_sub = _make_sub(10, 1, remnawave_id='rw-p',
                             subscription_url='https://link/p', remnawave_short_uuid='short-p')
     primary = _make_user(1, subs=[primary_sub], telegram_id=111)
-    secondary_sub = _make_sub(20, 2, remnawave_uuid='rw-s',
+    secondary_sub = _make_sub(20, 2, remnawave_id='rw-s',
                               subscription_url='https://link/s', remnawave_short_uuid='short-s')
     secondary = _make_user(2, subs=[secondary_sub])
     db = _fake_db()
@@ -101,7 +101,7 @@ async def test_preview_route_returns_both_users():
 
 async def test_preview_panel_unavailable_returns_null_devices():
     """If RemnaWave API throws, devices_count=None, devices=[], no 500."""
-    primary_sub = _make_sub(10, 1, remnawave_uuid='rw-p')
+    primary_sub = _make_sub(10, 1, remnawave_id='rw-p')
     primary = _make_user(1, subs=[primary_sub])
     secondary = _make_user(2, subs=[])
     db = _fake_db()

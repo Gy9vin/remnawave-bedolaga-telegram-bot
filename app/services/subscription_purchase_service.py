@@ -47,14 +47,16 @@ async def _hwid_path_id(api, db_user, subscription, fallback_uuid):
         rid = None
         short = getattr(subscription, 'remnawave_short_uuid', None) if subscription is not None else None
         if short:
-            rid = await api.resolve_user_id(short_uuid=short)
+            _resolved = await api.resolve_user(short_uuid=short)
+            rid = _resolved.get('id') if _resolved else None
         if rid is None:
             rid = getattr(db_user, 'remnawave_id', None)
         if rid is None:
             for _s in getattr(db_user, 'subscriptions', None) or []:
                 _sh = getattr(_s, 'remnawave_short_uuid', None)
                 if _sh:
-                    rid = await api.resolve_user_id(short_uuid=_sh)
+                    _resolved = await api.resolve_user(short_uuid=_sh)
+                    rid = _resolved.get('id') if _resolved else None
                     if rid is not None:
                         break
         return str(rid) if rid is not None else fallback_uuid
@@ -1283,14 +1285,14 @@ class MiniAppSubscriptionPurchaseService:
 
             # Сбрасываем HWID только при уменьшении лимита устройств
             hwid_was_reset = False
-            remnawave_uuid = getattr(user, 'remnawave_uuid', None)
-            if remnawave_uuid and device_limit < old_device_limit:
+            remnawave_id = getattr(user, 'remnawave_id', None)
+            if remnawave_id and device_limit < old_device_limit:
                 try:
                     from app.services.remnawave_service import RemnaWaveService
 
                     service = RemnaWaveService()
                     async with service.get_api_client() as api:
-                        _pid = await _hwid_path_id(api, user, subscription, remnawave_uuid)
+                        _pid = await _hwid_path_id(api, user, subscription, str(remnawave_id))
                         response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
                         devices_list = []
                         if response and 'response' in response:
@@ -1374,23 +1376,23 @@ class MiniAppSubscriptionPurchaseService:
         # Disable killed trials on RemnaWave panel
         for trial_sub in killed_trials:
             try:
-                _trial_uuid = trial_sub.remnawave_uuid or (
-                    getattr(user, 'remnawave_uuid', None) if not settings.is_multi_tariff_enabled() else None
-                )
-                if _trial_uuid:
-                    await subscription_service.disable_remnawave_user(_trial_uuid)
+                _trial_panel_id = trial_sub.remnawave_id
+                if _trial_panel_id is None and not settings.is_multi_tariff_enabled():
+                    _trial_panel_id = getattr(user, 'remnawave_id', None)
+                if _trial_panel_id is not None:
+                    await subscription_service.disable_remnawave_user(_trial_panel_id)
                 await decrement_subscription_server_counts(db, trial_sub)
             except Exception as trial_err:
                 logger.warning('Failed to disable trial on RemnaWave', error=trial_err, trial_id=trial_sub.id)
 
         try:
             # In multi-tariff mode, each subscription has its own panel user.
-            # A new subscription has no remnawave_uuid yet, so always CREATE.
-            # In single-tariff mode, reuse the user-level UUID if available.
+            # A new subscription has no remnawave_id yet, so always CREATE.
+            # In single-tariff mode, reuse the user-level panel id if available.
             if settings.is_multi_tariff_enabled():
-                _should_create = not subscription.remnawave_uuid
+                _should_create = subscription.remnawave_id is None
             else:
-                _should_create = not getattr(user, 'remnawave_uuid', None)
+                _should_create = getattr(user, 'remnawave_id', None) is None
 
             if _should_create:
                 await subscription_service.create_remnawave_user(
@@ -1421,7 +1423,7 @@ class MiniAppSubscriptionPurchaseService:
             remnawave_retry_queue.enqueue(
                 subscription_id=subscription.id,
                 user_id=user.id,
-                action='create' if not getattr(subscription, 'remnawave_uuid', None) else 'update',
+                action='create' if getattr(subscription, 'remnawave_id', None) is None else 'update',
             )
 
         transaction = await create_transaction(

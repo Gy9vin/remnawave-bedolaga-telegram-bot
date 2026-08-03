@@ -150,8 +150,8 @@ async def _diagnose_whitelist(dev_ids: list[str]) -> list[str]:
                         flags.append('уже в EXPIRY-fallback')
                     if sub.traffic_fallback_active:
                         flags.append('уже в TRAFFIC-fallback')
-                    if not sub.remnawave_uuid:
-                        flags.append('БЕЗ remnawave_uuid')
+                    if not sub.remnawave_id:
+                        flags.append('БЕЗ remnawave_id')
                     is_daily = bool(getattr(sub.tariff, 'is_daily', False))
                     if is_daily and not getattr(sub, 'is_daily_paused', False):
                         flags.append('daily-тариф')
@@ -167,7 +167,7 @@ async def _diagnose_whitelist(dev_ids: list[str]) -> list[str]:
                         and expired_by_date
                         and not sub.expiry_fallback_active
                         and not sub.traffic_fallback_active
-                        and bool(sub.remnawave_uuid)
+                        and bool(sub.remnawave_id)
                         and not (is_daily and not getattr(sub, 'is_daily_paused', False))
                     )
 

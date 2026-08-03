@@ -551,9 +551,9 @@ class SubscriptionRenewalService:
         try:
             await db.refresh(user)
             if settings.is_multi_tariff_enabled():
-                _should_create = not subscription_after.remnawave_uuid
+                _should_create = subscription_after.remnawave_id is None
             else:
-                _should_create = not getattr(user, 'remnawave_uuid', None)
+                _should_create = getattr(user, 'remnawave_id', None) is None
 
             async with asyncio.timeout(REMNAWAVE_SYNC_TIMEOUT):
                 if _should_create:
@@ -584,23 +584,37 @@ class SubscriptionRenewalService:
             remnawave_retry_queue.enqueue(
                 subscription_id=subscription_after.id,
                 user_id=subscription_after.user_id,
-                action='create' if not getattr(subscription_after, 'remnawave_uuid', None) else 'update',
+                action='create' if getattr(subscription_after, 'remnawave_id', None) is None else 'update',
             )
 
         # Сброс привязанных устройств при продлении (если включено)
         if reset_devices:
             try:
-                from app.services.remnawave_service import RemnaWaveService, get_panel_user_ref
+                from app.services.remnawave_service import RemnaWaveService
 
                 rw_service = RemnaWaveService()
-                async with rw_service.get_api_client() as api:
-                    _uuid, _remna_id = await get_panel_user_ref(
-                        api, db, user=user, subscription=subscription_after
-                    )
-                    if _uuid or _remna_id:
-                        await api.reset_user_devices(user_uuid=_uuid, remna_id=_remna_id)
+                _panel_user_id = (
+                    getattr(subscription_after, 'remnawave_id', None)
+                    if settings.is_multi_tariff_enabled()
+                    else getattr(user, 'remnawave_id', None)
+                )
+                if _panel_user_id is not None:
+                    async with rw_service.get_api_client() as api:
+                        # reset_user_devices не бросает при отказе панели — ловит
+                        # внутри и возвращает False. Это самый частый вызов сброса
+                        # (каждое автопродление), и безусловный success-лог тут
+                        # означал бы, что поддержка закроет тикет «не могу
+                        # добавить устройство» как ошибку пользователя.
+                        _devices_reset = await api.reset_user_devices(_panel_user_id)
+                    if _devices_reset:
                         logger.info(
                             'Devices reset on renewal',
+                            subscription_id=subscription_after.id,
+                            user_id=user.id,
+                        )
+                    else:
+                        logger.error(
+                            'Failed to reset devices on renewal',
                             subscription_id=subscription_after.id,
                             user_id=user.id,
                         )

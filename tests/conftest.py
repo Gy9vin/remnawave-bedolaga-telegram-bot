@@ -34,41 +34,51 @@ os.environ.setdefault('BACKUP_LOCATION', _tempfile.mkdtemp(prefix='bedolaga_test
 sys.modules.setdefault('asyncpg', types.ModuleType('asyncpg'))
 sys.modules.setdefault('aiosqlite', types.ModuleType('aiosqlite'))
 
-# Заглушка для пакета «Crypto» (pycryptodome). В нашем окружении установлен
-# pycryptodomex (namespace «Cryptodome»), а некоторый код импортирует «Crypto».
-# Используем мета-импортёр, который авто-создаёт заглушки для любых Crypto.*
-# без загрузки нативных расширений (что вызывало cffi-конфликты).
+# Заглушка для пакета «Crypto» (pycryptodome) — только если он реально
+# ОТСУТСТВУЕТ в окружении. Раньше здесь стоял pycryptodomex (namespace
+# «Cryptodome»), а не pycryptodome, и заглушка не давала упасть коллекции на
+# `from Crypto.Hash import SHA256` в app/services/antilopay_service.py.
+# pycryptodome с тех пор добавлен в requirements.txt/pyproject.toml как
+# настоящая зависимость (нужен и app/external/remnawave_api.py для локального
+# шифрования happ-ссылок, 3.0.0) — если он установлен, заглушка обязана
+# уступить место реальному модулю, иначе `RSA.generate`/`PKCS1_v1_5` и т.п.
+# молча превращаются в пустышки и ломают тесты шифрования.
 if 'Crypto' not in sys.modules:
     import importlib
     import importlib.abc
     import importlib.machinery
+    import importlib.util as _importlib_util
 
-    # Единственный прод-код, импортирующий pycryptodome, — app/services/antilopay_service.py:
-    #   from Crypto.Hash import SHA256
-    #   from Crypto.PublicKey import RSA
-    #   from Crypto.Signature import pkcs1_15
-    # Заглушаем ТОЛЬКО эти ветки Crypto (и их подмодули), а не весь namespace,
-    # чтобы не маскировать молча возможные будущие реальные crypto-тесты.
-    _CRYPTO_STUB_PREFIXES = ('Crypto.Hash', 'Crypto.PublicKey', 'Crypto.Signature', 'Crypto.Cipher')
+    _real_crypto_available = _importlib_util.find_spec('Crypto') is not None
 
-    class _CryptoStubFinder(importlib.abc.MetaPathFinder):
-        """Подставляет пустые заглушки для Crypto и allowlist-веток Crypto.* ."""
+    if not _real_crypto_available:
+        # Единственный прод-код, импортировавший pycryptodome без реальной
+        # зависимости в окружении, — app/services/antilopay_service.py:
+        #   from Crypto.Hash import SHA256
+        #   from Crypto.PublicKey import RSA
+        #   from Crypto.Signature import pkcs1_15
+        # Заглушаем ТОЛЬКО эти ветки Crypto (и их подмодули), а не весь namespace,
+        # чтобы не маскировать молча возможные будущие реальные crypto-тесты.
+        _CRYPTO_STUB_PREFIXES = ('Crypto.Hash', 'Crypto.PublicKey', 'Crypto.Signature', 'Crypto.Cipher')
 
-        def find_spec(self, fullname, path, target=None):
-            if fullname == 'Crypto' or fullname.startswith(_CRYPTO_STUB_PREFIXES):
-                return importlib.machinery.ModuleSpec(fullname, _CryptoStubLoader(), is_package=True)
-            return None
+        class _CryptoStubFinder(importlib.abc.MetaPathFinder):
+            """Подставляет пустые заглушки для Crypto и allowlist-веток Crypto.* ."""
 
-    class _CryptoStubLoader(importlib.abc.Loader):
-        def create_module(self, spec):
-            mod = types.ModuleType(spec.name)
-            mod.__path__ = []
-            return mod
+            def find_spec(self, fullname, path, target=None):
+                if fullname == 'Crypto' or fullname.startswith(_CRYPTO_STUB_PREFIXES):
+                    return importlib.machinery.ModuleSpec(fullname, _CryptoStubLoader(), is_package=True)
+                return None
 
-        def exec_module(self, module):
-            pass  # Заглушка — ничего не делает
+        class _CryptoStubLoader(importlib.abc.Loader):
+            def create_module(self, spec):
+                mod = types.ModuleType(spec.name)
+                mod.__path__ = []
+                return mod
 
-    sys.meta_path.insert(0, _CryptoStubFinder())
+            def exec_module(self, module):
+                pass  # Заглушка — ничего не делает
+
+        sys.meta_path.insert(0, _CryptoStubFinder())
 
 # Заглушка для Apple App Store Server Library (опциональная зависимость).
 if 'appstoreserverlibrary' not in sys.modules:
