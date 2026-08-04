@@ -236,12 +236,26 @@ async def _get_jwks(force: bool = False) -> dict[str, Any]:
             return _jwks_cache
 
         proxy = settings.get_proxy_url()
-        async with httpx.AsyncClient(timeout=10, proxy=proxy) as client:
-            response = await client.get(_JWKS_URL)
-            response.raise_for_status()
-            _jwks_cache = response.json()
-            _jwks_cache_expiry = now + timedelta(seconds=_JWKS_CACHE_TTL_SECONDS)
-            return _jwks_cache
+        try:
+            async with httpx.AsyncClient(timeout=10, proxy=proxy) as client:
+                response = await client.get(_JWKS_URL)
+                response.raise_for_status()
+                _jwks_cache = response.json()
+                _jwks_cache_expiry = now + timedelta(seconds=_JWKS_CACHE_TTL_SECONDS)
+                return _jwks_cache
+        except Exception as fetch_error:
+            # Ключи Telegram меняются крайне редко, а недоступность сети (лежащий
+            # SOCKS-прокси, таймаут) — обычное дело. Отдать протухший кеш здесь
+            # безопаснее, чем отказать во входе всем сразу: подпись всё равно
+            # проверяется, просто прежним набором ключей. Если кеша нет вовсе —
+            # проверить подпись нечем, и ошибка идёт наверх как раньше.
+            if _jwks_cache:
+                logger.warning(
+                    'JWKS недоступен, используем прежние ключи',
+                    error=str(fetch_error)[:200],
+                )
+                return _jwks_cache
+            raise
 
 
 async def _force_refresh_jwks(kid: str) -> dict[str, Any] | None:
