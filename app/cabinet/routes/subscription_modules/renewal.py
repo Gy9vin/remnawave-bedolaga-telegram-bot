@@ -47,7 +47,13 @@ async def get_renewal_options(
     if not subscription:
         return []
 
-    _non_renewable = {SubscriptionStatus.DISABLED.value, SubscriptionStatus.PENDING.value}
+    # PENDING — подписка ещё не оплачена и не существует в панели, продлевать
+    # нечего. DISABLED сюда не входит намеренно: этот статус проставляется
+    # автоматически (истечение, отключение в панели, fallback), и продление —
+    # ровно тот способ, которым человек возвращает себе доступ. extend_subscription
+    # такую подписку обрабатывает как истёкшую: считает срок от текущей даты и
+    # переводит её обратно в active.
+    _non_renewable = {SubscriptionStatus.PENDING.value}
     _actual_status = getattr(subscription, 'actual_status', subscription.status)
     if _actual_status in _non_renewable:
         return []
@@ -116,7 +122,13 @@ async def renew_subscription(
             detail='No subscription found',
         )
 
-    _non_renewable = {SubscriptionStatus.DISABLED.value, SubscriptionStatus.PENDING.value}
+    # PENDING — подписка ещё не оплачена и не существует в панели, продлевать
+    # нечего. DISABLED сюда не входит намеренно: этот статус проставляется
+    # автоматически (истечение, отключение в панели, fallback), и продление —
+    # ровно тот способ, которым человек возвращает себе доступ. extend_subscription
+    # такую подписку обрабатывает как истёкшую: считает срок от текущей даты и
+    # переводит её обратно в active.
+    _non_renewable = {SubscriptionStatus.PENDING.value}
     _actual_status = getattr(subscription, 'actual_status', subscription.status)
     if _actual_status in _non_renewable:
         raise HTTPException(
