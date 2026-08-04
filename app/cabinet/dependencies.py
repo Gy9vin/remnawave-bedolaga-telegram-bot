@@ -220,7 +220,23 @@ async def get_current_cabinet_user(
             if not is_admin:
                 from app.services.channel_subscription_service import channel_subscription_service
 
-                channels_with_status = await channel_subscription_service.get_channels_with_status(user.telegram_id)
+                # Проверка обязательных каналов не должна решать, пустить ли
+                # человека в кабинет вообще. Она ходит и в Telegram, и в БД, и
+                # при таймауте базы исключение раньше поднималось до зависимости
+                # авторизации — вход отдавал 500 (за сегодня так упало 59 раз).
+                # Логика проверки и так построена «в пользу пользователя» при
+                # неопределённости, поэтому сбой самой проверки трактуем так же.
+                try:
+                    channels_with_status = await channel_subscription_service.get_channels_with_status(
+                        user.telegram_id
+                    )
+                except Exception as channels_error:
+                    logger.warning(
+                        'Проверка обязательных каналов недоступна, пропускаем пользователя',
+                        user_id=user.id,
+                        error=str(channels_error)[:200],
+                    )
+                    channels_with_status = []
                 is_subscribed = (
                     all(ch['is_subscribed'] for ch in channels_with_status) if channels_with_status else True
                 )

@@ -185,10 +185,28 @@ class ChannelSubscriptionService:
                         # try again with fresh API state.
                         continue
                     result[ch['channel_id']] = check_result
-                    # Write DB first (source of truth), then cache
-                    await upsert_user_channel_sub(db, telegram_id, ch['channel_id'], check_result)
+                    # Write DB first (source of truth), then cache. Результат
+                    # проверки уже получен от Telegram, и запись — лишь его
+                    # сохранение: если БД под нагрузкой отвечает таймаутом,
+                    # это не повод терять сам результат и ронять вызывающий код.
+                    try:
+                        await upsert_user_channel_sub(db, telegram_id, ch['channel_id'], check_result)
+                    except Exception as persist_error:
+                        logger.warning(
+                            'Не удалось сохранить статус подписки на канал',
+                            telegram_id=telegram_id,
+                            channel_id=ch['channel_id'],
+                            error=str(persist_error)[:200],
+                        )
                     await ChannelSubCache.set_sub_status(telegram_id, ch['channel_id'], check_result)
-                await db.commit()
+                try:
+                    await db.commit()
+                except Exception as commit_error:
+                    logger.warning(
+                        'Не удалось закоммитить статусы подписок на каналы',
+                        telegram_id=telegram_id,
+                        error=str(commit_error)[:200],
+                    )
         elif channels_needing_api:
             # No bot available (e.g., cabinet API context). Fall back to the last
             # known DB value to avoid revoking access from paying users when the
