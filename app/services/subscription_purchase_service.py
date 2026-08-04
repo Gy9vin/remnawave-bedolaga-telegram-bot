@@ -1293,16 +1293,16 @@ class MiniAppSubscriptionPurchaseService:
                     service = RemnaWaveService()
                     async with service.get_api_client() as api:
                         _pid = await _hwid_path_id(api, user, subscription, str(remnawave_id))
-                        response = await api._make_request('GET', f'/api/hwid/devices/{_pid}')
-                        devices_list = []
-                        if response and 'response' in response:
-                            devices_list = response['response'].get('devices', [])
+                        # Типизированные методы клиента вместо сырых путей: в 3.x
+                        # идентификатор числовой, и клиент валидирует его на границе.
+                        response = await api.get_user_devices_all(_pid)
+                        devices_list = (response or {}).get('devices', [])
                         reset_count = 0
                         for device in devices_list:
                             device_hwid = device.get('hwid')
                             if device_hwid:
                                 try:
-                                    await api.delete_hwid_device_by_path(_pid, device_hwid)
+                                    await api.remove_device(_pid, device_hwid)
                                     reset_count += 1
                                 except Exception as del_err:
                                     logger.error(

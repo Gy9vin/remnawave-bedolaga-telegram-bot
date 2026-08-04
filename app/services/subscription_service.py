@@ -198,12 +198,29 @@ class SubscriptionService:
 
             open_grace_ids = await lock_grace_sensitive_panel_updates(db, (subscription.id,))
             await db.flush((subscription, user))
-            await db.refresh(subscription)
-            await db.refresh(user)
+            # Читаем скаляры под грейс-локом одним заходом. Сессия сюда может
+            # прийти из вызывающего кода уже с просроченными объектами, и тогда
+            # первое же обращение к полю тянет ленивую загрузку вне greenlet-
+            # контекста — MissingGreenlet ронял весь панельный апдейт. Grace-маска
+            # вторична по отношению к синхронизации, поэтому при сбое чтения мы
+            # логируем и продолжаем без неё, а не падаем.
+            try:
+                await db.refresh(subscription)
+                await db.refresh(user)
+                _grace_sub_id = subscription.id
+                _grace_user_status = user.status
+                _grace_actual_status = subscription.actual_status
+            except Exception as grace_read_error:
+                logger.warning(
+                    'Не удалось перечитать состояние под грейс-локом, продолжаем без грейс-маски',
+                    error=str(grace_read_error)[:200],
+                )
+                _grace_sub_id, _grace_user_status, _grace_actual_status = None, None, None
             preserve_open_grace = (
-                subscription.id in open_grace_ids
-                and user.status == 'active'
-                and subscription.actual_status in (SubscriptionStatus.EXPIRED.value, SubscriptionStatus.LIMITED.value)
+                _grace_sub_id is not None
+                and _grace_sub_id in open_grace_ids
+                and _grace_user_status == 'active'
+                and _grace_actual_status in (SubscriptionStatus.EXPIRED.value, SubscriptionStatus.LIMITED.value)
             )
 
             # Загружаем tariff заранее, чтобы избежать lazy loading в async контексте
@@ -742,15 +759,29 @@ class SubscriptionService:
 
             open_grace_ids = await lock_grace_sensitive_panel_updates(db, (subscription.id,))
             await db.flush((subscription, user))
-            # The caller may have loaded these objects before waiting for the
-            # grace lock.  Re-read scalar billing/user state under that lock so
-            # an older sync cannot overwrite a renewal that just completed.
-            await db.refresh(subscription)
-            await db.refresh(user)
+            # Читаем скаляры под грейс-локом одним заходом. Сессия сюда может
+            # прийти из вызывающего кода уже с просроченными объектами, и тогда
+            # первое же обращение к полю тянет ленивую загрузку вне greenlet-
+            # контекста — MissingGreenlet ронял весь панельный апдейт. Grace-маска
+            # вторична по отношению к синхронизации, поэтому при сбое чтения мы
+            # логируем и продолжаем без неё, а не падаем.
+            try:
+                await db.refresh(subscription)
+                await db.refresh(user)
+                _grace_sub_id = subscription.id
+                _grace_user_status = user.status
+                _grace_actual_status = subscription.actual_status
+            except Exception as grace_read_error:
+                logger.warning(
+                    'Не удалось перечитать состояние под грейс-локом, продолжаем без грейс-маски',
+                    error=str(grace_read_error)[:200],
+                )
+                _grace_sub_id, _grace_user_status, _grace_actual_status = None, None, None
             preserve_open_grace = (
-                subscription.id in open_grace_ids
-                and user.status == 'active'
-                and subscription.actual_status in (SubscriptionStatus.EXPIRED.value, SubscriptionStatus.LIMITED.value)
+                _grace_sub_id is not None
+                and _grace_sub_id in open_grace_ids
+                and _grace_user_status == 'active'
+                and _grace_actual_status in (SubscriptionStatus.EXPIRED.value, SubscriptionStatus.LIMITED.value)
             )
             if preserve_open_grace:
                 logger.info(
