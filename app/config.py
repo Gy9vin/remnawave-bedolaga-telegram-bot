@@ -170,6 +170,9 @@ class Settings(BaseSettings):
     CHANNEL_DISABLE_TRIAL_ON_UNSUBSCRIBE: bool = True
     CHANNEL_REQUIRED_FOR_ALL: bool = False
     CHANNEL_SOFT_MODE: bool = True  # Мягкий режим: гейт-экран показывается, VPN не отключается
+    # Персональные исключения из обязательной подписки: telegram id через запятую.
+    # Для этих людей гейт не показывается вообще — ни в боте, ни в кабинете.
+    CHANNEL_EXCLUDED_USER_IDS: str = ''
     CHANNEL_LINK: str | None = None
     REFERRAL_CONTEST_CHANNEL_ID: str | None = None
 
@@ -2044,6 +2047,43 @@ class Settings(BaseSettings):
                 dropped_total=len(dropped),
             )
         return excluded
+
+    def get_channel_excluded_user_ids(self) -> list[int]:
+        """Telegram id, которым обязательная подписка на канал не проверяется.
+
+        Значение правится руками (в т.ч. из админки), поэтому нечисловой мусор
+        и хвостовой комментарий отбрасываются, а не роняют проверку целиком.
+        """
+        if not self.CHANNEL_EXCLUDED_USER_IDS:
+            return []
+        value = self.CHANNEL_EXCLUDED_USER_IDS.split('#')[0].strip()
+        if not value:
+            return []
+        excluded: list[int] = []
+        dropped: list[str] = []
+        for raw in value.split(','):
+            candidate = raw.strip()
+            if not candidate:
+                continue
+            try:
+                excluded.append(int(candidate))
+            except ValueError:
+                dropped.append(candidate)
+        if dropped:
+            # Оператор считает, что человек исключён, а гейт продолжает его
+            # мурыжить — без предупреждения это не отладить.
+            logger.warning(
+                'CHANNEL_EXCLUDED_USER_IDS: нечисловые значения отброшены (нужен telegram id, не @username)',
+                dropped=dropped[:10],
+                dropped_total=len(dropped),
+            )
+        return excluded
+
+    def is_channel_check_exempt(self, telegram_id: int | None) -> bool:
+        """Снята ли с пользователя проверка подписки на обязательные каналы."""
+        if telegram_id is None:
+            return False
+        return int(telegram_id) in self.get_channel_excluded_user_ids()
 
     def get_traffic_daily_check_time(self) -> time | None:
         """Возвращает время суточной проверки трафика"""

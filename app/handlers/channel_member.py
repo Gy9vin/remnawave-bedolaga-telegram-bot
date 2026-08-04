@@ -155,6 +155,10 @@ async def on_user_left_channel(event: ChatMemberUpdated, bot: Bot) -> None:
     if settings.is_admin(user.id):
         return
 
+    # Человек с персональным исключением: выход из канала для него ничего не значит.
+    if settings.is_channel_check_exempt(user.id):
+        return
+
     # Fetch per-channel settings to decide whether to disable
     channel_settings = await channel_subscription_service.get_channel_settings(channel_id)
     if not channel_settings:

@@ -132,6 +132,17 @@ class ChannelSubscriptionService:
         if not channels:
             return {}
 
+        # Персональное исключение. Проверяется здесь, а не в каждом гейте:
+        # через этот метод ходят ВСЕ шесть точек проверки (мидлварь бота,
+        # зависимость кабинета, miniapp, support-ws, обход мониторинга,
+        # обработчик выхода из канала) — правка в одном месте закрывает все.
+        # Исключённый считается подписанным на всё: гейт не показывается,
+        # подписку никто не отключает, запросов в Telegram по нему нет.
+        from app.config import settings as _settings
+
+        if _settings.is_channel_check_exempt(telegram_id):
+            return dict.fromkeys((ch['channel_id'] for ch in channels), True)
+
         result: dict[str, bool] = {}
         channels_needing_db: list[dict] = []
 
