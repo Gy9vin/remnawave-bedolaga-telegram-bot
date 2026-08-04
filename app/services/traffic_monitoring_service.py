@@ -12,7 +12,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.crud.user import get_user_by_remnawave_id
+from app.database.crud.user import get_user_by_remnawave_id, get_user_by_telegram_id
 from app.database.database import AsyncSessionLocal
 from app.external.remnawave_api import RemnaWaveUser, UserStatus
 from app.services.admin_notification_service import AdminNotificationService
@@ -54,6 +54,12 @@ class TrafficViolation:
     last_node_uuid: str | None
     last_node_name: str | None
     check_type: str  # "fast" или "daily"
+    # Идентификаторы прямо из панели: нужны, когда бот-запись по этому
+    # панельному id не находится (связь `users.remnawave_id` не проставлена
+    # после миграции v2→v3, юзер удалён из бота, аккаунт заведён руками).
+    # Без них уведомление вырождалось в один только «ID в панели».
+    email: str | None = None
+    short_uuid: str | None = None
 
 
 class TrafficMonitoringServiceV2:
@@ -565,12 +571,14 @@ class TrafficMonitoringServiceV2:
                     user_id=user.id,
                     telegram_id=user.telegram_id,
                     full_name=user.username,
-                    username=None,
+                    username=user.username,
                     used_traffic_gb=delta_gb,  # Это дельта, не общий трафик!
                     threshold_gb=self.get_fast_check_threshold_gb(),
                     last_node_uuid=last_node_uuid,
                     last_node_name=node_name,
                     check_type='fast',
+                    email=user.email,
+                    short_uuid=user.short_uuid,
                 )
                 violations.append(violation)
 
@@ -712,12 +720,14 @@ class TrafficMonitoringServiceV2:
                         user_id=user.id,
                         telegram_id=user.telegram_id,
                         full_name=user.username,
-                        username=None,
+                        username=user.username,
                         used_traffic_gb=used_gb,
                         threshold_gb=self.get_daily_threshold_gb(),
                         last_node_uuid=last_node_uuid,
                         last_node_name=node_name,
                         check_type='daily',
+                        email=user.email,
+                        short_uuid=user.short_uuid,
                     )
 
                 except Exception as e:
@@ -747,6 +757,71 @@ class TrafficMonitoringServiceV2:
 
     # ============== Уведомления ==============
 
+    @staticmethod
+    def _format_db_user_info(db_user) -> str:
+        """Шапка уведомления по записи бота."""
+        info = f'👤 <b>{html.escape(db_user.full_name or "Без имени")}</b>\n'
+        if db_user.telegram_id:
+            # Ссылка tg://user открывает профиль прямо из уведомления.
+            info += f'🆔 Telegram ID: <a href="tg://user?id={db_user.telegram_id}">{db_user.telegram_id}</a>\n'
+        if db_user.username:
+            info += f'📱 Username: @{html.escape(db_user.username)}\n'
+        if db_user.email:
+            info += f'📧 Email: <code>{html.escape(db_user.email)}</code>\n'
+        info += f'🗄 В боте: <code>#{db_user.id}</code>\n'
+        return info
+
+    @staticmethod
+    def _format_panel_user_info(violation: TrafficViolation) -> str:
+        """Шапка уведомления, когда бот-записи нет — по данным самой панели.
+
+        Раньше в этом случае вся идентификация сводилась к «ID в панели», и
+        админ не мог понять, кому писать. Панель знает telegramId, логин и
+        email — их достаточно, чтобы найти человека.
+        """
+        info = ''
+        panel_username = violation.username or violation.full_name
+        if panel_username:
+            info += f'👤 <b>{html.escape(panel_username)}</b> <i>(логин в панели)</i>\n'
+        if violation.telegram_id:
+            info += f'🆔 Telegram ID: <a href="tg://user?id={violation.telegram_id}">{violation.telegram_id}</a>\n'
+        if violation.email:
+            info += f'📧 Email: <code>{html.escape(violation.email)}</code>\n'
+        if violation.short_uuid:
+            info += f'🔗 short_uuid: <code>{html.escape(violation.short_uuid)}</code>\n'
+        info += '⚠️ <i>В базе бота пользователь не найден</i>\n'
+        return info
+
+    async def _build_violation_user_info(self, violation: TrafficViolation) -> str:
+        """Собирает блок идентификации нарушителя.
+
+        Приоритет — запись бота (там актуальные имя/username). Если связь по
+        панельному id не проставлена, пробуем найти по telegram_id из панели, и
+        только потом падаем на данные панели.
+        """
+        try:
+            async with AsyncSessionLocal() as db:
+                db_user = await get_user_by_remnawave_id(db, violation.user_id)
+                if not db_user and violation.telegram_id:
+                    db_user = await get_user_by_telegram_id(db, violation.telegram_id)
+                if db_user:
+                    return self._format_db_user_info(db_user)
+        except Exception as e:
+            # Сбой БД не должен съедать уведомление целиком — шлём по данным панели.
+            logger.warning(
+                '⚠️ Не удалось получить пользователя из БД для уведомления о трафике',
+                panel_user_id=violation.user_id,
+                error=str(e),
+            )
+        else:
+            logger.warning(
+                '⚠️ Нарушитель трафика не найден в БД бота — уведомление по данным панели',
+                panel_user_id=violation.user_id,
+                telegram_id=violation.telegram_id,
+            )
+
+        return self._format_panel_user_info(violation)
+
     async def _send_violation_notifications(self, violations: list[TrafficViolation], bot):
         """Отправляет уведомления о превышениях"""
         if not violations or not bot:
@@ -775,15 +850,7 @@ class TrafficMonitoringServiceV2:
                     )
                     continue
 
-                # Получаем информацию о пользователе из БД
-                user_info = ''
-                async with AsyncSessionLocal() as db:
-                    db_user = await get_user_by_remnawave_id(db, violation.user_id)
-                    if db_user:
-                        user_id_display = db_user.telegram_id or db_user.email or f'#{db_user.id}'
-                        user_info = f'👤 <b>{html.escape(db_user.full_name or "Без имени")}</b>\n🆔 ID: <code>{user_id_display}</code>\n'
-                        if db_user.username:
-                            user_info += f'📱 Username: @{html.escape(db_user.username)}\n'
+                user_info = await self._build_violation_user_info(violation)
 
                 if violation.check_type == 'fast':
                     check_type_emoji = '⚡'
