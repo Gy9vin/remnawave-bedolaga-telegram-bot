@@ -365,6 +365,53 @@ async def _answer_with_photo(self: Message, text: str = None, **kwargs):
         raise
 
 
+_NO_TEXT_TO_EDIT = 'no text in the message to edit'
+
+# edit_caption принимает лишь часть аргументов edit_text: disable_web_page_preview
+# у подписи нет и прокидывать его нельзя.
+_CAPTION_KWARGS = ('reply_markup', 'parse_mode')
+
+
+def is_no_text_to_edit_error(error: TelegramBadRequest) -> bool:
+    return _NO_TEXT_TO_EDIT in str(error).lower()
+
+
+async def _edit_caption_instead_of_text(self: Message, text: str, **kwargs):
+    """Сообщение на сервере оказалось медиа — правим подпись, а не текст.
+
+    Telegram кладёт в callback_query снимок сообщения на момент НАЖАТИЯ. Если
+    между нажатием и обработкой сообщение успели превратить в фото (а патч
+    логотипа именно это и делает через edit_media), то у хендлера на руках
+    объект с непустым `text`, а на сервере текста уже нет — и edit_text падает
+    «there is no text in the message to edit». Ловится это только по ответу
+    Telegram: локальный объект врёт по определению.
+
+    Само сообщение при этом живо, поэтому правим подпись. Если подпись не
+    подходит (длиннее лимита, медиа не редактируется) — заменяем сообщение.
+    """
+    if not caption_exceeds_telegram_limit(text):
+        caption_kwargs = {k: v for k, v in kwargs.items() if k in _CAPTION_KWARGS}
+        caption_kwargs.setdefault('parse_mode', 'HTML')
+        try:
+            return await self.edit_caption(caption=text, **caption_kwargs)
+        except TelegramBadRequest as error:
+            if 'message is not modified' in str(error).lower():
+                return None
+            if is_topic_required_error(error):
+                return None
+
+    try:
+        await self.delete()
+    except Exception:
+        pass
+    try:
+        return await _text_answer(self, text, **kwargs)
+    except TelegramBadRequest as error:
+        if is_topic_required_error(error):
+            return None
+        raise
+
+
 async def _edit_with_photo(self: Message, text: str, **kwargs):
     # Уважаем флаг в рантайме: если логотип выключен — не подменяем редактирование
     if not settings.ENABLE_LOGO_MODE:
@@ -391,6 +438,8 @@ async def _edit_with_photo(self: Message, text: str, **kwargs):
                 return None
             if 'message is not modified' in str(error).lower():
                 return None
+            if is_no_text_to_edit_error(error):
+                return await _edit_caption_instead_of_text(self, text, **kwargs)
             raise
     if self.photo:
         language = _get_language(self)
@@ -473,6 +522,9 @@ async def _edit_with_photo(self: Message, text: str, **kwargs):
         if 'message is not modified' in str(error).lower():
             # Контент не изменился — безопасно игнорируем
             return None
+        if is_no_text_to_edit_error(error):
+            # Локальный объект отстал от сервера: там уже медиа, а не текст.
+            return await _edit_caption_instead_of_text(self, text, **kwargs)
         raise
 
 
