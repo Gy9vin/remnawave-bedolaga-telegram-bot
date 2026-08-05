@@ -2025,6 +2025,45 @@ async def _send_offer_email(
         return False
 
 
+async def _release_session_before_broadcast(db: AsyncSession) -> None:
+    """Закрыть транзакцию сессии запроса перед долгой рассылкой.
+
+    Рассылка по сегменту идёт минуты, и всё это время сессия запроса висит с
+    открытой транзакцией, ничего не делая. У соединений выставлен
+    ``idle_in_transaction_session_timeout=5м`` — postgres такую сессию убивает
+    сам, и первый же запрос ПОСЛЕ рассылки падал «the underlying connection is
+    closed». Своей транзакции у нас тут нет (были одни чтения), поэтому просто
+    завершаем её.
+    """
+    try:
+        await db.commit()
+    except Exception as error:
+        # Сессия уже мертва — рассылке это не мешает, она работает своими.
+        logger.warning('Не удалось закрыть транзакцию перед рассылкой', error=str(error)[:200])
+
+
+async def _reload_template_after_broadcast(template_id: int) -> PromoOfferTemplate | None:
+    """Перечитать шаблон после рассылки — обязательно НОВОЙ сессией.
+
+    Сессию запроса за время рассылки могло убить (см.
+    ``_release_session_before_broadcast``), а нужен всего лишь факт «шаблон ещё
+    существует» для кнопки возврата. Ради него ронять отчёт нельзя: рассылка к
+    этому моменту уже прошла, и админ должен увидеть её результат.
+    """
+    from app.database.database import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as summary_db:
+            return await get_promo_offer_template_by_id(summary_db, template_id)
+    except Exception as error:
+        logger.warning(
+            'Не удалось перечитать шаблон промопредложения после рассылки',
+            template_id=template_id,
+            error=str(error)[:200],
+        )
+        return None
+
+
 async def _send_offer_to_users(
     bot,
     template: PromoOfferTemplate,
@@ -2228,6 +2267,7 @@ async def send_offer_to_segment(callback: CallbackQuery, db_user: User, db: Asyn
 
     skipped = initial_count - len(users)
     effect_type = config.get('effect_type', 'percent_discount')
+    await _release_session_before_broadcast(db)
     sent, failed = await _send_offer_to_users(
         callback.bot,
         template,
@@ -2247,7 +2287,7 @@ async def send_offer_to_segment(callback: CallbackQuery, db_user: User, db: Asyn
             'ADMIN_PROMO_OFFER_SKIPPED',
             'Пропущено: {skipped} (уже есть доступ)',
         ).format(skipped=skipped)
-    refreshed = await get_promo_offer_template_by_id(db, template.id)
+    refreshed = await _reload_template_after_broadcast(template.id)
     result_keyboard_rows: list[list[InlineKeyboardButton]] = []
 
     if refreshed:
