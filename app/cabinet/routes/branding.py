@@ -362,6 +362,29 @@ def ensure_branding_dir():
     BRANDING_DIR.mkdir(parents=True, exist_ok=True)
 
 
+async def _public_setting_value(db: AsyncSession, key: str) -> str | None:
+    """Прочитать настройку оформления, пережив недоступность базы.
+
+    Публичные branding-эндпоинты дёргаются на каждой загрузке кабинета, до
+    авторизации, и у каждого в коде уже есть дефолт на случай «настройка не
+    задана». Значит, кратковременный сбой базы (в проде: asyncpg не уложился в
+    connect timeout, пока резолвил хост и поднимал SSL) должен давать тот же
+    дефолт, а не 500: из-за цвета темы кабинет открываться не перестаёт.
+
+    Пишущие маршруты этим НЕ пользуются — там молчаливый успех при упавшей базе
+    был бы враньём админу.
+    """
+    try:
+        return await get_setting_value(db, key)
+    except Exception as error:
+        logger.warning(
+            'Branding setting read failed, falling back to default',
+            key=key,
+            error=str(error)[:200],
+        )
+        return None
+
+
 async def set_setting_value(db: AsyncSession, key: str, value: str):
     """Set a setting value in database."""
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
@@ -407,7 +430,7 @@ async def get_branding(
     This is a public endpoint - no authentication required.
     """
     # Get name from database or use default from env/settings
-    name = await get_setting_value(db, BRANDING_NAME_KEY)
+    name = await _public_setting_value(db, BRANDING_NAME_KEY)
     if name is None:  # Only use fallback if not set at all (empty string is valid)
         name = getattr(settings, 'CABINET_BRANDING_NAME', None) or os.getenv('VITE_APP_NAME', 'Cabinet')
 
@@ -751,7 +774,7 @@ async def get_theme_colors(
     Get current theme colors.
     This is a public endpoint - no authentication required.
     """
-    colors_json = await get_setting_value(db, THEME_COLORS_KEY)
+    colors_json = await _public_setting_value(db, THEME_COLORS_KEY)
 
     if colors_json:
         try:
@@ -827,7 +850,7 @@ async def get_enabled_themes(
     Get which themes are enabled.
     This is a public endpoint - no authentication required.
     """
-    themes_json = await get_setting_value(db, ENABLED_THEMES_KEY)
+    themes_json = await _public_setting_value(db, ENABLED_THEMES_KEY)
 
     if themes_json:
         try:
@@ -883,7 +906,7 @@ async def get_animation_enabled(
     Get animation enabled setting.
     This is a public endpoint - no authentication required.
     """
-    animation_value = await get_setting_value(db, ANIMATION_ENABLED_KEY)
+    animation_value = await _public_setting_value(db, ANIMATION_ENABLED_KEY)
 
     if animation_value is not None:
         enabled = animation_value.lower() == 'true'
@@ -915,7 +938,7 @@ async def get_animation_config(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get full animation config. Public endpoint."""
-    config_value = await get_setting_value(db, ANIMATION_CONFIG_KEY)
+    config_value = await _public_setting_value(db, ANIMATION_CONFIG_KEY)
 
     if config_value is not None:
         try:
@@ -925,7 +948,7 @@ async def get_animation_config(
             pass
 
     # Auto-migrate from old ANIMATION_ENABLED_KEY
-    old_value = await get_setting_value(db, ANIMATION_ENABLED_KEY)
+    old_value = await _public_setting_value(db, ANIMATION_ENABLED_KEY)
     if old_value is not None:
         config = {**DEFAULT_ANIMATION_CONFIG, 'enabled': old_value.lower() == 'true'}
         await set_setting_value(db, ANIMATION_CONFIG_KEY, json.dumps(config))
@@ -981,7 +1004,7 @@ async def get_fullscreen_enabled(
     Get fullscreen enabled setting.
     This is a public endpoint - no authentication required.
     """
-    fullscreen_value = await get_setting_value(db, FULLSCREEN_ENABLED_KEY)
+    fullscreen_value = await _public_setting_value(db, FULLSCREEN_ENABLED_KEY)
 
     if fullscreen_value is not None:
         enabled = fullscreen_value.lower() == 'true'
@@ -1017,7 +1040,7 @@ async def get_email_auth_enabled(
     This is a public endpoint - no authentication required.
     Controls whether email registration/login is available.
     """
-    email_auth_value = await get_setting_value(db, EMAIL_AUTH_ENABLED_KEY)
+    email_auth_value = await _public_setting_value(db, EMAIL_AUTH_ENABLED_KEY)
 
     if email_auth_value is not None:
         enabled = email_auth_value.lower() == 'true'
@@ -1074,13 +1097,13 @@ async def get_telegram_widget_config(
     """
     bot_username = settings.BOT_USERNAME or ''
 
-    size_val = await get_setting_value(db, TELEGRAM_WIDGET_SIZE_KEY)
-    radius_val = await get_setting_value(db, TELEGRAM_WIDGET_RADIUS_KEY)
-    userpic_val = await get_setting_value(db, TELEGRAM_WIDGET_USERPIC_KEY)
-    request_access_val = await get_setting_value(db, TELEGRAM_WIDGET_REQUEST_ACCESS_KEY)
+    size_val = await _public_setting_value(db, TELEGRAM_WIDGET_SIZE_KEY)
+    radius_val = await _public_setting_value(db, TELEGRAM_WIDGET_RADIUS_KEY)
+    userpic_val = await _public_setting_value(db, TELEGRAM_WIDGET_USERPIC_KEY)
+    request_access_val = await _public_setting_value(db, TELEGRAM_WIDGET_REQUEST_ACCESS_KEY)
 
-    oidc_enabled_val = await get_setting_value(db, TELEGRAM_OIDC_ENABLED_KEY)
-    oidc_client_id_val = await get_setting_value(db, TELEGRAM_OIDC_CLIENT_ID_KEY)
+    oidc_enabled_val = await _public_setting_value(db, TELEGRAM_OIDC_ENABLED_KEY)
+    oidc_client_id_val = await _public_setting_value(db, TELEGRAM_OIDC_CLIENT_ID_KEY)
     oidc_client_id = oidc_client_id_val or settings.TELEGRAM_OIDC_CLIENT_ID
     oidc_enabled = (
         oidc_enabled_val.lower() == 'true' if oidc_enabled_val is not None else settings.TELEGRAM_OIDC_ENABLED
@@ -1112,9 +1135,9 @@ async def get_analytics_counters(
     Get analytics counter settings.
     This is a public endpoint - no authentication required.
     """
-    yandex_id = await get_setting_value(db, YANDEX_METRIKA_ID_KEY) or ''
-    google_id = await get_setting_value(db, GOOGLE_ADS_ID_KEY) or ''
-    google_label = await get_setting_value(db, GOOGLE_ADS_LABEL_KEY) or ''
+    yandex_id = await _public_setting_value(db, YANDEX_METRIKA_ID_KEY) or ''
+    google_id = await _public_setting_value(db, GOOGLE_ADS_ID_KEY) or ''
+    google_label = await _public_setting_value(db, GOOGLE_ADS_LABEL_KEY) or ''
 
     # Yandex Metrika offline conversions snapshot from Settings
     oc_enabled = bool(getattr(settings, 'YANDEX_OFFLINE_CONV_ENABLED', False))
@@ -1237,7 +1260,7 @@ async def get_lite_mode_enabled(
     This is a public endpoint - no authentication required.
     When enabled, shows simplified dashboard with minimal features.
     """
-    lite_mode_value = await get_setting_value(db, LITE_MODE_ENABLED_KEY)
+    lite_mode_value = await _public_setting_value(db, LITE_MODE_ENABLED_KEY)
 
     if lite_mode_value is not None:
         enabled = lite_mode_value.lower() == 'true'
@@ -1269,7 +1292,7 @@ async def get_gift_enabled(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get gift feature enabled setting. Public endpoint."""
-    value = await get_setting_value(db, GIFT_ENABLED_KEY)
+    value = await _public_setting_value(db, GIFT_ENABLED_KEY)
     if value is not None:
         enabled = value.lower() == 'true'
         return GiftEnabledResponse(enabled=enabled)
@@ -1310,7 +1333,7 @@ async def get_footer_enabled(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get legal footer enabled setting. Public endpoint - no authentication required."""
-    value = await get_setting_value(db, FOOTER_ENABLED_KEY)
+    value = await _public_setting_value(db, FOOTER_ENABLED_KEY)
     if value is not None:
         return FooterEnabledResponse(enabled=value.lower() == 'true')
     return FooterEnabledResponse(enabled=True)
