@@ -28,7 +28,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     'Database connection error while handling request',
                     method=request.method,
                     path=request.url.path,
-                    e=str(e)[:200],
+                    # Тип обязателен: у TimeoutError пустой str, и в проде строка
+                    # выглядела как «e=» — из сообщения нельзя было понять даже,
+                    # таймаут это или отказ в соединении.
+                    e=f'{type(e).__name__}: {e}'[:200],
                 )
                 response = JSONResponse(
                     status_code=503,
