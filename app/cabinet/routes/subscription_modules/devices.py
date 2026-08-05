@@ -25,6 +25,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cabinet.utils.device_ownership import verify_hwid_belongs_to_user
+from app.cabinet.utils.panel_identity import ensure_panel_user_id, resolve_panel_user_id
 from app.config import settings
 from app.database.crud.tariff import get_tariff_by_id
 from app.database.crud.user_device_alias import (
@@ -53,90 +54,12 @@ REMNAWAVE_SYNC_TIMEOUT = 10.0
 router = APIRouter()
 
 
-def _resolve_panel_user_id(subscription: Subscription | None, user: User) -> int | None:
-    """Resolve RemnaWave panel user id: per-subscription in multi-tariff, user-level otherwise.
-
-    Multi-tariff: each subscription is its OWN panel user — return the sub's id
-    and do NOT fall back to ``user.remnawave_id`` when it's null. The fallback
-    would read/operate on another tariff's panel user, making HWID devices/limit
-    look shared across tariffs (баг с общим лимитом «по наименьшему тарифу»).
-    """
-    if settings.is_multi_tariff_enabled() and subscription is not None:
-        return subscription.remnawave_id
-    return user.remnawave_id
-
-
-async def _ensure_panel_user_id(
-    db: AsyncSession,
-    subscription: Subscription | None,
-    user: User,
-    api: Any,
-) -> int | None:
-    """Как ``_resolve_panel_user_id``, но дорезолвит id, если он ещё не сохранён.
-
-    Переход на RemnaWave 3.x заменил строковый uuid панельного пользователя на
-    числовой id, а миграция колонку только заводит — заполняет её отдельный
-    бэкфилл. До его прогона у всех записей, созданных раньше, id пустой, и
-    список устройств выглядел пустым, хотя в панели устройства на месте:
-    спросить панель было не по чему.
-
-    Поэтому при пустом id идём в панель сами — по short_uuid подписки (точный
-    ключ, панель хранит его как есть) и, если его нет, по telegram_id. Совпадение
-    по telegram_id принимаем только когда оно однозначно: несколько панельных
-    аккаунтов на один telegram_id означают мульти-тариф, и угадывать там нельзя —
-    чужой аккаунт показал бы человеку не его устройства.
-
-    Найденный id сразу сохраняется, так что поход в панель случается один раз на
-    запись. Ошибка сохранения не должна ронять выдачу списка — id уже известен и
-    в этом запросе используется, а в следующий раз резолв просто повторится.
-    """
-    panel_user_id = _resolve_panel_user_id(subscription, user)
-    if panel_user_id:
-        return panel_user_id
-
-    short_uuid = getattr(subscription, 'remnawave_short_uuid', None) if subscription else None
-    resolved_id: int | None = None
-    try:
-        if short_uuid:
-            resolved = await api.resolve_user(short_uuid=short_uuid)
-            resolved_id = (resolved or {}).get('id')
-        if not resolved_id and user.telegram_id:
-            candidates = await api.find_users_by_telegram_id(user.telegram_id)
-            unique_ids = {c.id for c in candidates or [] if getattr(c, 'id', None)}
-            if len(unique_ids) == 1:
-                resolved_id = unique_ids.pop()
-    except Exception as error:
-        logger.warning(
-            'Lazy panel identity resolve failed',
-            user_id=user.id,
-            subscription_id=getattr(subscription, 'id', None),
-            error=str(error)[:200],
-        )
-        return None
-
-    if not resolved_id:
-        return None
-
-    if settings.is_multi_tariff_enabled() and subscription is not None:
-        subscription.remnawave_id = resolved_id
-    else:
-        user.remnawave_id = resolved_id
-    try:
-        await db.commit()
-    except Exception as error:
-        logger.warning(
-            'Lazy panel identity resolved but not persisted',
-            user_id=user.id,
-            remnawave_id=resolved_id,
-            error=str(error)[:200],
-        )
-    logger.info(
-        'Lazy panel identity resolved',
-        user_id=user.id,
-        subscription_id=getattr(subscription, 'id', None),
-        remnawave_id=resolved_id,
-    )
-    return resolved_id
+# Резолв панельной идентичности переехал в app/cabinet/utils/panel_identity.py:
+# ровно та же слепота (пустой remnawave_id -> пустой список устройств) вылезла
+# в админской части кабинета, и держать вторую копию логики значило чинить её
+# дважды. Алиасы оставлены, чтобы не трогать вызовы ниже по файлу.
+_resolve_panel_user_id = resolve_panel_user_id
+_ensure_panel_user_id = ensure_panel_user_id
 
 
 @router.post('/devices')

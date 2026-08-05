@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.cabinet.utils.device_ownership import verify_hwid_belongs_to_user
+from app.cabinet.utils.panel_identity import ensure_panel_user_id
 from app.config import settings
 from app.database.crud.campaign import get_campaign_registration_by_user
 from app.database.crud.subscription import (
@@ -1094,14 +1095,9 @@ async def get_subscription_request_history(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
 
-    panel_user_id = None
+    selected_subscription = None
     if subscription_id is not None:
-        panel_user_id = (await _get_owned_subscription_or_404(db, subscription_id, user_id)).remnawave_id
-    else:
-        panel_user_id = getattr(user, 'remnawave_id', None)
-
-    if not panel_user_id:
-        return {'total': 0, 'records': []}
+        selected_subscription = await _get_owned_subscription_or_404(db, subscription_id, user_id)
 
     try:
         from app.services.remnawave_service import RemnaWaveService
@@ -1111,6 +1107,10 @@ async def get_subscription_request_history(
             return {'total': 0, 'records': []}
 
         async with service.get_api_client() as api:
+            panel_user_id = await ensure_panel_user_id(db, selected_subscription, user, api, prefer_subscription=True)
+            if not panel_user_id:
+                return {'total': 0, 'records': []}
+
             # offset/limit остаются в сигнатуре ради совместимости вызывающих:
             # панель их не принимала ни в 2.8, ни в 3.0 и всегда отдаёт последние
             # записи целиком — поведение эндпоинта от них никогда не зависело.
@@ -1147,19 +1147,11 @@ async def get_user_node_usage(
             detail='User not found',
         )
 
-    # Resolve panel user id
-    _panel_user_id = None
+    selected_subscription = None
     if settings.is_multi_tariff_enabled() and subscription_id:
         from app.database.crud.subscription import get_subscription_by_id_for_user
 
-        sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
-        if sub:
-            _panel_user_id = sub.remnawave_id
-    else:
-        _panel_user_id = user.remnawave_id
-
-    if not _panel_user_id:
-        return UserNodeUsageResponse(items=[])
+        selected_subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
 
     try:
         from app.services.remnawave_service import RemnaWaveService
@@ -1174,6 +1166,10 @@ async def get_user_node_usage(
         end_str = end_date.strftime('%Y-%m-%d')
 
         async with service.get_api_client() as api:
+            _panel_user_id = await ensure_panel_user_id(db, selected_subscription, user, api, prefer_subscription=True)
+            if not _panel_user_id:
+                return UserNodeUsageResponse(items=[])
+
             # Get user's accessible nodes (1 API call)
             accessible_nodes = await api.get_user_accessible_nodes(_panel_user_id)
 
@@ -2729,17 +2725,9 @@ async def get_user_devices(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
 
-    # Resolve panel user id
     selected_subscription = None
-    _dev_panel_user_id = None
     if subscription_id is not None:
         selected_subscription = await _get_owned_subscription_or_404(db, subscription_id, user_id)
-        _dev_panel_user_id = selected_subscription.remnawave_id
-    else:
-        _dev_panel_user_id = user.remnawave_id
-
-    if not _dev_panel_user_id:
-        return UserDevicesResponse()
 
     try:
         from app.services.remnawave_service import RemnaWaveService
@@ -2749,6 +2737,19 @@ async def get_user_devices(
             return UserDevicesResponse()
 
         async with service.get_api_client() as api:
+            # Резолв — уже внутри клиента: при пустом remnawave_id идём за ним в
+            # панель. Раньше здесь просто читалась колонка, и незаполненный id
+            # (записи до бэкфилла идентичности v3) давал админу пустой список
+            # устройств при живых устройствах в панели.
+            _dev_panel_user_id = await ensure_panel_user_id(db, selected_subscription, user, api, prefer_subscription=True)
+            if not _dev_panel_user_id:
+                logger.warning(
+                    'No panel identity resolved for admin device list',
+                    user_id=user_id,
+                    subscription_id=subscription_id,
+                )
+                return UserDevicesResponse()
+
             response = await api.get_user_devices_all(_dev_panel_user_id)
 
             # Aliases per-(user, hwid) — единый дикт на весь список устройств.
@@ -2809,20 +2810,21 @@ async def delete_user_device(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
 
-    _panel_user_id = None
+    selected_subscription = None
     if subscription_id is not None:
-        _panel_user_id = (await _get_owned_subscription_or_404(db, subscription_id, user_id)).remnawave_id
-    else:
-        _panel_user_id = user.remnawave_id
-
-    if not _panel_user_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='User has no panel account')
+        selected_subscription = await _get_owned_subscription_or_404(db, subscription_id, user_id)
 
     try:
         from app.services.remnawave_service import RemnaWaveService
 
         service = RemnaWaveService()
         async with service.get_api_client() as api:
+            _panel_user_id = await ensure_panel_user_id(db, selected_subscription, user, api, prefer_subscription=True)
+            if not _panel_user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail='User has no panel account'
+                )
+
             success = await api.remove_device(_panel_user_id, hwid)
 
         if success:
@@ -2830,6 +2832,10 @@ async def delete_user_device(
             return DeleteDeviceResponse(success=True, message='Device deleted', deleted_hwid=hwid)
         return DeleteDeviceResponse(success=False, message='Failed to delete device')
 
+    except HTTPException:
+        # 400 «нет панельного аккаунта» — осмысленный ответ, а не сбой:
+        # общий except ниже превратил бы его в «Ошибка удаления устройства».
+        raise
     except Exception as e:
         logger.error('Error deleting device for user', hwid=hwid, user_id=user_id, error=e)
         return DeleteDeviceResponse(success=False, message='Ошибка удаления устройства')
@@ -2894,24 +2900,23 @@ async def reset_user_devices(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
 
-    _rst_panel_user_id = None
+    selected_subscription = None
     if settings.is_multi_tariff_enabled() and subscription_id:
         from app.database.crud.subscription import get_subscription_by_id_for_user
 
-        sub = await get_subscription_by_id_for_user(db, subscription_id, user_id)
-        if sub:
-            _rst_panel_user_id = sub.remnawave_id
-    else:
-        _rst_panel_user_id = user.remnawave_id
-
-    if not _rst_panel_user_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='User has no panel account')
+        selected_subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
 
     try:
         from app.services.remnawave_service import RemnaWaveService
 
         service = RemnaWaveService()
         async with service.get_api_client() as api:
+            _rst_panel_user_id = await ensure_panel_user_id(db, selected_subscription, user, api, prefer_subscription=True)
+            if not _rst_panel_user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail='User has no panel account'
+                )
+
             devices_info = await api.get_user_devices_all(_rst_panel_user_id)
             devices = devices_info.get('devices', [])
             total = len(devices)
@@ -2939,6 +2944,9 @@ async def reset_user_devices(
             deleted_count=deleted,
         )
 
+    except HTTPException:
+        # 400 «нет панельного аккаунта» не должен маскироваться под сбой сброса.
+        raise
     except Exception as e:
         logger.error('Error resetting devices for user', user_id=user_id, error=e)
         return ResetDevicesResponse(success=False, message='Ошибка сброса устройств')
