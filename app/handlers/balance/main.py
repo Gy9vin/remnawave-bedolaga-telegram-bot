@@ -240,6 +240,16 @@ async def show_balance_menu(callback: types.CallbackQuery, db_user: User, db: As
 
     balance_text = texts.BALANCE_INFO.format(balance=texts.format_price(db_user.balance_kopeks))
 
+    if db_user.telegram_id:
+        # Код для оплаты за пользователя другим человеком — просто его telegram_id.
+        # Показываем здесь же, рядом с балансом: это единственное место в боте,
+        # где пользователь видит свои собственные реквизиты.
+        balance_text += '\n' + texts.t(
+            'SPONSORED_PAYMENT_MY_CODE',
+            '🔑 Код для оплаты вам подписки: <code>{code}</code>\n'
+            'Перешлите этот код тому, кто хочет оплатить вам подписку.',
+        ).format(code=db_user.telegram_id)
+
     reply_markup = get_balance_keyboard(db_user.language)
 
     try:

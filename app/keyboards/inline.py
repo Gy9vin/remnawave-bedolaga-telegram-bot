@@ -1609,6 +1609,14 @@ def get_balance_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMark
                 )
             ]
         )
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text=texts.t('SPONSORED_PAYMENT_BUTTON', '🎁 Оплатить другому'),
+                callback_data='sponsored_payment_start',
+            )
+        ]
+    )
     keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
