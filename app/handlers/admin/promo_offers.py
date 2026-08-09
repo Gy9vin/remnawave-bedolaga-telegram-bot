@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import html
 import re
 from collections.abc import Sequence
@@ -2004,10 +2005,16 @@ async def _send_offer_email(
 
     try:
         ok = await asyncio.to_thread(
-            email_service.send_email,
-            user.email,
-            template.name or 'Специальное предложение',
-            body_html,
+            functools.partial(
+                email_service.send_email,
+                user.email,
+                template.name or 'Специальное предложение',
+                body_html,
+                # Массовая отправка: свой, разреженный темп, чтобы исходящий
+                # антиспам не резал письма и не портил репутацию отправителя, за
+                # которую потом расплачиваются коды входа.
+                bulk=True,
+            )
         )
         if ok:
             logger.info('Промо-оффер отправлен по email', user_id=user.id, email=user.email)

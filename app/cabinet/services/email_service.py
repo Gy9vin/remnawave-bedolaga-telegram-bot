@@ -27,9 +27,19 @@ _THROTTLE_LOCK = threading.Lock()
 _LAST_SEND_AT = 0.0
 
 
-def _throttle_send() -> None:
-    """Блокирует поток до момента, когда можно отправить следующее письмо."""
-    interval_ms = int(getattr(settings, 'SMTP_MIN_SEND_INTERVAL_MS', 2200) or 2200)
+def _throttle_send(bulk: bool = False) -> None:
+    """Блокирует поток до момента, когда можно отправить следующее письмо.
+
+    Интервал зависит от вида письма, а не от того, что слали до этого. Массовым
+    рассылкам нужен разреженный темп — исходящий антиспам режет за частоту и
+    однотипность. Но транзакционное письмо (код входа, сброс пароля) обязано
+    уходить быстро, даже если прямо сейчас идёт рассылка: иначе человек не
+    попадает в кабинет из-за промо-акции.
+    """
+    if bulk:
+        interval_ms = int(getattr(settings, 'SMTP_BULK_MIN_SEND_INTERVAL_MS', 6000) or 6000)
+    else:
+        interval_ms = int(getattr(settings, 'SMTP_MIN_SEND_INTERVAL_MS', 2200) or 2200)
     if interval_ms <= 0:
         return
     interval = interval_ms / 1000.0
@@ -40,6 +50,20 @@ def _throttle_send() -> None:
         if elapsed < interval:
             time.sleep(interval - elapsed)
         _LAST_SEND_AT = time.monotonic()
+
+
+def _apply_spam_cooldown() -> None:
+    """Отодвинуть следующую отправку после отказа «похоже на спам».
+
+    Продолжать в прежнем темпе после такого отказа — значит добивать репутацию
+    отправителя, и дальше резать начнут даже транзакционные письма.
+    """
+    cooldown_s = int(getattr(settings, 'SMTP_SPAM_REJECT_COOLDOWN_S', 60) or 60)
+    if cooldown_s <= 0:
+        return
+    with _THROTTLE_LOCK:
+        global _LAST_SEND_AT
+        _LAST_SEND_AT = time.monotonic() + cooldown_s
 
 
 class EmailService:
@@ -136,6 +160,7 @@ class EmailService:
         body_html: str,
         body_text: str | None = None,
         attachments: list[tuple[str, bytes, str]] | None = None,
+        bulk: bool = False,
     ) -> bool:
         """
         Send an email.
@@ -202,12 +227,25 @@ class EmailService:
             # Throttle + retry на rate-limit (4.2.1 Too many messages у Yandex 360)
             max_attempts = 2
             for attempt in range(1, max_attempts + 1):
-                _throttle_send()
+                _throttle_send(bulk=bulk)
                 try:
                     with self._get_smtp_connection() as smtp:
                         smtp.sendmail(safe_from_email, to_email, payload)
                     logger.info('Email sent successfully to', to_email=to_email)
                     return True
+                except smtplib.SMTPDataError as e:
+                    # 554 5.7.1 — наш же отправитель счёл письмо спамом. Повторять
+                    # бессмысленно (это не сбой связи), а вот сбавить темп
+                    # обязательно: иначе резать начнёт и транзакционные письма.
+                    if e.smtp_code == 554:
+                        _apply_spam_cooldown()
+                        logger.warning(
+                            'Письмо отклонено как спам, снижаем темп отправки',
+                            to_email=to_email,
+                            bulk=bulk,
+                            cooldown_s=getattr(settings, 'SMTP_SPAM_REJECT_COOLDOWN_S', 60),
+                        )
+                    raise
                 except smtplib.SMTPSenderRefused as e:
                     is_rate_limit = e.smtp_code == 450 and b'4.2.1' in (e.smtp_error or b'')
                     if is_rate_limit and attempt < max_attempts:
