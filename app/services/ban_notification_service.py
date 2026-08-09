@@ -61,20 +61,47 @@ class BanNotificationService:
         except Exception as e:
             logger.warning('Не удалось получить telegram_id через remnawave', error=e)
 
-        # Если не нашли через remnawave, пытаемся искать по email в подписках
-        # (это может быть полезно если у пользователя есть подписка с таким email)
+        # Запасной поиск по нашей базе. Раньше здесь стояло условие по
+        # Subscription.email — такой колонки не существует, email живёт на User.
+        # Ветка падала AttributeError при каждом вызове, и уведомление о бане не
+        # доходило никогда: в логе оставалось лишь «Пользователь не найден».
+        identifier = (user_identifier or '').strip()
+        if not identifier:
+            return None
+
         try:
-            # Импортируем здесь чтобы избежать циклических импортов
+            from sqlalchemy import func
+
             from app.database.models import Subscription
 
-            result = await db.execute(
-                select(User).join(Subscription).where(Subscription.email == user_identifier).limit(1)
-            )
-            user = result.scalar_one_or_none()
-            if user:
-                return user
+            if '@' in identifier:
+                result = await db.execute(
+                    select(User).where(func.lower(User.email) == identifier.lower()).limit(1)
+                )
+                user = result.scalar_one_or_none()
+                if user:
+                    return user
+            elif identifier.isdigit():
+                # Панель зовёт нас и числовым id — по нему искать почту
+                # бессмысленно, это её собственный идентификатор пользователя.
+                panel_id = int(identifier)
+                result = await db.execute(select(User).where(User.remnawave_id == panel_id).limit(1))
+                user = result.scalar_one_or_none()
+                if user:
+                    return user
+
+                # Мульти-тариф: панельная идентичность лежит на подписке.
+                result = await db.execute(
+                    select(User)
+                    .join(Subscription, Subscription.user_id == User.id)
+                    .where(Subscription.remnawave_id == panel_id)
+                    .limit(1)
+                )
+                user = result.scalar_one_or_none()
+                if user:
+                    return user
         except Exception as e:
-            logger.warning('Ошибка поиска пользователя по email в подписках', error=e)
+            logger.warning('Ошибка поиска пользователя для уведомления о бане', error=e)
 
         return None
 
