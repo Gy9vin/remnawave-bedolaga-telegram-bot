@@ -33,7 +33,6 @@ from app.database.models import (
     Transaction,
     TransactionType,
     User,
-    _aware,
 )
 from app.services.subscription_service import SubscriptionService
 
@@ -1422,127 +1421,81 @@ async def activate_purchase(db: AsyncSession, purchase_token: str, *, skip_notif
             all_servers, _ = await get_all_server_squads(db, available_only=True)
             squads = [s.squad_uuid for s in all_servers if s.squad_uuid]
 
-        # In multi-tariff mode, always create a new subscription (new Remnawave user)
+        # У получателя уже есть подписка — подарок добавляет ей ДНИ, ничего не
+        # переключая. Прежняя схема ставила тарифные лимиты подарка, и человек с
+        # десятью устройствами оставался с одним. Обратное (сохранять его лимит)
+        # тоже нечестно: допустройства тарифицируются за каждый период, и он
+        # получил бы девять оплачиваемых устройств даром на весь подаренный срок.
+        # Поэтому сумма подарка переводится в дни по ЕГО цене.
         if settings.is_multi_tariff_enabled():
             from app.database.crud.subscription import get_subscription_by_user_and_tariff
 
-            existing_for_tariff = await get_subscription_by_user_and_tariff(db, user.id, tariff.id)
-            _has_time = (
-                existing_for_tariff is not None
-                and existing_for_tariff.end_date is not None
-                and _aware(existing_for_tariff.end_date) > datetime.now(UTC)
-            )
-            if existing_for_tariff and _has_time:
-                # Extend existing active/trial subscription instead of replacing (preserve remaining days)
-                subscription = await extend_subscription(
-                    db,
-                    existing_for_tariff,
-                    purchase.period_days,
-                    traffic_limit_gb=tariff.traffic_limit_gb,
-                    device_limit=tariff.device_limit,
-                    connected_squads=squads,
-                    commit=False,
-                )
-            elif existing_for_tariff:
-                # Expired subscription — replace with fresh dates
-                subscription = await replace_subscription(
-                    db,
-                    existing_for_tariff,
-                    duration_days=purchase.period_days,
-                    traffic_limit_gb=tariff.traffic_limit_gb,
-                    device_limit=tariff.device_limit,
-                    connected_squads=squads,
-                    is_trial=False,
-                    update_server_counters=True,
-                    commit=False,
-                )
-                subscription.tariff_id = tariff.id
-            else:
-                subscription = await create_paid_subscription(
-                    db=db,
-                    user_id=user.id,
-                    duration_days=purchase.period_days,
-                    traffic_limit_gb=tariff.traffic_limit_gb,
-                    device_limit=tariff.device_limit,
-                    connected_squads=squads,
-                    tariff_id=tariff.id,
-                    update_server_counters=True,
-                    commit=False,
-                )
+            existing_subscription = await get_subscription_by_user_and_tariff(db, user.id, tariff.id)
         else:
             existing_subscription = await get_subscription_by_user_id(db, user.id)
-            _sub_has_time = (
-                existing_subscription is not None
-                and existing_subscription.end_date is not None
-                and _aware(existing_subscription.end_date) > datetime.now(UTC)
+
+        if existing_subscription is not None:
+            from app.database.crud.user import add_user_balance
+            from app.services.gift_value_service import convert_gift_to_days
+
+            value = await convert_gift_to_days(
+                db,
+                subscription=existing_subscription,
+                user=user,
+                amount_kopeks=purchase.amount_kopeks,
+                preferred_period_days=purchase.period_days,
             )
-            if existing_subscription is not None and _sub_has_time:
-                # Extend existing active subscription (preserve remaining days)
+
+            if value.days > 0:
                 subscription = await extend_subscription(
                     db,
                     existing_subscription,
-                    purchase.period_days,
-                    tariff_id=tariff.id,
-                    traffic_limit_gb=tariff.traffic_limit_gb,
-                    device_limit=tariff.device_limit,
-                    connected_squads=squads,
+                    value.days,
                     commit=False,
                 )
-            elif existing_subscription is not None:
-                # Expired subscription — replace with fresh dates
-                subscription = await replace_subscription(
-                    db,
-                    existing_subscription,
-                    duration_days=purchase.period_days,
-                    traffic_limit_gb=tariff.traffic_limit_gb,
-                    device_limit=tariff.device_limit,
-                    connected_squads=squads,
-                    is_trial=False,
-                    update_server_counters=True,
-                    commit=False,
-                )
-                subscription.tariff_id = tariff.id
             else:
-                subscription = await create_paid_subscription(
-                    db=db,
-                    user_id=user.id,
-                    duration_days=purchase.period_days,
-                    traffic_limit_gb=tariff.traffic_limit_gb,
-                    device_limit=tariff.device_limit,
-                    connected_squads=squads,
-                    tariff_id=tariff.id,
-                    update_server_counters=True,
+                # Подарок дешевле одного дня у этого получателя — дней не
+                # добавляем, сумма целиком уходит на баланс.
+                subscription = existing_subscription
+
+            if value.remainder_kopeks > 0:
+                await add_user_balance(
+                    db,
+                    user,
+                    value.remainder_kopeks,
+                    'Остаток подарка',
                     commit=False,
                 )
+
+            logger.info(
+                'Подарок зачтён днями по цене получателя',
+                purchase_id=purchase.id,
+                user_id=user.id,
+                days=value.days,
+                remainder_kopeks=value.remainder_kopeks,
+                price_per_period=value.price_per_period,
+                basis_period_days=value.basis_period_days,
+            )
+        else:
+            # Подписки нет — конвертировать нечего и отбирать нечего: создаём по
+            # тарифу подарка на купленный период, как и раньше.
+            subscription = await create_paid_subscription(
+                db=db,
+                user_id=user.id,
+                duration_days=purchase.period_days,
+                traffic_limit_gb=tariff.traffic_limit_gb,
+                device_limit=tariff.device_limit,
+                connected_squads=squads,
+                tariff_id=tariff.id,
+                update_server_counters=True,
+                commit=False,
+            )
 
         await subscription_service.create_remnawave_user(db, subscription)
         await db.refresh(subscription)
 
-        # Подарок = смена лимитов на тарифные. Старые HWID-привязки получателя
-        # снимаем, чтобы он переподключил устройства под новый device_limit
-        # (иначе у него останутся в Remnawave 10 хвидов привязок при лимите 1).
-        if purchase.is_gift:
-            try:
-                from app.services.remnawave_service import get_panel_user_ref
-
-                async with subscription_service.get_api_client() as api:
-                    _uuid, _remna_id = await get_panel_user_ref(
-                        api, db, user=user, subscription=subscription
-                    )
-                    if _uuid or _remna_id:
-                        await api.reset_user_devices(_remna_id)
-                        logger.info(
-                            'HWID devices reset on gift activation',
-                            purchase_id=purchase.id,
-                            subscription_id=subscription.id,
-                        )
-            except Exception:
-                logger.warning(
-                    'Failed to reset HWID devices on gift activation',
-                    purchase_id=purchase.id,
-                    subscription_id=subscription.id,
-                    exc_info=True,
-                )
+        # Сброса HWID-привязок здесь больше нет: подарок не понижает лимит
+        # устройств получателя, а значит и освобождать слоты не от чего.
 
         purchase.subscription_url = subscription.subscription_url
         purchase.subscription_crypto_link = subscription.subscription_crypto_link
