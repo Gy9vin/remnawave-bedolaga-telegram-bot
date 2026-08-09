@@ -369,7 +369,16 @@ class SubscriptionRenewalService:
         charge_balance_amount: int | None = None,
         description: str | None = None,
         payment_method: PaymentMethod | None = None,
+        payer: User | None = None,
     ) -> SubscriptionRenewalResult:
+        """Продлить подписку ``user`` и списать деньги.
+
+        ``payer`` — когда за подписку платит другой человек. Тогда роли
+        расходятся: деньги снимаются с плательщика, а промо-оффер и флаг
+        «была платная подписка» остаются за владельцем подписки. Без этого
+        разделения человек, оплативший другу, сам терял бы право на триал,
+        ни разу не купив себе подписку.
+        """
         final_total = int(pricing.final_total)
         final_total = max(final_total, 0)
 
@@ -392,17 +401,33 @@ class SubscriptionRenewalService:
         saved_promo_source = getattr(user, 'promo_offer_discount_source', None) if consume_promo_offer else None
         saved_promo_expires = getattr(user, 'promo_offer_discount_expires_at', None) if consume_promo_offer else None
 
+        # Кошелёк и подписка могут принадлежать разным людям (оплата за другого).
+        charged_account = payer or user
+        pays_for_someone_else = charged_account is not user
+
         if charge_from_balance > 0 or consume_promo_offer:
             success = await subtract_user_balance(
                 db,
-                user,
+                charged_account,
                 charge_from_balance,
                 description_text,
-                consume_promo_offer=consume_promo_offer,
-                mark_as_paid_subscription=True,
+                # Промо-оффер и признак платной подписки принадлежат владельцу
+                # подписки, а не кошельку. При стороннем плательщике снимаем
+                # только деньги, остальное проставляем получателю ниже.
+                consume_promo_offer=consume_promo_offer and not pays_for_someone_else,
+                mark_as_paid_subscription=not pays_for_someone_else,
             )
             if not success:
                 raise SubscriptionRenewalChargeError('Failed to charge balance')
+
+            if pays_for_someone_else:
+                user.has_had_paid_subscription = True
+                if consume_promo_offer and getattr(user, 'promo_offer_discount_percent', 0):
+                    user.promo_offer_discount_percent = 0
+                    user.promo_offer_discount_source = None
+                    user.promo_offer_discount_expires_at = None
+                await db.refresh(charged_account)
+
             await db.refresh(user)
 
         # Lock subscription row to prevent double-extension race
@@ -487,9 +512,11 @@ class SubscriptionRenewalService:
                     from app.database.crud.user import add_user_balance
 
                     if charge_from_balance > 0:
+                        # Возврат идёт туда же, откуда снимали: при оплате за
+                        # другого это кошелёк плательщика, а не получателя.
                         refunded = await add_user_balance(
                             db,
-                            user,
+                            charged_account,
                             charge_from_balance,
                             'Возврат: ошибка продления подписки',
                             create_transaction=True,
@@ -499,7 +526,7 @@ class SubscriptionRenewalService:
                             logger.critical(
                                 'CRITICAL: add_user_balance returned False during refund',
                                 charge_from_balance=charge_from_balance,
-                                user_id=user.id,
+                                user_id=charged_account.id,
                             )
 
                     # Restore consumed promo offer fields
