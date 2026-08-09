@@ -77,7 +77,9 @@ async def _is_blacklisted(user: User) -> bool:
 
     try:
         is_banned, _reason = await blacklist_service.is_user_blacklisted(user.telegram_id, user.username)
-    except Exception as error:  # noqa: BLE001 — сбой проверки не повод пускать
+    except Exception as error:
+        # Сбой самой проверки не повод пускать: платить забаненному хуже, чем
+        # отказать лишний раз.
         logger.warning('Проверка чёрного списка недоступна', user_id=user.id, error=str(error)[:200])
         return True
     return bool(is_banned)
