@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from .subscription import PriceLineSchema
+
 
 class SponsoredLookupRequest(BaseModel):
     """То, что вводит плательщик — @ник, telegram id или email получателя."""
@@ -21,6 +23,7 @@ class SponsoredLookupRequest(BaseModel):
 class SponsoredPeriodOption(BaseModel):
     period_days: int
     price_kopeks: int
+    price_lines: list[PriceLineSchema] = []
 
 
 class SponsoredLookupResponse(BaseModel):

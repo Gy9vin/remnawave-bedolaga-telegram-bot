@@ -22,7 +22,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import structlog
@@ -38,6 +38,7 @@ from app.database.models import (
     Subscription,
     User,
 )
+from app.services.price_breakdown import PriceLine, build_price_lines
 from app.services.pricing_engine import RenewalPricing, pricing_engine
 from app.services.subscription_renewal_service import SubscriptionRenewalService
 
@@ -61,6 +62,9 @@ class SponsoredQuote:
     # (отдельный сценарий, вне этого модуля).
     subscription_id: int | None
     options: list[tuple[int, int]]
+    # Расшифровка цены по каждому периоду (ключ — period_days), чтобы
+    # плательщик видел, из чего складывается сумма продления получателя.
+    price_lines_by_period: dict[int, list[PriceLine]] = field(default_factory=dict)
 
 
 async def quote_for_recipient(db: AsyncSession, recipient: User) -> SponsoredQuote:
@@ -95,6 +99,7 @@ async def quote_for_recipient(db: AsyncSession, recipient: User) -> SponsoredQuo
         periods = settings.get_available_renewal_periods()
 
     options: list[tuple[int, int]] = []
+    price_lines_by_period: dict[int, list[PriceLine]] = {}
     for period in periods:
         pricing = await pricing_engine.calculate_renewal_price(db, subscription, period, user=recipient)
         if pricing.final_total <= 0 and pricing.original_total <= 0:
@@ -102,12 +107,14 @@ async def quote_for_recipient(db: AsyncSession, recipient: User) -> SponsoredQuo
             # предлагать плательщику.
             continue
         options.append((period, pricing.final_total))
+        price_lines_by_period[period] = build_price_lines(pricing)
 
     return SponsoredQuote(
         recipient_id=recipient.id,
         recipient_display_name=recipient_display_name,
         subscription_id=subscription.id,
         options=options,
+        price_lines_by_period=price_lines_by_period,
     )
 
 

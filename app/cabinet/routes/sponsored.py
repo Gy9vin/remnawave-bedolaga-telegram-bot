@@ -96,7 +96,11 @@ async def lookup_recipient(
         recipient_display_name=quote.recipient_display_name,
         subscription_id=quote.subscription_id,
         options=[
-            SponsoredPeriodOption(period_days=period_days, price_kopeks=price_kopeks)
+            SponsoredPeriodOption(
+                period_days=period_days,
+                price_kopeks=price_kopeks,
+                price_lines=quote.price_lines_by_period.get(period_days, []),
+            )
             for period_days, price_kopeks in quote.options
         ],
         payer_balance_kopeks=user.balance_kopeks,

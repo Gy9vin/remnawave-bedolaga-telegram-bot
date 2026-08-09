@@ -38,6 +38,7 @@ from app.keyboards.inline import (
 )
 from app.localization.texts import Texts, get_texts
 from app.services.admin_notification_service import AdminNotificationService
+from app.services.price_breakdown import build_price_lines, format_price_lines
 from app.services.pricing_engine import pricing_engine
 from app.services.remnawave_service import RemnaWaveConfigurationError
 from app.services.subscription_checkout_service import (
@@ -1946,7 +1947,6 @@ async def confirm_extend_subscription(
 
         # Promo offer discount info for downstream consume_promo_offer flag
         promo_offer_discount = pricing.promo_offer_discount
-        offer_pct = pricing.breakdown.get('offer_discount_pct', 0)
 
         logger.info(
             '💰 Расчет продления подписки (PricingEngine)',
@@ -2047,20 +2047,29 @@ async def confirm_extend_subscription(
     refreshed_end_date = result.subscription.end_date
     await db.refresh(db_user)
 
+    price_breakdown_lines = build_price_lines(pricing)
+    if price_breakdown_lines:
+        # Расшифровка уже включает строку скидки по промокоду и «Итого» —
+        # отдельно приплюсовывать промо-скидку не нужно (см. price_breakdown.py).
+        price_block = (
+            texts.t('PRICE_BREAKDOWN_TITLE', '💰 Из чего сложилась цена:')
+            + '\n'
+            + format_price_lines(price_breakdown_lines, price)
+        )
+    else:
+        price_block = f'💰 Списано: {texts.format_price(price)}'
+
     success_message = (
         '✅ Подписка успешно продлена!\n\n'
         f'⏰ Добавлено: {days} дней\n'
         f'Действует до: {format_local_datetime(refreshed_end_date, "%d.%m.%Y %H:%M")}\n\n'
-        f'💰 Списано: {texts.format_price(price)}'
+        f'{price_block}'
     )
 
     # Добавляем уведомление о сбросе трафика
     if settings.is_traffic_fixed() and result.subscription.traffic_limit_gb != old_traffic_gb:
         fixed_limit = settings.get_fixed_traffic_limit()
         success_message += f'\n\n📊 Трафик сброшен до {fixed_limit} ГБ'
-
-    if promo_offer_discount > 0:
-        success_message += f' (включая доп. скидку {offer_pct}%: -{texts.format_price(promo_offer_discount)})'
 
     await callback.message.edit_text(success_message, reply_markup=get_back_keyboard(db_user.language))
 

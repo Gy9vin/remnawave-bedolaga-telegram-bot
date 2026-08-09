@@ -973,6 +973,7 @@
   "SPONSORED_PAYMENT_INSUFFICIENT_BALANCE": "❌ Недостаточно средств на балансе. Не хватает {amount}.",
   "SPONSORED_PAYMENT_SUCCESS": "✅ Подписка для {name} успешно оплачена на {days} дн.",
   "SPONSORED_PAYMENT_RECIPIENT_NOTIFICATION": "🎁 Вашу подписку оплатил {name} — {days} дн.",
+  "PRICE_BREAKDOWN_TITLE": "💰 Из чего сложилась цена:",
   "AUTO_PURCHASE_SUBSCRIPTION_SUCCESS": "✅ Подписка на {period} автоматически оформлена после пополнения баланса.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED": "✅ Подписка автоматически продлена на {period}.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED_DETAILS": "⏰ Новая дата окончания: {date}.",

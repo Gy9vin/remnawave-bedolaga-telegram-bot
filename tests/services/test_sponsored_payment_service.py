@@ -23,6 +23,7 @@ import pytest
 from app.config import Settings
 from app.database.models import SponsoredPaymentStatus
 from app.services import sponsored_payment_service as svc
+from app.services.pricing_engine import RenewalPricing
 
 
 def _user(user_id: int, *, balance_kopeks: int = 0, full_name: str = 'Получатель') -> SimpleNamespace:
@@ -37,10 +38,22 @@ def _subscription(sub_id: int = 1, tariff_id: int | None = None, tariff=None) ->
     return SimpleNamespace(id=sub_id, tariff_id=tariff_id, tariff=tariff)
 
 
-def _pricing(final_total: int, original_total: int | None = None) -> SimpleNamespace:
-    """Заглушка RenewalPricing — важны только поля, которые читает наш код."""
+def _pricing(final_total: int, original_total: int | None = None) -> RenewalPricing:
+    """Заглушка RenewalPricing. Настоящий dataclass (а не SimpleNamespace) — с тех пор,
+    как ``quote_for_recipient`` стал прогонять цену через ``build_price_lines``, которому
+    нужны реальные поля (``base_price``/``servers_price``/...), не только final_total."""
     total = final_total if original_total is None else original_total
-    return SimpleNamespace(final_total=final_total, original_total=total)
+    return RenewalPricing(
+        base_price=final_total,
+        servers_price=0,
+        traffic_price=0,
+        devices_price=0,
+        promo_group_discount=total - final_total,
+        promo_offer_discount=0,
+        final_total=final_total,
+        period_days=0,
+        is_tariff_mode=False,
+    )
 
 
 class _FakeResult:

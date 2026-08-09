@@ -126,8 +126,8 @@ async def test_lookup_success_hides_private_recipient_data():
         'recipient_display_name': 'Иван И.',
         'subscription_id': 42,
         'options': [
-            {'period_days': 30, 'price_kopeks': 10_000},
-            {'period_days': 90, 'price_kopeks': 25_000},
+            {'period_days': 30, 'price_kopeks': 10_000, 'price_lines': []},
+            {'period_days': 90, 'price_kopeks': 25_000, 'price_lines': []},
         ],
         'payer_balance_kopeks': 77_000,
     }

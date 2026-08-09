@@ -28,6 +28,7 @@ from app.database.crud.user import get_user_by_id
 from app.database.models import User
 from app.keyboards.inline import get_back_keyboard, get_insufficient_balance_keyboard
 from app.localization.texts import get_texts
+from app.services.price_breakdown import format_price_lines
 from app.services.recipient_lookup import RecipientIsPayerError, resolve_recipient
 from app.services.sponsored_payment_service import (
     InsufficientBalanceError,
@@ -59,6 +60,10 @@ _CALLBACK_PERIOD_PREFIX = 'sponsored_pay_period:'
 _DATA_RECIPIENT_ID = 'sponsored_recipient_id'
 _DATA_SUBSCRIPTION_ID = 'sponsored_subscription_id'
 _DATA_OPTIONS = 'sponsored_options'
+# Расшифровка цены по периоду (period_days -> готовый HTML-текст) — считается
+# один раз вместе с quote и просто показывается после выбора периода, без
+# пересчёта (см. докстрин модуля про фиксацию цены).
+_DATA_BREAKDOWN = 'sponsored_breakdown'
 
 
 def _build_period_keyboard(quote: SponsoredQuote, texts) -> types.InlineKeyboardMarkup:
@@ -146,6 +151,15 @@ async def process_recipient_query(message: types.Message, db_user: User, db: Asy
         await state.clear()
         return
 
+    # Расшифровка цены по каждому периоду — считается один раз здесь же (из уже
+    # посчитанного quote.price_lines_by_period) и просто показывается после
+    # выбора периода, без пересчёта.
+    breakdown_by_period: dict[str, str] = {}
+    for period, price in quote.options:
+        price_lines = quote.price_lines_by_period.get(period)
+        if price_lines:
+            breakdown_by_period[str(period)] = format_price_lines(price_lines, price)
+
     # Цена фиксируется здесь и просто переносится в списание — см. докстринг
     # модуля и sponsored_payment_service.
     await state.update_data(
@@ -153,6 +167,7 @@ async def process_recipient_query(message: types.Message, db_user: User, db: Asy
             _DATA_RECIPIENT_ID: quote.recipient_id,
             _DATA_SUBSCRIPTION_ID: quote.subscription_id,
             _DATA_OPTIONS: {str(period): price for period, price in quote.options},
+            _DATA_BREAKDOWN: breakdown_by_period,
         }
     )
     await state.set_state(SponsoredPaymentStates.waiting_for_period)
@@ -235,6 +250,14 @@ async def handle_period_selection(callback: types.CallbackQuery, db_user: User, 
         'SPONSORED_PAYMENT_SUCCESS',
         '✅ Подписка для {name} успешно оплачена на {days} дн.',
     ).format(name=recipient.full_name, days=period_days)
+
+    breakdown_by_period: dict = data.get(_DATA_BREAKDOWN) or {}
+    breakdown_text = breakdown_by_period.get(period_raw)
+    if breakdown_text:
+        success_text += (
+            '\n\n' + texts.t('PRICE_BREAKDOWN_TITLE', '💰 Из чего сложилась цена:') + '\n' + breakdown_text
+        )
+
     if callback.message and not isinstance(callback.message, InaccessibleMessage):
         await callback.message.edit_text(success_text, reply_markup=get_back_keyboard(db_user.language))
     await callback.answer()

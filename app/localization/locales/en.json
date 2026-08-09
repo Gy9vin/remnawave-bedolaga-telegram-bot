@@ -953,6 +953,7 @@
   "SPONSORED_PAYMENT_INSUFFICIENT_BALANCE": "❌ Insufficient balance. You're short {amount}.",
   "SPONSORED_PAYMENT_SUCCESS": "✅ Subscription for {name} was successfully paid for {days} days.",
   "SPONSORED_PAYMENT_RECIPIENT_NOTIFICATION": "🎁 {name} paid for your subscription — {days} days.",
+  "PRICE_BREAKDOWN_TITLE": "💰 Price breakdown:",
   "AUTO_PURCHASE_SUBSCRIPTION_SUCCESS": "✅ Your {period} subscription was purchased automatically after topping up your balance.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED": "✅ Subscription automatically extended for {period}.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED_DETAILS": "⏰ New expiration date: {date}.",

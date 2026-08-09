@@ -38,6 +38,7 @@ from app.services.notification_delivery_service import (
     NotificationType,
     notification_delivery_service,
 )
+from app.services.price_breakdown import build_price_lines
 from app.services.pricing_engine import pricing_engine
 from app.services.subscription_purchase_service import (
     MiniAppSubscriptionPurchaseService,
@@ -1226,6 +1227,7 @@ async def purchase_tariff(
             'charged_label': settings.format_price(price_kopeks),
             'balance_kopeks': user.balance_kopeks,
             'balance_label': settings.format_price(user.balance_kopeks),
+            'price_lines': build_price_lines(result),
         }
 
         # Add discount info if discount was applied

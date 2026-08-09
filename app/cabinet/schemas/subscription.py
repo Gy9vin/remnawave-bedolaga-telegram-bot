@@ -2,7 +2,17 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class PriceLineSchema(BaseModel):
+    """Одна строка расшифровки цены (см. app.services.price_breakdown.PriceLine)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    label: str
+    amount_kopeks: int
+    hint: str | None = None
 
 
 class ServerInfo(BaseModel):
@@ -89,6 +99,7 @@ class RenewalOptionResponse(BaseModel):
     discount_percent: int = 0
     original_price_kopeks: int | None = None
     modem_price_kopeks: int = 0
+    price_lines: list[PriceLineSchema] = []
 
 
 class RenewalRequest(BaseModel):

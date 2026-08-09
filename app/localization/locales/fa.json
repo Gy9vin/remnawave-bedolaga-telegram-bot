@@ -1016,6 +1016,7 @@
   "SPONSORED_PAYMENT_INSUFFICIENT_BALANCE": "❌ موجودی کافی نیست. {amount} کم دارید.",
   "SPONSORED_PAYMENT_SUCCESS": "✅ اشتراک {name} با موفقیت برای {days} روز پرداخت شد.",
   "SPONSORED_PAYMENT_RECIPIENT_NOTIFICATION": "🎁 {name} اشتراک شما را پرداخت کرد — {days} روز.",
+  "PRICE_BREAKDOWN_TITLE": "💰 جزئیات قیمت:",
   "BLOCK_BY_TIME": "⏳ مسدود موقت",
   "BLOCK_FOREVER": "🚫 مسدود کردن",
   "BTN_MY_SUBSCRIPTION": "📱 اشتراک من",
