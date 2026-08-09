@@ -70,6 +70,7 @@ from .promo import router as promo_router
 from .promocode import router as promocode_router
 from .referral import router as referral_router
 from .site_verification import router as site_verification_router
+from .sponsored import router as sponsored_router
 from .subscription import router as subscription_router
 from .subscription_modules.multi_tariff import router as multi_tariff_subscription_router
 from .support_ws import router as support_ws_router
@@ -129,6 +130,7 @@ router.include_router(wheel_router)
 
 # Gift routes
 router.include_router(gift_router)
+router.include_router(sponsored_router)
 
 # Admin routes (notifications router MUST be before tickets router to avoid route conflict)
 router.include_router(admin_ticket_notifications_router)
