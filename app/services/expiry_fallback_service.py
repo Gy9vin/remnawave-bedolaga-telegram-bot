@@ -848,7 +848,24 @@ async def restore_from_fallback(
     if not saved_squads and settings.DEFAULT_SQUAD_UUID:
         saved_squads = [settings.DEFAULT_SQUAD_UUID]
 
-    expire_at = new_expire_at or subscription.pre_expiry_expire_at
+    # Источник даты — наша БД (могли продлить за время в fallback), а не
+    # снимок pre_expiry_expire_at, сделанный в момент переезда в fallback.
+    expire_at = new_expire_at or subscription.end_date or subscription.pre_expiry_expire_at
+    if expire_at is not None:
+        expire_at_aware = expire_at if expire_at.tzinfo is not None else expire_at.replace(tzinfo=UTC)
+        if expire_at_aware <= datetime.now(UTC):
+            # Панель RemnaWave 3.2.0 отвергает PATCH с expireAt в прошлом
+            # (update-user.command.ts: .refine(date > new Date())) — весь
+            # запрос упал бы, и сквады/лимит трафика не восстановились бы.
+            # Дату для истёкшей подписки всё равно поправит обычная синхронизация,
+            # а сквады и лимит важнее восстановить сейчас.
+            logger.warning(
+                'restore_from_fallback: дата окончания в прошлом, expire_at не отправляется в панель',
+                subscription_id=subscription.id,
+                expire_at=expire_at_aware.isoformat(),
+            )
+            expire_at = None
+
     traffic_limit = new_traffic_limit_bytes
     if traffic_limit is None:
         traffic_limit = subscription.pre_expiry_traffic_limit_bytes
