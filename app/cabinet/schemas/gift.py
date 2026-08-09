@@ -48,6 +48,14 @@ class GiftConfigResponse(BaseModel):
     promo_group_name: str | None = None
     active_discount_percent: int | None = None
     active_discount_expires_at: datetime | None = None
+    # Подарок по коду покупается, когда получатель ещё неизвестен, поэтому его
+    # сумма переводится в дни по тарифу того, кто активирует. Дарителя надо
+    # предупредить заранее: иначе «я дарил месяц, а пришло 13 дней» приезжает в
+    # поддержку. Текст отдаёт бэкенд, чтобы правило и его объяснение жили рядом.
+    value_conversion_notice: str = (
+        'Получателю зачтётся сумма подарка по его тарифу: если у него дороже — дней будет меньше, '
+        'если дешевле — больше. Остаток зачислится ему на баланс.'
+    )
 
 
 class GiftPurchaseRequest(BaseModel):
