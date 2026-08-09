@@ -4623,6 +4623,57 @@ class GuestPurchase(Base):
         return f"<GuestPurchase token='{token_prefix}...' status='{self.status}'>"
 
 
+class SponsoredPaymentStatus(StrEnum):
+    PENDING = 'pending'
+    PAID = 'paid'
+    APPLIED = 'applied'
+    FAILED = 'failed'
+    EXPIRED = 'expired'
+
+
+class SponsoredPayment(Base):
+    """Оплата подписки за другого человека.
+
+    Плательщик оплачивает продление чужой подписки по цене получателя. Запись
+    нужна прежде всего для случая «на балансе не хватило»: платёж уходит во
+    внешнюю платёжку и применяется по вебхуку, а до тех пор надо помнить, кому,
+    за что и почём. При оплате с баланса запись создаётся сразу в ``applied`` —
+    ради истории и разбора спорных ситуаций.
+
+    Сумма фиксируется при создании. Если получатель успеет докупить устройства и
+    продление подорожает, применяем по зафиксированной цене: деньги уже взяты,
+    требовать доплату нечестно.
+    """
+
+    __tablename__ = 'sponsored_payments'
+
+    id = Column(Integer, primary_key=True, index=True)
+    payer_user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    recipient_user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    # Пусто, когда у получателя подписки ещё нет и её предстоит создать.
+    subscription_id = Column(Integer, ForeignKey('subscriptions.id', ondelete='SET NULL'), nullable=True)
+    tariff_id = Column(Integer, ForeignKey('tariffs.id', ondelete='SET NULL'), nullable=True)
+    period_days = Column(Integer, nullable=False)
+    amount_kopeks = Column(Integer, nullable=False)
+    status = Column(String(20), nullable=False, default=SponsoredPaymentStatus.PENDING.value)
+    payment_method = Column(String(50), nullable=True)
+    payment_id = Column(String(255), nullable=True)
+    created_at = Column(AwareDateTime(), server_default=func.now())
+    paid_at = Column(AwareDateTime(), nullable=True)
+    applied_at = Column(AwareDateTime(), nullable=True)
+
+    payer = relationship('User', foreign_keys=[payer_user_id], lazy='selectin')
+    recipient = relationship('User', foreign_keys=[recipient_user_id], lazy='selectin')
+    subscription = relationship('Subscription', lazy='selectin')
+    tariff = relationship('Tariff', lazy='selectin')
+
+    def __repr__(self) -> str:
+        return (
+            f'<SponsoredPayment payer={self.payer_user_id} recipient={self.recipient_user_id} '
+            f"status='{self.status}'>"
+        )
+
+
 class BlacklistException(Base):
     """Исключение из чёрного списка — пользователь, которого не нужно блокировать."""
 
