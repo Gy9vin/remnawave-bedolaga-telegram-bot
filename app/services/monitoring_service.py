@@ -1645,8 +1645,13 @@ class MonitoringService:
 
                         user = await lock_user_for_pricing(db, user.id)
 
-                        # Гибкий выбор периода: самый длинный, который покрывает баланс
-                        selection = await pricing_engine.select_affordable_renewal(db, subscription, user)
+                        # Выбор периода продления: сперва период, который пользователь сам
+                        # задал для автоплатежа (autopay_period_days) — списание другого,
+                        # обычно более короткого, периода оставляет деньги зависшими на
+                        # балансе и приводит к обращениям в поддержку («заплатил за 3
+                        # месяца — продлилось на 1»). Если выбор пользователя не задан или
+                        # не по карману — берём максимальный период, который покрывает баланс.
+                        selection = await pricing_engine.select_renewal_period(db, subscription, user)
                     except Exception as e:
                         logger.error(
                             'Ошибка выбора периода автопродления, пропускаем',
@@ -2024,9 +2029,14 @@ class MonitoringService:
                     )
                     continue
 
-                # Выбираем максимальный доступный период, который покрывает баланс
+                # Выбор периода продления: сперва период, который пользователь сам
+                # задал для автоплатежа (autopay_period_days) — списание другого,
+                # обычно более короткого, периода оставляет деньги зависшими на
+                # балансе и приводит к обращениям в поддержку («заплатил за 3
+                # месяца — продлилось на 1»). Если выбор пользователя не задан или
+                # не по карману — берём максимальный период, который покрывает баланс.
                 try:
-                    selection = await pricing_engine.select_affordable_renewal(db, subscription, user)
+                    selection = await pricing_engine.select_renewal_period(db, subscription, user)
                 except Exception as _e:
                     logger.error('Ошибка расчёта стоимости продления перед истечением, пропускаем', error=_e)
                     continue

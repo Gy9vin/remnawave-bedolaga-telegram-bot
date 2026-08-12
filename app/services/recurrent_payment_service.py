@@ -251,10 +251,6 @@ async def _process_single_subscription(
 
     # Рассчитываем стоимость продления
     tariff = getattr(subscription, 'tariff', None)
-    if tariff:
-        autopay_period = tariff.get_shortest_period() or 30
-    else:
-        autopay_period = 30
 
     try:
         from app.database.crud.user import lock_user_for_pricing
@@ -263,13 +259,33 @@ async def _process_single_subscription(
         # TOCTOU: lock user row before pricing to prevent concurrent promo/balance races
         user = await lock_user_for_pricing(db, user.id)
 
-        pricing = await pricing_engine.calculate_renewal_price(
-            db,
-            subscription,
-            autopay_period,
-            user=user,
-        )
-        renewal_cost = pricing.final_total
+        # Период продления: сперва период, который пользователь сам выбрал для
+        # автоплатежа (autopay_period_days), иначе — максимум, что покрывает
+        # текущий баланс. Раньше здесь всегда брался кратчайший период тарифа,
+        # поэтому сумма пополнения карты считалась под 1 месяц даже если
+        # человек настроил автоплатёж на 3 — деньги зависали на балансе, и
+        # люди шли в поддержку разбираться, куда делась разница.
+        selection = await pricing_engine.select_renewal_period(db, subscription, user)
+        if selection is not None:
+            _autopay_period, renewal_cost = selection
+        else:
+            # Текущего баланса не хватает даже на кратчайший период — это и есть
+            # штатный случай для этого сервиса: он существует именно чтобы
+            # пополнить карту на недостающую сумму. Сохраняем прежнее поведение
+            # (не отменяем пополнение) — считаем стоимость по целевому периоду:
+            # выбор пользователя, если он есть, иначе минимальный период тарифа.
+            target_period = getattr(subscription, 'autopay_period_days', None)
+            if not (isinstance(target_period, int) and target_period > 0):
+                available_periods = tariff.get_available_periods() if tariff else []
+                target_period = available_periods[0] if available_periods else 30
+            pricing = await pricing_engine.calculate_renewal_price(
+                db,
+                subscription,
+                target_period,
+                user=user,
+            )
+            _autopay_period = target_period
+            renewal_cost = pricing.final_total
     except Exception as e:
         logger.error(
             'Ошибка расчёта стоимости для рекуррентного платежа',

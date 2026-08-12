@@ -2562,18 +2562,42 @@ async def try_auto_extend_expired_after_topup(
             tariff_name=tariff_name_for_label,
         )
         return False
-    if tariff:
-        period_days = tariff.get_shortest_period() or 30
-    else:
-        period_days = 30
-
     # Lock user BEFORE price computation to prevent TOCTOU on promo offer
     from app.database.crud.user import lock_user_for_pricing
 
     user = await lock_user_for_pricing(db, user.id)
 
-    # Calculate renewal price via PricingEngine
+    # Determine renewal period via PricingEngine: prefer the period the user
+    # picked for autopay, else the longest one their balance covers right now.
+    # Billing the tariff's shortest period instead (previous behaviour) left
+    # money stuck on the balance whenever someone topped up for several
+    # months at once — this exact mismatch is the support complaint this fix
+    # addresses ("topped up for 3 months, only got 1 month of extension").
     subscription_service = SubscriptionService()
+    try:
+        selection = await pricing_engine.select_renewal_period(db, subscription, user)
+    except Exception as error:
+        logger.error(
+            '❌ Автопродление expired: ошибка расчёта стоимости',
+            format_user_id=_format_user_id(user),
+            error=error,
+            exc_info=True,
+        )
+        return False
+
+    if selection is None:
+        # Не хватает даже на кратчайший период — сохраняем прежнее поведение
+        # (см. исходную проверку баланса ниже по коду): просто не продлеваем.
+        logger.info(
+            '🔄 Автопродление expired: недостаточно средств',
+            format_user_id=_format_user_id(user),
+            balance_kopeks=user.balance_kopeks,
+        )
+        return False
+
+    period_days, _selected_price = selection
+
+    # Calculate renewal price via PricingEngine (full breakdown needed below)
     try:
         pricing = await pricing_engine.calculate_renewal_price(
             db,

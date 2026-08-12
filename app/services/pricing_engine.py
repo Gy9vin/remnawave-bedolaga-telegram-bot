@@ -992,6 +992,38 @@ class PricingEngine:
                 return period, price
         return None
 
+    async def select_renewal_period(
+        self,
+        db: 'AsyncSession',
+        subscription: 'Subscription',
+        user: 'User',
+    ) -> tuple[int, int] | None:
+        """Return (period_days, price_kopeks) for the renewal period to actually charge.
+
+        Order of precedence:
+        1. The period the user explicitly picked for autopay
+           (subscription.autopay_period_days), if its price fits the current
+           balance. Ignoring this and billing the tariff's shortest period
+           instead is exactly the bug behind the support complaint: a user
+           tops up their balance for 3 months, autopay silently extends the
+           subscription by 1 month, and the rest of the money just sits on
+           the balance unspent — with no visible reason why.
+        2. Otherwise, the longest period the balance can currently afford
+           (delegated to select_affordable_renewal — do not re-implement the
+           period scan here).
+        3. If not even the shortest period is affordable, return None — same
+           "can't renew" contract as select_affordable_renewal.
+        """
+        chosen_period = getattr(subscription, 'autopay_period_days', None)
+        if isinstance(chosen_period, int) and chosen_period > 0:
+            pricing = await self.calculate_renewal_price(db, subscription, chosen_period, user=user)
+            price = pricing.final_total
+            balance = user.balance_kopeks or 0
+            if price <= balance:
+                return chosen_period, price
+
+        return await self.select_affordable_renewal(db, subscription, user)
+
     @staticmethod
     def classic_pricing_to_purchase_details(pricing: RenewalPricing) -> dict[str, Any]:
         """Convert RenewalPricing to the legacy details dict format.
