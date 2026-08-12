@@ -165,6 +165,28 @@ async def _resolve_panel_ref(api, db, subscription) -> int | None:
     return remna_id
 
 
+async def _has_panel_identity(db, subscription) -> bool:
+    """Есть ли у подписки достижимый панельный пользователь.
+
+    Проверять только колонки подписки нельзя: в однотарифном режиме идентичность
+    лежит на пользователе, и такая проверка ложно говорит «панели нет».
+    """
+    if subscription is not None and (subscription.remnawave_id or subscription.remnawave_short_uuid):
+        return True
+    from app.services.remnawave_service import remnawave_service
+    try:
+        async with remnawave_service.get_api_client() as api:
+            remna_id = await _resolve_panel_ref(api, db, subscription)
+        return remna_id is not None
+    except Exception as exc:
+        logger.warning(
+            '_has_panel_identity: ошибка резолва панельной идентичности',
+            subscription_id=getattr(subscription, 'id', None),
+            error=str(exc),
+        )
+        return False
+
+
 async def _get_remnawave_user(remna_id_hint: int | None, db=None, subscription=None):
     """Достаёт юзера из Remnawave.
 
@@ -352,7 +374,7 @@ async def move_to_fallback(
         )
         return False
 
-    if not (subscription.remnawave_id or subscription.remnawave_short_uuid):
+    if not await _has_panel_identity(db, subscription):
         logger.warning('Нет панельной идентичности у подписки', subscription_id=subscription.id)
         return False
 
@@ -838,8 +860,16 @@ async def restore_from_fallback(
     if not subscription.expiry_fallback_active and not subscription.traffic_fallback_active:
         return True
 
-    if not (subscription.remnawave_id or subscription.remnawave_short_uuid):
-        # Просто снимаем флаги в БД
+    if not await _has_panel_identity(db, subscription):
+        # Панельная идентичность действительно не резолвится (даже через
+        # пользователя) — возвращать некуда, снимаем флаги в БД, но громко
+        # предупреждаем в логах вместо тихого выхода.
+        logger.warning(
+            'restore_from_fallback: панельная идентичность не резолвится — '
+            'снимаем флаги без обращения к панели',
+            subscription_id=subscription.id,
+            user_id=subscription.user_id,
+        )
         _clear_fallback_state(subscription)
         await db.commit()
         return True
@@ -1247,7 +1277,7 @@ async def _reconcile_single_active_fallback(
                 logger.error('Reconcile cleanup error', subscription_id=sub.id, error=str(exc))
                 return
 
-    if not (sub.remnawave_id or sub.remnawave_short_uuid):
+    if not await _has_panel_identity(db, sub):
         return
 
     # 0) Подписка в БД реально активна (admin/cabinet/бот продлили) — restore немедленно.
