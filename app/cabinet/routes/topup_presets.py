@@ -84,10 +84,20 @@ async def get_topup_presets(
             )
             tariffs = []
         for tariff in tariffs:
-            prices = getattr(tariff, 'period_prices', None)
-            if isinstance(prices, dict):
-                for days, price in prices.items():
-                    period_prices.setdefault(days, price)
+            # get_purchasable_periods()/get_purchasable_price_for_period() —
+            # те же хелперы модели, что уже используют purchase.py и продление:
+            # у суточных тарифов period_prices пуст (оплата идёт за день), и
+            # читать колонку напрямую значит терять их целиком. Если у
+            # пользователя из активных тарифов доступны только суточные,
+            # готовые суммы пропадали молча, хотя тариф вполне живой.
+            get_periods = getattr(tariff, 'get_purchasable_periods', None)
+            get_price = getattr(tariff, 'get_purchasable_price_for_period', None)
+            if not callable(get_periods) or not callable(get_price):
+                continue
+            for period_days in get_periods():
+                price = get_price(period_days)
+                if price is not None:
+                    period_prices.setdefault(period_days, price)
     else:
         period_prices = dict(getattr(settings, 'CLASSIC_PERIOD_PRICES', {}) or {})
 
