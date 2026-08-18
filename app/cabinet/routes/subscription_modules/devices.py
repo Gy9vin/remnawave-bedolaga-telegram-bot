@@ -1289,40 +1289,50 @@ async def delete_devices_batch(
     deleted_count = 0
     failed_hwids: list[str] = []
 
-    service = RemnaWaveService()
-    async with service.get_api_client() as api:
-        _panel_user_id = await _ensure_panel_user_id(db, subscription, user, api)
-        if not _panel_user_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Panel user not found')
+    try:
+        service = RemnaWaveService()
+        async with service.get_api_client() as api:
+            _panel_user_id = await _ensure_panel_user_id(db, subscription, user, api)
+            if not _panel_user_id:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Panel user not found')
 
-        for hwid in unique_hwids:
-            try:
-                if await api.remove_device(_panel_user_id, hwid):
-                    deleted_count += 1
-                else:
+            for hwid in unique_hwids:
+                try:
+                    if await api.remove_device(_panel_user_id, hwid):
+                        deleted_count += 1
+                    else:
+                        failed_hwids.append(hwid)
+                except Exception as device_error:
+                    logger.error(
+                        'Failed to remove device in batch',
+                        user_id=user.id,
+                        hwid=hwid,
+                        error=str(device_error)[:200],
+                    )
                     failed_hwids.append(hwid)
-            except Exception as device_error:
-                logger.error(
-                    'Failed to remove device in batch',
-                    user_id=user.id,
-                    hwid=hwid,
-                    error=str(device_error)[:200],
-                )
-                failed_hwids.append(hwid)
 
-    logger.info(
-        'Batch device removal finished',
-        user_id=user.id,
-        requested=len(unique_hwids),
-        deleted=deleted_count,
-        failed=len(failed_hwids),
-    )
+        logger.info(
+            'Batch device removal finished',
+            user_id=user.id,
+            requested=len(unique_hwids),
+            deleted=deleted_count,
+            failed=len(failed_hwids),
+        )
 
-    return {
-        'success': not failed_hwids,
-        'deleted_count': deleted_count,
-        'failed_hwids': failed_hwids,
-    }
+        return {
+            'success': not failed_hwids,
+            'deleted_count': deleted_count,
+            'failed_hwids': failed_hwids,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error('Error deleting devices in batch', error=e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to delete devices',
+        )
 
 
 # ============ Device Reduction ============

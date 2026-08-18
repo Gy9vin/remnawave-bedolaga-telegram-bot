@@ -16,7 +16,7 @@ from app.database.models import User
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter(prefix='/balance', tags=['balance'])
+router = APIRouter(prefix='/balance', tags=['Cabinet Balance'])
 
 # Больше четырёх кнопок в ряд на телефоне не помещается.
 _MAX_PRESETS = 4
@@ -66,7 +66,16 @@ async def get_topup_presets(
         from app.database.crud.tariff import get_tariffs_for_user
 
         try:
-            tariffs = await get_tariffs_for_user(db, promo_group_id=getattr(user, 'promo_group_id', None))
+            # get_primary_promo_group() покрывает и legacy FK promo_group, и
+            # новую M2M-таблицу user_promo_groups — как в purchase.py
+            # (get_purchase_options). getattr(user, 'promo_group_id', None)
+            # видит только legacy-колонку и тихо теряет тарифы для тех, у
+            # кого промогруппа назначена через M2M.
+            promo_group = user.get_primary_promo_group() if hasattr(user, 'get_primary_promo_group') else None
+            if promo_group is None:
+                promo_group = getattr(user, 'promo_group', None)
+            promo_group_id = promo_group.id if promo_group else None
+            tariffs = await get_tariffs_for_user(db, promo_group_id)
         except Exception as tariff_error:
             logger.warning(
                 'Failed to load tariffs for topup presets',
