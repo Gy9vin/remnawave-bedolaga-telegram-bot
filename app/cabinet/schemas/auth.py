@@ -148,6 +148,7 @@ class UserResponse(BaseModel):
     balance_rubles: float = 0.0
     referral_code: str | None = None
     language: str = 'ru'
+    cabinet_ui_mode: str | None = None  # 'simple' | 'advanced' | None (не выбирал)
     created_at: datetime
     auth_type: str = 'telegram'  # "telegram" или "email"
 

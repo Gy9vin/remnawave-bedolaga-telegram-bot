@@ -126,6 +126,7 @@ def _user_to_response(user: User) -> UserResponse:
         balance_rubles=user.balance_rubles,
         referral_code=user.referral_code,
         language=user.language,
+        cabinet_ui_mode=getattr(user, 'cabinet_ui_mode', None),
         created_at=user.created_at,
         auth_type=getattr(user, 'auth_type', 'telegram'),  # Поддержка старых записей
     )

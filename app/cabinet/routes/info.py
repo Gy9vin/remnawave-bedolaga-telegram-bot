@@ -16,6 +16,7 @@ from app.services.privacy_policy_service import PrivacyPolicyService
 from app.services.public_offer_service import PublicOfferService
 from app.services.recurrent_payments_service import RecurrentPaymentsService
 from app.utils.display_mode import is_visible_in_web
+from app.utils.ui_mode import UI_MODE_ADVANCED, UI_MODE_SIMPLE, UI_MODES, normalize_ui_mode, resolve_ui_mode
 
 from ..dependencies import get_cabinet_db, get_current_cabinet_user, require_permission
 
@@ -378,6 +379,71 @@ async def update_user_language(
     await db.refresh(user)
 
     return {'language': user.language}
+
+
+async def _read_lite_mode_enabled(db: AsyncSession) -> bool:
+    """Глобальный дефолт интерфейса из системных настроек.
+
+    Ключ тот же, что у существующих branding-эндпоинтов CABINET_LITE_MODE_ENABLED,
+    чтобы не заводить второй конкурирующий флаг. Недоступность базы трактуем как
+    «выключен»: из-за сбоя настроек нельзя молча переключить всем интерфейс.
+    """
+    from app.cabinet.routes.branding import LITE_MODE_ENABLED_KEY
+    from app.database.crud.system_setting import get_setting_value
+
+    try:
+        raw = await get_setting_value(db, LITE_MODE_ENABLED_KEY)
+    except Exception:
+        return False
+    return str(raw).strip().lower() == 'true' if raw is not None else False
+
+
+def _ui_mode_payload(user: User, lite_mode_enabled: bool) -> dict[str, str | None]:
+    choice = normalize_ui_mode(getattr(user, 'cabinet_ui_mode', None))
+    return {
+        'mode': resolve_ui_mode(choice, lite_mode_enabled=lite_mode_enabled),
+        'choice': choice,
+        'global_default': UI_MODE_SIMPLE if lite_mode_enabled else UI_MODE_ADVANCED,
+    }
+
+
+@router.get('/user/ui-mode')
+async def get_user_ui_mode(
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Текущий режим интерфейса кабинета."""
+    return _ui_mode_payload(user, await _read_lite_mode_enabled(db))
+
+
+@router.patch('/user/ui-mode')
+async def update_user_ui_mode(
+    request: dict,
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Сохранить персональный выбор интерфейса.
+
+    `mode: null` сбрасывает выбор — человек снова слушает глобальный дефолт.
+    Это не то же самое, что выбрать 'advanced': сброшенный выбор подхватит
+    смену глобального флага, явный — нет.
+    """
+    raw_mode = request.get('mode')
+    if raw_mode is None:
+        user.cabinet_ui_mode = None
+    else:
+        normalized = normalize_ui_mode(raw_mode)
+        if normalized is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f'Invalid mode. Supported: {", ".join(UI_MODES)}',
+            )
+        user.cabinet_ui_mode = normalized
+
+    await db.commit()
+    await db.refresh(user)
+
+    return _ui_mode_payload(user, await _read_lite_mode_enabled(db))
 
 
 @router.get('/support-config', response_model=SupportConfigResponse)
