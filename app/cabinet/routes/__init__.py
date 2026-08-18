@@ -79,6 +79,7 @@ from .ticket_notifications import (
     router as ticket_notifications_router,
 )
 from .tickets import router as tickets_router
+from .topup_presets import router as topup_presets_router
 from .channel_nudge import router as channel_nudge_router
 from .websocket import router as websocket_router
 from .wheel import router as wheel_router
@@ -102,6 +103,7 @@ router.include_router(subscription_router)
 router.include_router(modem_router)
 router.include_router(multi_tariff_subscription_router)
 router.include_router(balance_router)
+router.include_router(topup_presets_router)
 router.include_router(referral_router)
 
 # Apple IAP routes
