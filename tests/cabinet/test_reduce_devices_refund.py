@@ -70,7 +70,14 @@ def _patch_common(monkeypatch, api, subscription, added_balance):
 def reduce_env(monkeypatch):
     added: list[dict] = []
 
-    def _build(devices, device_limit=3, min_limit=1, device_price=6000, days_left=30):
+    def _build(
+        devices,
+        device_limit=3,
+        min_limit=1,
+        device_price=6000,
+        days_left=30,
+        remnawave_update_succeeds=True,
+    ):
         from datetime import UTC, datetime, timedelta
 
         api = _Api(devices)
@@ -91,8 +98,11 @@ def reduce_env(monkeypatch):
         )
 
         class _SubService:
+            # Параметризуемо: False имитирует отказ панели, чтобы проверить, что
+            # откат в этом случае отменяет и начисление возврата, а не только
+            # смену лимита.
             async def update_remnawave_user(self, db, subscription):
-                return True
+                return True if remnawave_update_succeeds else None
 
         monkeypatch.setattr(devices_routes, 'SubscriptionService', lambda: _SubService())
         return api, subscription, added
@@ -115,7 +125,17 @@ async def test_removes_exactly_chosen_devices(monkeypatch, reduce_env):
 
 @pytest.mark.asyncio
 async def test_refund_is_credited_with_transaction(reduce_env):
-    """Возврат обязан оставить след в истории операций, иначе деньги из ниоткуда."""
+    """Возврат обязан оставить след в истории операций, иначе деньги из ниоткуда.
+
+    Сумма проверяется ТОЧНО, а не просто «больше нуля»: с device_limit=3 (по
+    умолчанию фикстуры) и new_device_limit=2 освобождается 1 место
+    (freed_slots), а не 1 устройство (devices_removed_count — в этом тесте они
+    случайно совпадают: подтверждено отдельным тестом
+    test_refund_matches_freed_slots_not_removed_devices, где они различаются).
+    Ожидание считаем руками из параметров фикстуры (device_price=6000,
+    days_left=30, freed_slots=1), а не вызовом calculate_device_refund_kopeks —
+    иначе тест проверял бы только сам себя.
+    """
     api, subscription, added = reduce_env(devices=[{'hwid': 'a'}, {'hwid': 'b'}, {'hwid': 'c'}])
     result = await devices_routes.reduce_devices(
         devices_routes.ReduceDevicesRequest(new_device_limit=2, hwids_to_remove=['a']),
@@ -123,9 +143,39 @@ async def test_refund_is_credited_with_transaction(reduce_env):
         user=SimpleNamespace(id=1),
         db=AsyncMock(),
     )
-    assert result['refund_kopeks'] > 0
+    expected_refund = 6000 * 1 * 30 // 30  # device_price * freed_slots * days_left // 30 = 6000
+    assert result['refund_kopeks'] == expected_refund
     assert len(added) == 1
     assert added[0]['create_transaction'] is True
+    assert added[0]['amount_kopeks'] == expected_refund
+
+
+@pytest.mark.asyncio
+async def test_refund_matches_freed_slots_not_removed_devices(reduce_env):
+    """Единственная конфигурация, доказывающая, что в формулу идёт именно
+    число ОСВОБОЖДЁННЫХ МЕСТ, а не число ОТКЛЮЧЁННЫХ УСТРОЙСТВ.
+
+    Лимит 5, подключено 2 устройства, новый лимит 3: освобождается 2 места
+    (5 - 3), а отключать не нужно ни одного (2 подключённых меньше нового
+    лимита 3). Если бы обработчик по ошибке считал возврат по числу отключённых
+    устройств (0), возврата бы не было вовсе; если бы считал по числу
+    подключённых устройств (2) без учёта лимита — совпало бы случайно. Здесь
+    freed_slots=2, devices_to_remove_count=0 — величины различаются, и только
+    формула «по освобождённым местам» даёт корректный ненулевой результат.
+    """
+    api, subscription, added = reduce_env(
+        devices=[{'hwid': 'a'}, {'hwid': 'b'}], device_limit=5
+    )
+    result = await devices_routes.reduce_devices(
+        devices_routes.ReduceDevicesRequest(new_device_limit=3, hwids_to_remove=None),
+        subscription_id=None,
+        user=SimpleNamespace(id=1),
+        db=AsyncMock(),
+    )
+    expected_refund = 6000 * 2 * 30 // 30  # device_price * freed_slots(2) * days_left // 30 = 12000
+    assert api.removed == []
+    assert result['refund_kopeks'] == expected_refund
+    assert added[0]['amount_kopeks'] == expected_refund
 
 
 @pytest.mark.asyncio
@@ -183,3 +233,30 @@ async def test_no_refund_when_limit_did_not_change(reduce_env):
             db=AsyncMock(),
         )
     assert added == []
+
+
+@pytest.mark.asyncio
+async def test_panel_failure_rolls_back_refund_with_limit(reduce_env):
+    """Отказ панели должен откатить И лимит, И начисление — одной транзакцией.
+
+    commit=False на начислении и общий db.rollback() при отказе панели — то
+    единственное, что отделяет человека от ситуации «оставил себе и деньги, и
+    места». Начисление к этому моменту уже вызвано (оно идёт до похода в
+    панель), но важно доказать сам факт отката: именно он отменяет начисление
+    в общей транзакции. Проверяем и что был вызван db.rollback(), и что
+    обработчик вернул 502, а не «успех» с деньгами на руках.
+    """
+    api, subscription, added = reduce_env(
+        devices=[{'hwid': 'a'}, {'hwid': 'b'}, {'hwid': 'c'}],
+        remnawave_update_succeeds=False,
+    )
+    db = AsyncMock()
+    with pytest.raises(HTTPException) as exc:
+        await devices_routes.reduce_devices(
+            devices_routes.ReduceDevicesRequest(new_device_limit=2, hwids_to_remove=['a']),
+            subscription_id=None,
+            user=SimpleNamespace(id=1),
+            db=db,
+        )
+    assert exc.value.status_code == 502
+    db.rollback.assert_awaited_once()
