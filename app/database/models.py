@@ -2077,6 +2077,11 @@ class User(Base):
     last_name = Column(String(255), nullable=True)
     status = Column(String(20), default=UserStatus.ACTIVE.value)
     language = Column(String(5), default='ru')
+    # Персональный выбор интерфейса кабинета: 'simple' | 'advanced' | NULL.
+    # NULL означает «не выбирал» — такой пользователь слушает глобальный флаг
+    # CABINET_LITE_MODE_ENABLED и подхватит его смену. Явный выбор человека
+    # глобальный флаг перебить не может.
+    cabinet_ui_mode = Column(String(16), nullable=True)
     balance_kopeks = Column(Integer, default=0)
     used_promocodes = Column(Integer, default=0)
     has_had_paid_subscription = Column(Boolean, default=False, nullable=False)
