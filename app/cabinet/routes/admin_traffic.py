@@ -259,7 +259,7 @@ def _build_traffic_items(
         if primary_sub:
             subscription_status = _get_status(primary_sub)
             traffic_limit_gb = float(primary_sub.traffic_limit_gb or 0)
-            device_limit = primary_sub.device_limit or 1
+            device_limit = 1 if primary_sub.device_limit is None else primary_sub.device_limit
             if primary_sub.tariff:
                 tariff_name = primary_sub.tariff.name
 
@@ -285,7 +285,7 @@ def _build_traffic_items(
                 tariff_name=sub.tariff.name if sub.tariff else None,
                 status=_get_status(sub),
                 traffic_limit_gb=float(sub.traffic_limit_gb or 0),
-                device_limit=sub.device_limit or 1,
+                device_limit=1 if sub.device_limit is None else sub.device_limit,
             )
             for sub in subs
         ]

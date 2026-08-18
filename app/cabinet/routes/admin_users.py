@@ -1367,7 +1367,7 @@ async def update_user_subscription(
         days = request.days or 30
         is_trial = request.is_trial or False
         traffic_limit = request.traffic_limit_gb or 100
-        device_limit = request.device_limit or 1
+        device_limit = 1 if request.device_limit is None else request.device_limit
         connected_squads = []
 
         # Get tariff for settings if provided
@@ -1930,11 +1930,18 @@ async def update_user_subscription(
 
         if old_modem != new_modem:
             subscription.modem_enabled = new_modem
-            # Adjust device limit: +1 when enabling, -1 when disabling
+            # Adjust device limit: +1 when enabling, -1 when disabling.
+            # device_limit == 0 means unlimited devices (panel limitBypassed=true) —
+            # must stay unlimited, not turn into 1±1.
             if new_modem and not old_modem:
-                subscription.device_limit = (subscription.device_limit or 1) + 1
-            elif not new_modem and old_modem and (subscription.device_limit or 1) > 1:
-                subscription.device_limit = (subscription.device_limit or 1) - 1
+                if subscription.device_limit != 0:
+                    subscription.device_limit = (
+                        1 if subscription.device_limit is None else subscription.device_limit
+                    ) + 1
+            elif not new_modem and old_modem and subscription.device_limit != 0:
+                _current_device_limit = 1 if subscription.device_limit is None else subscription.device_limit
+                if _current_device_limit > 1:
+                    subscription.device_limit = _current_device_limit - 1
 
             await db.commit()
             await db.refresh(subscription)

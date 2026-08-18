@@ -81,8 +81,8 @@ def test_resolve_hwid_device_limit_enabled_mode(monkeypatch):
     assert resolve_hwid_device_limit(subscription) == 4
 
 
-def test_resolve_hwid_device_limit_enabled_ignores_non_positive(monkeypatch):
-    subscription = DummySubscription(device_limit=0)
+def test_resolve_hwid_device_limit_enabled_ignores_negative(monkeypatch):
+    subscription = DummySubscription(device_limit=-1)
 
     monkeypatch.setattr(
         subscription_utils,
@@ -91,6 +91,24 @@ def test_resolve_hwid_device_limit_enabled_ignores_non_positive(monkeypatch):
     )
 
     assert resolve_hwid_device_limit(subscription) is None
+
+
+def test_resolve_hwid_device_limit_enabled_keeps_zero_as_unlimited(monkeypatch):
+    """Ноль — «лимит HWID отключён», панель отвечает limitBypassed=true.
+
+    Раньше здесь ожидался None: считалось, что ноль структурно сломан. Это
+    допущение опровергнуто кодом панели (``subscription.service.ts``, ветка
+    ``user.hwidDeviceLimit === 0``), поэтому ноль обязан доезжать до неё.
+    """
+    subscription = DummySubscription(device_limit=0)
+
+    monkeypatch.setattr(
+        subscription_utils,
+        'settings',
+        StubSettings(enabled=True, disabled_amount=None),
+    )
+
+    assert resolve_hwid_device_limit(subscription) == 0
 
 
 def test_resolve_hwid_device_limit_for_payload_returns_subscription_limit(monkeypatch):
@@ -108,8 +126,8 @@ def test_resolve_hwid_device_limit_for_payload_returns_subscription_limit(monkey
     assert resolve_hwid_device_limit_for_payload(subscription) == 42
 
 
-def test_resolve_hwid_device_limit_for_payload_ignores_non_positive(monkeypatch):
-    subscription = DummySubscription(device_limit=0)
+def test_resolve_hwid_device_limit_for_payload_ignores_negative(monkeypatch):
+    subscription = DummySubscription(device_limit=-1)
 
     monkeypatch.setattr(
         subscription_utils,
@@ -119,6 +137,19 @@ def test_resolve_hwid_device_limit_for_payload_ignores_non_positive(monkeypatch)
 
     assert resolve_hwid_device_limit(subscription) is None
     assert resolve_hwid_device_limit_for_payload(subscription) is None
+
+
+def test_resolve_hwid_device_limit_for_payload_keeps_zero_as_unlimited(monkeypatch):
+    subscription = DummySubscription(device_limit=0)
+
+    monkeypatch.setattr(
+        subscription_utils,
+        'settings',
+        StubSettings(enabled=False, disabled_amount=None, disabled_selection_amount=None),
+    )
+
+    assert resolve_hwid_device_limit(subscription) == 0
+    assert resolve_hwid_device_limit_for_payload(subscription) == 0
 
 
 def test_resolve_hwid_device_limit_for_payload_prefers_forced_limit(monkeypatch):

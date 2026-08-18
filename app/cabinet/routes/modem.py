@@ -284,7 +284,7 @@ async def disable_modem(
             )
 
         subscription = user.subscription
-        old_device_limit = subscription.device_limit or 1
+        old_device_limit = 1 if subscription.device_limit is None else subscription.device_limit
 
         result = modem_service.disable_modem(db, user, subscription)
         if hasattr(result, '__await__'):

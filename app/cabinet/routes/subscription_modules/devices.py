@@ -125,9 +125,16 @@ async def purchase_devices_legacy(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Докупка устройств недоступна',
         )
+    # device_limit == 0 means unlimited devices (panel limitBypassed=true) —
+    # buying additional slots on top of unlimited is meaningless.
+    if subscription.device_limit == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='У вас уже безлимит устройств, докупка не требуется',
+        )
 
     # Устройства в пределах тарифного лимита — бесплатные
-    current_devices = subscription.device_limit or 1
+    current_devices = 1 if subscription.device_limit is None else subscription.device_limit
     if tariff:
         tariff_included = tariff.device_limit or 0
         if current_devices < tariff_included:
@@ -168,7 +175,7 @@ async def purchase_devices_legacy(
         total_price = max(100, total_price)
 
     # Check max devices limit (under row lock — prevents concurrent purchases exceeding limit)
-    current_devices = subscription.device_limit or 1
+    current_devices = 1 if subscription.device_limit is None else subscription.device_limit
     new_devices = current_devices + request.devices
 
     if max_device_limit and new_devices > max_device_limit:
@@ -247,7 +254,7 @@ async def purchase_devices_legacy(
     )
     subscription = relock_result.scalar_one()
 
-    actual_current = subscription.device_limit or 1
+    actual_current = 1 if subscription.device_limit is None else subscription.device_limit
     actual_new = actual_current + request.devices
     if max_device_limit and actual_new > max_device_limit:
         # Concurrent purchase already exceeded limit — refund balance
@@ -399,9 +406,16 @@ async def purchase_devices(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Докупка устройств недоступна',
             )
+        # device_limit == 0 means unlimited devices (panel limitBypassed=true) —
+        # buying additional slots on top of unlimited is meaningless.
+        if subscription.device_limit == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='У вас уже безлимит устройств, докупка не требуется',
+            )
 
         # Check max device limit (under row lock — prevents concurrent purchases exceeding limit)
-        current_devices = subscription.device_limit or 1
+        current_devices = 1 if subscription.device_limit is None else subscription.device_limit
         new_device_count = current_devices + request.devices
         if max_device_limit and new_device_count > max_device_limit:
             raise HTTPException(
@@ -531,7 +545,7 @@ async def purchase_devices(
         )
         subscription = relock_result.scalar_one()
 
-        actual_current = subscription.device_limit or 1
+        actual_current = 1 if subscription.device_limit is None else subscription.device_limit
         actual_new = actual_current + request.devices
         if max_device_limit and actual_new > max_device_limit:
             # Concurrent purchase already exceeded limit — refund balance
@@ -703,9 +717,17 @@ async def save_devices_cart(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Докупка устройств недоступна',
         )
+    # device_limit == 0 means unlimited devices (panel limitBypassed=true) —
+    # buying additional slots on top of unlimited is meaningless.
+    if subscription.device_limit == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='У вас уже безлимит устройств, докупка не требуется',
+        )
+
 
     # Check max device limit
-    current_devices = subscription.device_limit or 1
+    current_devices = 1 if subscription.device_limit is None else subscription.device_limit
     new_device_count = current_devices + request.devices
     if max_device_limit and new_device_count > max_device_limit:
         raise HTTPException(
@@ -808,9 +830,17 @@ async def get_device_price(
             'available': False,
             'reason': 'Докупка устройств недоступна',
         }
+    # device_limit == 0 means unlimited devices (panel limitBypassed=true) —
+    # buying additional slots on top of unlimited is meaningless.
+    if subscription.device_limit == 0:
+        return {
+            'available': False,
+            'reason': 'У вас уже безлимит устройств, докупка не требуется',
+        }
+
 
     # Check max device limit
-    current_devices = subscription.device_limit or 1
+    current_devices = 1 if subscription.device_limit is None else subscription.device_limit
     can_add = max_device_limit - current_devices if max_device_limit else None
 
     if max_device_limit and current_devices >= max_device_limit:
@@ -1212,7 +1242,19 @@ async def get_device_reduction_info(
         return {
             'available': False,
             'reason': 'Device reduction is not available for trial subscriptions',
-            'current_device_limit': subscription.device_limit or 1,
+            'current_device_limit': 1 if subscription.device_limit is None else subscription.device_limit,
+            'min_device_limit': 1,
+            'can_reduce': 0,
+            'connected_devices_count': 0,
+        }
+
+    # device_limit == 0 means unlimited devices (panel limitBypassed=true) — there is
+    # nothing to reduce from unlimited, and min/max math below doesn't apply to it.
+    if subscription.device_limit == 0:
+        return {
+            'available': False,
+            'reason': 'Device limit is unlimited',
+            'current_device_limit': 0,
             'min_device_limit': 1,
             'can_reduce': 0,
             'connected_devices_count': 0,
@@ -1232,7 +1274,7 @@ async def get_device_reduction_info(
 
     min_device_limit = resolve_min_device_limit(_tariff)
 
-    current_device_limit = subscription.device_limit or 1
+    current_device_limit = 1 if subscription.device_limit is None else subscription.device_limit
 
     # Can't reduce below minimum
     if current_device_limit <= min_device_limit:
@@ -1306,6 +1348,14 @@ async def reduce_devices(
             detail='Device reduction is not available for trial subscriptions',
         )
 
+    # device_limit == 0 means unlimited devices (panel limitBypassed=true) — there is
+    # nothing to reduce from unlimited, and min/max math below doesn't apply to it.
+    if subscription.device_limit == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Device limit is unlimited, nothing to reduce',
+        )
+
     # По умолчанию нижняя граница уменьшения — лимит устройств тарифа
     # (ALLOW_DEVICES_BELOW_TARIFF_LIMIT=True возвращает прежнее поведение с 1).
     # Тариф грузим явно: ленивый доступ к subscription.tariff в async-сессии
@@ -1320,7 +1370,7 @@ async def reduce_devices(
 
     min_device_limit = resolve_min_device_limit(_tariff)
 
-    current_device_limit = subscription.device_limit or 1
+    current_device_limit = 1 if subscription.device_limit is None else subscription.device_limit
 
     # Validate new limit
     if new_device_limit >= current_device_limit:

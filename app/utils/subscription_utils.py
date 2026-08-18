@@ -169,8 +169,19 @@ def resolve_hwid_device_limit(subscription: Subscription | None) -> int | None:
             # У юзера в подписке может стоять, например, 17 устройств
             # (DEFAULT 2 + докупил 15). Если бездумно вернуть forced_limit=2 —
             # Remnawave получит лимит 2, юзер потеряет купленное.
-            sub_limit = getattr(subscription, 'device_limit', None) or 0
-            effective = max(int(forced_limit), int(sub_limit))
+            sub_limit = getattr(subscription, 'device_limit', None)
+            if sub_limit == 0:
+                # 0 — не «лимит не задан», а «лимит HWID отключён»: панель на
+                # этом значении возвращает limitBypassed=true. Безлимит сильнее
+                # принудительного лимита режима, иначе max() молча схлопнет его
+                # до forced_limit и юзер потеряет выданный безлимит.
+                _logger.info(
+                    'DEVICES_SELECTION disabled, subscription is unlimited — forced limit ignored',
+                    forced_limit=forced_limit,
+                    subscription_id=getattr(subscription, 'id', None),
+                )
+                return 0
+            effective = max(int(forced_limit), int(sub_limit or 0))
             _logger.info(
                 'DEVICES_SELECTION disabled, using max(forced, subscription) limit',
                 forced_limit=forced_limit,
@@ -183,9 +194,12 @@ def resolve_hwid_device_limit(subscription: Subscription | None) -> int | None:
         # чтобы при смене тарифа лимит устройств обновлялся в панели
 
     limit = getattr(subscription, 'device_limit', None)
-    if limit is None or limit <= 0:
+    if limit is None or limit < 0:
+        # Ноль сюда не попадает намеренно: это законный безлимит, а не поломка.
+        # Отсутствующее и отрицательное значение структурно сломаны — их в
+        # панель не отправляем, чтобы не затереть там осмысленный лимит.
         _logger.warning(
-            'device_limit is None or <= 0, returning None',
+            'device_limit is None or negative, returning None',
             device_limit=limit,
             subscription_id=getattr(subscription, 'id', None),
         )
@@ -221,9 +235,9 @@ def resolve_hwid_device_limit_for_payload(
         return None
 
     fallback_limit = getattr(subscription, 'device_limit', None)
-    if fallback_limit is None or fallback_limit <= 0:
+    if fallback_limit is None or fallback_limit < 0:
         _logger.warning(
-            'fallback device_limit is None or <= 0, NOT sending hwidDeviceLimit to RemnaWave',
+            'fallback device_limit is None or negative, NOT sending hwidDeviceLimit to RemnaWave',
             fallback_limit=fallback_limit,
             subscription_id=getattr(subscription, 'id', None),
         )

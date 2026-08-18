@@ -1534,29 +1534,35 @@ async def add_subscription_devices(db: AsyncSession, subscription: Subscription,
     subscription = locked_result.scalar_one()
 
     # Check max device limit
+    # device_limit == 0 means unlimited devices (panel returns limitBypassed=true) —
+    # adding devices on top of unlimited must stay unlimited, not turn into `devices`.
     max_devices = settings.MAX_DEVICES_LIMIT
-    new_limit = (subscription.device_limit or 1) + devices
-    if max_devices > 0 and new_limit > max_devices:
-        logger.warning(
-            '📱 Попытка превысить лимит устройств',
-            user_id=subscription.user_id,
-            current=subscription.device_limit,
-            requested=devices,
-            max_devices=max_devices,
-        )
-        new_limit = max_devices
+    current_device_limit = subscription.device_limit
+    if current_device_limit == 0:
+        new_limit = 0
+    else:
+        new_limit = (1 if current_device_limit is None else current_device_limit) + devices
+        if max_devices > 0 and new_limit > max_devices:
+            logger.warning(
+                '📱 Попытка превысить лимит устройств',
+                user_id=subscription.user_id,
+                current=subscription.device_limit,
+                requested=devices,
+                max_devices=max_devices,
+            )
+            new_limit = max_devices
 
-    # Check tariff max device limit
-    tariff_max = subscription.tariff.max_device_limit if subscription.tariff else None
-    if tariff_max is not None and tariff_max > 0 and new_limit > tariff_max:
-        logger.warning(
-            '📱 Попытка превысить лимит устройств тарифа',
-            user_id=subscription.user_id,
-            current=subscription.device_limit,
-            requested=devices,
-            tariff_max_devices=tariff_max,
-        )
-        new_limit = tariff_max
+        # Check tariff max device limit
+        tariff_max = subscription.tariff.max_device_limit if subscription.tariff else None
+        if tariff_max is not None and tariff_max > 0 and new_limit > tariff_max:
+            logger.warning(
+                '📱 Попытка превысить лимит устройств тарифа',
+                user_id=subscription.user_id,
+                current=subscription.device_limit,
+                requested=devices,
+                tariff_max_devices=tariff_max,
+            )
+            new_limit = tariff_max
 
     subscription.device_limit = new_limit
     subscription.updated_at = datetime.now(UTC)
