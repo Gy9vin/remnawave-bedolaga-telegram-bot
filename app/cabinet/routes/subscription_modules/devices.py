@@ -39,7 +39,11 @@ from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
-from ...schemas.subscription import DevicePurchaseRequest, ReduceDevicesRequest
+from ...schemas.subscription import (
+    DeleteDevicesBatchRequest,
+    DevicePurchaseRequest,
+    ReduceDevicesRequest,
+)
 from .helpers import _apply_addon_discount, resolve_subscription
 
 
@@ -1231,6 +1235,76 @@ async def delete_all_devices(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to delete devices',
         )
+
+
+@router.post('/devices/delete-batch')
+async def delete_devices_batch(
+    request: DeleteDevicesBatchRequest,
+    subscription_id: int | None = QueryParam(None, description='Subscription ID for multi-tariff'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> dict[str, Any]:
+    """Отключить несколько выбранных устройств одним запросом.
+
+    Метод POST, а не DELETE: тело у DELETE поддерживается не всеми прокси, а
+    список hwid в query-строку не помещается.
+
+    Отказ по одному устройству не останавливает остальные и не выдаётся за
+    успех: неудачные hwid возвращаются списком, чтобы фронт показал, что именно
+    не отключилось, и не соврал человеку.
+    """
+    from app.services.remnawave_service import RemnaWaveService
+
+    subscription = await resolve_subscription(db, user, subscription_id)
+    if not subscription:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='No subscription found')
+
+    # Дубликаты схлопываем, порядок сохраняем — иначе один и тот же hwid
+    # ушёл бы в панель дважды и второй раз вернул бы отказ.
+    unique_hwids: list[str] = []
+    seen: set[str] = set()
+    for hwid in request.hwids:
+        if hwid and hwid not in seen:
+            seen.add(hwid)
+            unique_hwids.append(hwid)
+
+    deleted_count = 0
+    failed_hwids: list[str] = []
+
+    service = RemnaWaveService()
+    async with service.get_api_client() as api:
+        _panel_user_id = await _ensure_panel_user_id(db, subscription, user, api)
+        if not _panel_user_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Panel user not found')
+
+        for hwid in unique_hwids:
+            try:
+                if await api.remove_device(_panel_user_id, hwid):
+                    deleted_count += 1
+                else:
+                    failed_hwids.append(hwid)
+            except Exception as device_error:
+                logger.error(
+                    'Failed to remove device in batch',
+                    user_id=user.id,
+                    hwid=hwid,
+                    error=str(device_error)[:200],
+                )
+                failed_hwids.append(hwid)
+
+    logger.info(
+        'Batch device removal finished',
+        user_id=user.id,
+        requested=len(unique_hwids),
+        deleted=deleted_count,
+        failed=len(failed_hwids),
+    )
+
+    return {
+        'success': not failed_hwids,
+        'deleted_count': deleted_count,
+        'failed_hwids': failed_hwids,
+    }
 
 
 # ============ Device Reduction ============

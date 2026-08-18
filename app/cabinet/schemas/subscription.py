@@ -175,6 +175,14 @@ class ReduceDevicesRequest(BaseModel):
     new_device_limit: int = Field(ge=1, le=100)
 
 
+class DeleteDevicesBatchRequest(BaseModel):
+    """Список устройств на отключение одним запросом."""
+
+    # Верхняя граница защищает от запроса, который будет минуты долбить панель
+    # по одному устройству. Пятьдесят — заведомо больше любого разумного лимита.
+    hwids: list[str] = Field(min_length=1, max_length=50)
+
+
 class TrialActivateRequest(BaseModel):
     """Optional body for POST /trial — used to forward the Yandex CID for the
     offline-conversion trial-add (and purchase, when TRIAL_PAYMENT_ENABLED)
