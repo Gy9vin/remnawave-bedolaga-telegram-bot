@@ -173,6 +173,10 @@ class ReduceDevicesRequest(BaseModel):
     """Request to reduce device limit."""
 
     new_device_limit: int = Field(ge=1, le=100)
+    # Какие именно устройства отключить. None означает «решай сам» и оставлен
+    # для совместимости со старыми клиентами: раньше обработчик всегда выбирал
+    # сам, причём удалял самые свежие по активности.
+    hwids_to_remove: list[str] | None = Field(default=None, max_length=50)
 
 
 class DeleteDevicesBatchRequest(BaseModel):

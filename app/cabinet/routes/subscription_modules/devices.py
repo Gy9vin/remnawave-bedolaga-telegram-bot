@@ -28,6 +28,7 @@ from app.cabinet.utils.device_ownership import verify_hwid_belongs_to_user
 from app.cabinet.utils.panel_identity import ensure_panel_user_id, resolve_panel_user_id
 from app.config import settings
 from app.database.crud.tariff import get_tariff_by_id
+from app.database.crud.user import add_user_balance
 from app.database.crud.user_device_alias import (
     delete_alias,
     get_aliases_for_user,
@@ -37,6 +38,8 @@ from app.database.crud.user_device_alias import (
 from app.database.models import Subscription, TransactionType, User
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
+from app.utils.device_refund import calculate_device_refund_kopeks
+from app.utils.subscription_utils import resolve_min_device_limit
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
 from ...schemas.subscription import (
@@ -64,6 +67,21 @@ router = APIRouter()
 # дважды. Алиасы оставлены, чтобы не трогать вызовы ниже по файлу.
 _resolve_panel_user_id = resolve_panel_user_id
 _ensure_panel_user_id = ensure_panel_user_id
+
+
+async def _resolve_device_price_kopeks(db: AsyncSession, subscription: Subscription) -> int:
+    """Цена одного места устройства в копейках за базовый период в 30 дней.
+
+    Тарифная цена важнее глобальной: на разных тарифах место стоит по-разному,
+    и брать общую настройку значило бы вернуть человеку не те деньги.
+    """
+    if subscription.tariff_id:
+        tariff = await get_tariff_by_id(db, subscription.tariff_id)
+        tariff_price = getattr(tariff, 'device_price_kopeks', None) if tariff else None
+        if isinstance(tariff_price, int) and not isinstance(tariff_price, bool) and tariff_price > 0:
+            return tariff_price
+    fallback = getattr(settings, 'PRICE_PER_DEVICE', 0)
+    return fallback if isinstance(fallback, int) and fallback > 0 else 0
 
 
 def extract_client_name(user_agent: object) -> str | None:
@@ -1358,12 +1376,8 @@ async def get_device_reduction_info(
     # (ALLOW_DEVICES_BELOW_TARIFF_LIMIT=True возвращает прежнее поведение с 1).
     # Тариф грузим явно: ленивый доступ к subscription.tariff в async-сессии
     # падает MissingGreenlet.
-    from app.utils.subscription_utils import resolve_min_device_limit
-
     _tariff = None
     if subscription.tariff_id:
-        from app.database.crud.tariff import get_tariff_by_id
-
         _tariff = await get_tariff_by_id(db, subscription.tariff_id)
 
     min_device_limit = resolve_min_device_limit(_tariff)
@@ -1396,12 +1410,21 @@ async def get_device_reduction_info(
 
     can_reduce = current_device_limit - min_device_limit
 
+    now = datetime.now(UTC)
+    end_date = subscription.end_date
+    if end_date is not None and end_date.tzinfo is None:
+        end_date = end_date.replace(tzinfo=UTC)
+    days_left = max(0, math.ceil((end_date - now).total_seconds() / 86400)) if end_date else 0
+
     return {
         'available': True,
         'current_device_limit': current_device_limit,
         'min_device_limit': min_device_limit,
         'can_reduce': can_reduce,
         'connected_devices_count': connected_devices_count,
+        'refund_kopeks_per_slot': calculate_device_refund_kopeks(
+            await _resolve_device_price_kopeks(db, subscription), slots=1, days_left=days_left
+        ),
     }
 
 
@@ -1454,12 +1477,8 @@ async def reduce_devices(
     # (ALLOW_DEVICES_BELOW_TARIFF_LIMIT=True возвращает прежнее поведение с 1).
     # Тариф грузим явно: ленивый доступ к subscription.tariff в async-сессии
     # падает MissingGreenlet.
-    from app.utils.subscription_utils import resolve_min_device_limit
-
     _tariff = None
     if subscription.tariff_id:
-        from app.database.crud.tariff import get_tariff_by_id
-
         _tariff = await get_tariff_by_id(db, subscription.tariff_id)
 
     min_device_limit = resolve_min_device_limit(_tariff)
@@ -1479,48 +1498,87 @@ async def reduce_devices(
             detail=f'Cannot reduce below minimum device limit ({min_device_limit}) for your tariff',
         )
 
-    # Get connected devices and remove excess (last connected ones)
+    # Сколько мест освобождается и сколько устройств надо отключить — РАЗНЫЕ
+    # величины. Мест освобождается «старый лимит минус новый». Устройств
+    # отключать надо «сколько подключено минус новый лимит», и это число бывает
+    # меньше, а бывает нулём, если человек не выбрал весь лимит.
+    freed_slots = current_device_limit - new_device_limit
+
     connected_devices_count = 0
     devices_removed_count = 0
-    try:
-        service = RemnaWaveService()
-        async with service.get_api_client() as api:
-            _panel_user_id = await _ensure_panel_user_id(db, subscription, user, api)
-            if _panel_user_id:
-                response = await api.get_user_devices_all(_panel_user_id)
-                if response:
-                    devices_list = response.get('devices', [])
-                    connected_devices_count = len(devices_list)
+    devices_list: list[dict[str, Any]] = []
 
-                    # If connected devices exceed new limit, remove excess (last connected)
-                    if connected_devices_count > new_device_limit:
-                        devices_to_remove = connected_devices_count - new_device_limit
-                        logger.info(
-                            'Removing excess devices for user had new limit',
-                            devices_to_remove=devices_to_remove,
-                            user_id=user.id,
-                            connected_devices_count=connected_devices_count,
-                            new_device_limit=new_device_limit,
-                        )
+    service = RemnaWaveService()
+    async with service.get_api_client() as api:
+        _panel_user_id = await _ensure_panel_user_id(db, subscription, user, api)
+        if _panel_user_id:
+            response = await api.get_user_devices_all(_panel_user_id)
+            devices_list = (response or {}).get('devices', []) or []
+            connected_devices_count = len(devices_list)
 
-                        # Sort by date (oldest first) and remove the last ones
-                        sorted_devices = sorted(
-                            devices_list,
-                            key=lambda d: d.get('updatedAt') or d.get('createdAt') or '\xff',
-                        )
-                        devices_to_delete = sorted_devices[-devices_to_remove:]
+        devices_to_remove_count = max(0, connected_devices_count - new_device_limit)
+        known_hwids = {d.get('hwid') for d in devices_list if d.get('hwid')}
 
-                        for device in devices_to_delete:
-                            device_hwid = device.get('hwid')
-                            if device_hwid:
-                                try:
-                                    if await api.remove_device(_panel_user_id, device_hwid):
-                                        devices_removed_count += 1
-                                        logger.info('Removed device for user', device_hwid=device_hwid, user_id=user.id)
-                                except Exception as del_error:
-                                    logger.error('Error removing device', device_hwid=device_hwid, del_error=del_error)
-    except Exception as e:
-        logger.error('Error checking/removing devices', error=e)
+        if request.hwids_to_remove is not None:
+            chosen: list[str] = []
+            seen: set[str] = set()
+            for hwid in request.hwids_to_remove:
+                if hwid and hwid not in seen:
+                    seen.add(hwid)
+                    chosen.append(hwid)
+
+            unknown = [hwid for hwid in chosen if hwid not in known_hwids]
+            if unknown:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f'Неизвестные устройства: {", ".join(unknown)}',
+                )
+            if len(chosen) != devices_to_remove_count:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f'Нужно отключить ровно {devices_to_remove_count} устройств, '
+                        f'выбрано {len(chosen)}'
+                    ),
+                )
+            devices_to_delete = [d for d in devices_list if d.get('hwid') in seen]
+        else:
+            # Совместимость со старыми клиентами: выбираем сами. Сортировка по
+            # возрастанию активности, срез С НАЧАЛА — отключаем то, чем давно не
+            # пользовались. Прежний код срезал с конца и удалял самые свежие
+            # устройства, то есть ровно те, что были нужны человеку.
+            sorted_devices = sorted(
+                devices_list,
+                key=lambda d: d.get('updatedAt') or d.get('createdAt') or '\xff',
+            )
+            devices_to_delete = sorted_devices[:devices_to_remove_count]
+
+        for device in devices_to_delete:
+            device_hwid = device.get('hwid')
+            if not device_hwid:
+                continue
+            try:
+                if await api.remove_device(_panel_user_id, device_hwid):
+                    devices_removed_count += 1
+            except Exception as del_error:
+                logger.error(
+                    'Error removing device during limit reduction',
+                    device_hwid=device_hwid,
+                    user_id=user.id,
+                    error=str(del_error)[:200],
+                )
+
+    # Возврат считаем ДО изменения лимита: после присваивания freed_slots уже не
+    # восстановить. Формула зеркальна покупке — цена места на оставшийся срок.
+    now = datetime.now(UTC)
+    end_date = subscription.end_date
+    if end_date is not None and end_date.tzinfo is None:
+        end_date = end_date.replace(tzinfo=UTC)
+    days_left = max(0, math.ceil((end_date - now).total_seconds() / 86400)) if end_date else 0
+    device_price_kopeks = await _resolve_device_price_kopeks(db, subscription)
+    refund_kopeks = calculate_device_refund_kopeks(
+        device_price_kopeks, slots=freed_slots, days_left=days_left
+    )
 
     old_device_limit = current_device_limit
     user_id = user.id  # save before potential rollback (expires ORM objects)
@@ -1528,6 +1586,20 @@ async def reduce_devices(
     # Update subscription in memory (will be committed by update_remnawave_user on success)
     subscription.device_limit = new_device_limit
     subscription.updated_at = datetime.now(UTC)
+
+    if refund_kopeks > 0:
+        # commit=False: деньги и лимит меняются одной транзакцией. Если панель
+        # откажет и мы откатимся, возврат откатится вместе с лимитом, иначе у
+        # человека остались бы деньги за места, которые он не потерял.
+        await add_user_balance(
+            db=db,
+            user=user,
+            amount_kopeks=refund_kopeks,
+            description=f'Возврат за {freed_slots} освобождённых мест устройств',
+            create_transaction=True,
+            transaction_type=TransactionType.REFUND,
+            commit=False,
+        )
 
     # Update RemnaWave — commits on success, returns None on failure
     subscription_service = SubscriptionService()
@@ -1562,4 +1634,5 @@ async def reduce_devices(
         'old_device_limit': old_device_limit,
         'new_device_limit': new_device_limit,
         'devices_removed': devices_removed_count,
+        'refund_kopeks': refund_kopeks,
     }
