@@ -62,6 +62,23 @@ _resolve_panel_user_id = resolve_panel_user_id
 _ensure_panel_user_id = ensure_panel_user_id
 
 
+def extract_client_name(user_agent: object) -> str | None:
+    """Достать читаемое имя программы из user-agent устройства.
+
+    Панель отдаёт агент целиком — «Happ/2.1.0 (iPhone; iOS 17.4)». Человеку
+    нужно только имя: версия ему ничего не говорит, а платформа и так показана
+    отдельным полем. Берём часть до первого слэша или пробела.
+
+    Неразборчивый агент даёт None, а не строку «Unknown»: пустое место в
+    интерфейсе честнее выдуманного имени, и фронт в этом случае показывает
+    платформу с моделью.
+    """
+    if not isinstance(user_agent, str):
+        return None
+    name = user_agent.strip().split('/', 1)[0].split(' ', 1)[0].strip()
+    return name or None
+
+
 @router.post('/devices')
 async def purchase_devices_legacy(
     request: DevicePurchaseRequest,
@@ -1002,6 +1019,9 @@ async def get_devices(
                         'platform': platform,
                         'device_model': model,
                         'created_at': created_at,
+                        # Имя программы: Happ, INCY и т.д. None — агент не разобрался,
+                        # тогда фронт показывает платформу и модель.
+                        'client': extract_client_name(device.get('userAgent')),
                         # Локальное имя, заданное юзером. None — алиаса нет,
                         # фронт фоллбэчит на platform/device_model.
                         'local_name': aliases.get(hwid) or None,
