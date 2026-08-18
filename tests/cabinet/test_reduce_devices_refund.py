@@ -235,6 +235,75 @@ async def test_no_refund_when_limit_did_not_change(reduce_env):
     assert added == []
 
 
+def _fake_devices_discount_20pct(user, category, amount, period_days=None):
+    """Имитация скидки промогруппы на устройства (20%) — та же форма ответа,
+    что и настоящая `_apply_addon_discount` из helpers.py."""
+    assert category == 'devices'
+    if amount <= 0:
+        return {'discounted': amount, 'discount': 0, 'percent': 0}
+    discount = amount * 20 // 100
+    return {'discounted': amount - discount, 'discount': discount, 'percent': 20}
+
+
+@pytest.mark.asyncio
+async def test_refund_applies_addon_discount_like_purchase(monkeypatch, reduce_env):
+    """Возврат обязан учитывать ту же скидку промогруппы на устройства, что и
+    покупка (см. purchase_devices, строка ~208 в devices.py) — иначе человек со
+    скидкой платит за место дешевле, а получает возврат по полной цене.
+
+    Без скидки (test_refund_is_credited_with_transaction, те же параметры
+    фикстуры) возврат равен 6000. Ожидание здесь считаем руками: 20% от 6000 —
+    это 1200, значит с учётом скидки возврат обязан быть 6000 - 1200 = 4800.
+    Именно на эту величину — размер скидки — он должен быть МЕНЬШЕ, чем без
+    скидки, а не на произвольную сумму.
+    """
+    api, subscription, added = reduce_env(devices=[{'hwid': 'a'}, {'hwid': 'b'}, {'hwid': 'c'}])
+    monkeypatch.setattr(devices_routes, '_apply_addon_discount', _fake_devices_discount_20pct)
+
+    result = await devices_routes.reduce_devices(
+        devices_routes.ReduceDevicesRequest(new_device_limit=2, hwids_to_remove=['a']),
+        subscription_id=None,
+        user=SimpleNamespace(id=1),
+        db=AsyncMock(),
+    )
+
+    refund_without_discount = 6000  # см. test_refund_is_credited_with_transaction
+    expected_refund = 4800  # 6000 - 20%
+    assert result['refund_kopeks'] == expected_refund
+    assert refund_without_discount - result['refund_kopeks'] == 1200  # ровно 20% от 6000
+    assert added[0]['amount_kopeks'] == expected_refund
+
+
+@pytest.mark.asyncio
+async def test_refund_kopeks_per_slot_matches_actual_refund(monkeypatch, reduce_env):
+    """Сумма, которую reduction-info показывает человеку за одно место
+    (`refund_kopeks_per_slot`), обязана совпадать с реально начисляемым
+    возвратом при уменьшении лимита ровно на 1 место — иначе цифра на экране
+    до нажатия кнопки разойдётся с тем, что придёт на баланс.
+    """
+    api, subscription, added = reduce_env(
+        devices=[{'hwid': 'a'}], device_limit=3, min_limit=1, device_price=6000, days_left=30
+    )
+    monkeypatch.setattr(devices_routes, '_apply_addon_discount', _fake_devices_discount_20pct)
+
+    info = await devices_routes.get_device_reduction_info(
+        subscription_id=None,
+        user=SimpleNamespace(id=1),
+        db=AsyncMock(),
+    )
+
+    result = await devices_routes.reduce_devices(
+        devices_routes.ReduceDevicesRequest(new_device_limit=2, hwids_to_remove=None),
+        subscription_id=None,
+        user=SimpleNamespace(id=1),
+        db=AsyncMock(),
+    )
+
+    # device_limit=3 -> new_device_limit=2: freed_slots=1, то есть ровно то же
+    # количество мест, что и в reduction-info (slots=1).
+    assert result['refund_kopeks'] == info['refund_kopeks_per_slot']
+
+
 @pytest.mark.asyncio
 async def test_panel_failure_rolls_back_refund_with_limit(reduce_env):
     """Отказ панели должен откатить И лимит, И начисление — одной транзакцией.

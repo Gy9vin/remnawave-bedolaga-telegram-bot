@@ -5,6 +5,7 @@
 состоянии, которого не выбирал, и не понимает, что отключилось, а что нет.
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -106,6 +107,38 @@ async def test_duplicates_are_collapsed(patched):
     )
     assert result['deleted_count'] == 2
     assert api.removed == ['a', 'b']
+
+
+@pytest.mark.asyncio
+async def test_batch_timeout_does_not_crash_and_reports_partial_result(patched, monkeypatch):
+    """Панель зависла посреди пакета — цикл ограничен общим таймаутом
+    (DEVICE_BATCH_OPERATION_TIMEOUT). Обработчик обязан не упасть необработанным
+    исключением, а вернуть честный частичный результат: то, что успело
+    отключиться, и то, что не успело (в т.ч. ещё не начатые hwid).
+    """
+
+    class _HangingApi(_Api):
+        async def remove_device(self, panel_user_id, hwid):
+            if hwid == 'b':
+                await asyncio.sleep(10)  # заведомо дольше таймаута батча ниже
+            return await super().remove_device(panel_user_id, hwid)
+
+    api = _HangingApi()
+    patched(api)
+    monkeypatch.setattr(devices_routes, 'DEVICE_BATCH_OPERATION_TIMEOUT', 0.05)
+
+    result = await devices_routes.delete_devices_batch(
+        devices_routes.DeleteDevicesBatchRequest(hwids=['a', 'b', 'c']),
+        subscription_id=None,
+        user=SimpleNamespace(id=1),
+        db=AsyncMock(),
+    )
+
+    assert result['timed_out'] is True
+    assert result['success'] is False
+    assert result['deleted_count'] == 1  # только 'a' успело отключиться
+    assert 'b' in result['failed_hwids']
+    assert 'c' in result['failed_hwids']  # даже не начатое честно помечено неудачей
 
 
 @pytest.mark.asyncio

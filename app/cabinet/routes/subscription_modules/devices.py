@@ -58,6 +58,13 @@ logger = structlog.get_logger(__name__)
 # after delivery). Past this budget the sync is deferred to remnawave_retry_queue.
 REMNAWAVE_SYNC_TIMEOUT = 10.0
 
+# Циклы удаления устройств (batch-delete, уменьшение лимита) шлют до полусотни
+# последовательных запросов в панель, каждый с собственным таймаутом и
+# ретраями. Без общего предела на весь цикл зависшая панель держит HTTP-запрос
+# и открытую транзакцию десятки минут. Запас взят с учётом количества вызовов
+# в цикле — REMNAWAVE_SYNC_TIMEOUT (10с) рассчитан на один запрос.
+DEVICE_BATCH_OPERATION_TIMEOUT = 120.0
+
 router = APIRouter()
 
 
@@ -1288,6 +1295,7 @@ async def delete_devices_batch(
 
     deleted_count = 0
     failed_hwids: list[str] = []
+    timed_out = False
 
     try:
         service = RemnaWaveService()
@@ -1296,20 +1304,39 @@ async def delete_devices_batch(
             if not _panel_user_id:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Panel user not found')
 
-            for hwid in unique_hwids:
-                try:
-                    if await api.remove_device(_panel_user_id, hwid):
-                        deleted_count += 1
-                    else:
-                        failed_hwids.append(hwid)
-                except Exception as device_error:
-                    logger.error(
-                        'Failed to remove device in batch',
-                        user_id=user.id,
-                        hwid=hwid,
-                        error=str(device_error)[:200],
-                    )
-                    failed_hwids.append(hwid)
+            # Общий таймаут на весь цикл (см. DEVICE_BATCH_OPERATION_TIMEOUT):
+            # уже отключённые устройства при срабатывании таймаута не
+            # откатываются — панель необратимо применила эти вызовы, откатывать
+            # нечего. Недообработанные hwid честно помечаем как неудачу вместо
+            # того, чтобы выдать зависший запрос за полный успех.
+            try:
+                async with asyncio.timeout(DEVICE_BATCH_OPERATION_TIMEOUT):
+                    for hwid in unique_hwids:
+                        try:
+                            if await api.remove_device(_panel_user_id, hwid):
+                                deleted_count += 1
+                            else:
+                                failed_hwids.append(hwid)
+                        except Exception as device_error:
+                            logger.error(
+                                'Failed to remove device in batch',
+                                user_id=user.id,
+                                hwid=hwid,
+                                error=str(device_error)[:200],
+                            )
+                            failed_hwids.append(hwid)
+            except TimeoutError:
+                timed_out = True
+                processed = deleted_count + len(failed_hwids)
+                remaining = unique_hwids[processed:]
+                failed_hwids.extend(remaining)
+                logger.error(
+                    'Batch device removal timed out',
+                    user_id=user.id,
+                    requested=len(unique_hwids),
+                    deleted=deleted_count,
+                    not_attempted=len(remaining),
+                )
 
         logger.info(
             'Batch device removal finished',
@@ -1317,12 +1344,14 @@ async def delete_devices_batch(
             requested=len(unique_hwids),
             deleted=deleted_count,
             failed=len(failed_hwids),
+            timed_out=timed_out,
         )
 
         return {
             'success': not failed_hwids,
             'deleted_count': deleted_count,
             'failed_hwids': failed_hwids,
+            'timed_out': timed_out,
         }
 
     except HTTPException:
@@ -1432,9 +1461,14 @@ async def get_device_reduction_info(
         'min_device_limit': min_device_limit,
         'can_reduce': can_reduce,
         'connected_devices_count': connected_devices_count,
-        'refund_kopeks_per_slot': calculate_device_refund_kopeks(
-            await _resolve_device_price_kopeks(db, subscription), slots=1, days_left=days_left
-        ),
+        'refund_kopeks_per_slot': _apply_addon_discount(
+            user,
+            'devices',
+            calculate_device_refund_kopeks(
+                await _resolve_device_price_kopeks(db, subscription), slots=1, days_left=days_left
+            ),
+            days_left,
+        )['discounted'],
     }
 
 
@@ -1563,20 +1597,39 @@ async def reduce_devices(
             )
             devices_to_delete = sorted_devices[:devices_to_remove_count]
 
-        for device in devices_to_delete:
-            device_hwid = device.get('hwid')
-            if not device_hwid:
-                continue
-            try:
-                if await api.remove_device(_panel_user_id, device_hwid):
-                    devices_removed_count += 1
-            except Exception as del_error:
-                logger.error(
-                    'Error removing device during limit reduction',
-                    device_hwid=device_hwid,
-                    user_id=user.id,
-                    error=str(del_error)[:200],
-                )
+        # Общий таймаут на цикл отключения (см. DEVICE_BATCH_OPERATION_TIMEOUT).
+        # При срабатывании транзакцию ДОВОДИМ до конца, а не откатываем: уже
+        # отключённые устройства панель применила необратимо, а само уменьшение
+        # лимита и возврат денег в этом обработчике и так не зависят от того,
+        # сколько устройств реально успело отключиться (см. комментарий выше
+        # про freed_slots vs devices_to_remove_count — код уже терпит частичный
+        # неуспех отключения). Откат откатил бы деньги и лимит, но не смог бы
+        # вернуть уже отключённые устройства обратно — то есть сделал бы хуже.
+        devices_removal_timed_out = False
+        try:
+            async with asyncio.timeout(DEVICE_BATCH_OPERATION_TIMEOUT):
+                for device in devices_to_delete:
+                    device_hwid = device.get('hwid')
+                    if not device_hwid:
+                        continue
+                    try:
+                        if await api.remove_device(_panel_user_id, device_hwid):
+                            devices_removed_count += 1
+                    except Exception as del_error:
+                        logger.error(
+                            'Error removing device during limit reduction',
+                            device_hwid=device_hwid,
+                            user_id=user.id,
+                            error=str(del_error)[:200],
+                        )
+        except TimeoutError:
+            devices_removal_timed_out = True
+            logger.error(
+                'Device removal during limit reduction timed out',
+                user_id=user.id,
+                requested=len(devices_to_delete),
+                removed=devices_removed_count,
+            )
 
     # Возврат считаем ДО изменения лимита: после присваивания freed_slots уже не
     # восстановить. Формула зеркальна покупке — цена места на оставшийся срок.
@@ -1586,9 +1639,13 @@ async def reduce_devices(
         end_date = end_date.replace(tzinfo=UTC)
     days_left = max(0, math.ceil((end_date - now).total_seconds() / 86400)) if end_date else 0
     device_price_kopeks = await _resolve_device_price_kopeks(db, subscription)
-    refund_kopeks = calculate_device_refund_kopeks(
+    raw_refund_kopeks = calculate_device_refund_kopeks(
         device_price_kopeks, slots=freed_slots, days_left=days_left
     )
+    # Возврат обязан отражать ту же скидку промогруппы на устройства, что и
+    # покупка (см. purchase_devices выше) — иначе человек со скидкой платит за
+    # место дешевле, а получает возврат по полной цене.
+    refund_kopeks = _apply_addon_discount(user, 'devices', raw_refund_kopeks, days_left)['discounted']
 
     old_device_limit = current_device_limit
     user_id = user.id  # save before potential rollback (expires ORM objects)
@@ -1635,14 +1692,21 @@ async def reduce_devices(
         old_device_limit=old_device_limit,
         new_device_limit=new_device_limit,
         devices_removed=devices_removed_count if devices_removed_count > 0 else None,
+        timed_out=devices_removal_timed_out,
     )
+
+    message = 'Device limit reduced successfully'
+    if devices_removed_count > 0:
+        message += f' ({devices_removed_count} devices removed)'
+    if devices_removal_timed_out:
+        message += '. Часть устройств не успела отключиться — панель не ответила вовремя.'
 
     return {
         'success': True,
-        'message': 'Device limit reduced successfully'
-        + (f' ({devices_removed_count} devices removed)' if devices_removed_count > 0 else ''),
+        'message': message,
         'old_device_limit': old_device_limit,
         'new_device_limit': new_device_limit,
         'devices_removed': devices_removed_count,
         'refund_kopeks': refund_kopeks,
+        'timed_out': devices_removal_timed_out,
     }
