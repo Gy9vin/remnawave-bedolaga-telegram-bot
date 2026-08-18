@@ -70,6 +70,28 @@ def get_traffic_reset_strategy(tariff=None):
     return getattr(TrafficLimitStrategy, mapped_strategy)
 
 
+def _resolve_fallback_squads(subscription: Subscription) -> list[str]:
+    """Сквады для восстановления, когда connected_squads пуст, но подписка в fallback.
+
+    Логика идентична restore_from_fallback (expiry_fallback_service.py):
+    снимок pre_expiry_squads, а если его нет — DEFAULT_SQUAD_UUID из настроек.
+    Используется, чтобы гейты отправки active_internal_squads ниже не пропускали
+    PATCH молча при пустом connected_squads для fallback-подписок (иначе панель
+    не получает изменение, юзер остаётся в fallback-скваде).
+    """
+    saved_squads = list(getattr(subscription, 'pre_expiry_squads', None) or [])
+    if not saved_squads and settings.DEFAULT_SQUAD_UUID:
+        saved_squads = [settings.DEFAULT_SQUAD_UUID]
+    return saved_squads
+
+
+def _is_subscription_in_fallback(subscription: Subscription) -> bool:
+    return bool(
+        getattr(subscription, 'expiry_fallback_active', False)
+        or getattr(subscription, 'traffic_fallback_active', False)
+    )
+
+
 @dataclass
 class PropagateSquadsResult:
     """Результат применения скводов тарифа к подпискам."""
@@ -483,6 +505,12 @@ class SubscriptionService:
         )
         if subscription.connected_squads:
             common_kwargs['active_internal_squads'] = subscription.connected_squads
+        elif _is_subscription_in_fallback(subscription):
+            # Пустой connected_squads у fallback-подписки — молчаливый пропуск здесь
+            # оставлял бы юзера в fallback-скваде (PATCH ушёл бы без active_internal_squads).
+            fallback_squads = _resolve_fallback_squads(subscription)
+            if fallback_squads:
+                common_kwargs['active_internal_squads'] = fallback_squads
         if user_tag is not None:
             common_kwargs['tag'] = user_tag
         if hwid_limit is not None:
@@ -679,6 +707,12 @@ class SubscriptionService:
         )
         if subscription.connected_squads:
             common_kwargs['active_internal_squads'] = subscription.connected_squads
+        elif _is_subscription_in_fallback(subscription):
+            # Пустой connected_squads у fallback-подписки — молчаливый пропуск здесь
+            # оставлял бы юзера в fallback-скваде (PATCH ушёл бы без active_internal_squads).
+            fallback_squads = _resolve_fallback_squads(subscription)
+            if fallback_squads:
+                common_kwargs['active_internal_squads'] = fallback_squads
         if user_tag is not None:
             common_kwargs['tag'] = user_tag
         if hwid_limit is not None:
@@ -870,9 +904,17 @@ class SubscriptionService:
 
                 # Сквады отправляем только при явном sync_squads=True (propagate_squads и пр.)
                 # В рутинных обновлениях пропускаем — сквады уже назначены при создании подписки,
-                # а пересылка стейловых UUID вызывает FK violation → A039 в RemnaWave
+                # а пересылка стейловых UUID вызывает FK violation → A039 в RemnaWave.
+                # Это условие (sync_squads=True) не ослабляем и для fallback ниже — иначе
+                # рутинные, не-fallback апдейты снова слали бы стейловые сквады.
                 if sync_squads and subscription.connected_squads:
                     update_kwargs['active_internal_squads'] = subscription.connected_squads
+                elif sync_squads and _is_subscription_in_fallback(subscription):
+                    # Пустой connected_squads у fallback-подписки — молчаливый пропуск
+                    # здесь оставлял бы юзера в fallback-скваде даже при явном sync_squads.
+                    fallback_squads = _resolve_fallback_squads(subscription)
+                    if fallback_squads:
+                        update_kwargs['active_internal_squads'] = fallback_squads
 
                 if user_tag is not None:
                     update_kwargs['tag'] = user_tag

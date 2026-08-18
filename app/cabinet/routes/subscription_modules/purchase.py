@@ -1170,10 +1170,12 @@ async def purchase_tariff(
                     reset_reason='покупка тарифа (cabinet)',
                 )
 
-            # Снимаем fallback-флаги если подписка была в fallback.
+            # Реально восстанавливаем сквады в панели, если подписка была в fallback
+            # (пустой connected_squads не гарантирует, что create/update выше отправили
+            # active_internal_squads — см. restore_fallback_after_purchase).
             try:
-                from app.services.expiry_fallback_service import clear_fallback_after_purchase
-                await clear_fallback_after_purchase(db, subscription)
+                from app.services.expiry_fallback_service import restore_fallback_after_purchase
+                await restore_fallback_after_purchase(db, subscription)
             except Exception as clear_err:
                 logger.warning('Failed to clear fallback flags after cabinet purchase', error=str(clear_err))
         except Exception as remnawave_error:

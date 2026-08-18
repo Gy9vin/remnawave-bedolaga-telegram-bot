@@ -55,7 +55,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -1045,9 +1045,16 @@ def _clear_fallback_state(subscription: Subscription) -> None:
 async def clear_fallback_after_purchase(db: AsyncSession, subscription: Subscription) -> bool:
     """Снимает fallback-флаги после успешной покупки/продления.
 
-    Сама покупка уже синхронизировала Remnawave (sync_squads=True/create_user)
-    с правильными сквадами, поэтому достаточно просто очистить флаги в БД.
-    Идемпотентно: если флаги не стоят — no-op.
+    ВНИМАНИЕ: НЕ трогает панель — предполагает, что Remnawave уже
+    синхронизирована с правильными сквадами. Это допущение оказалось неверным:
+    при пустом ``subscription.connected_squads`` create/update_remnawave_user
+    пропускают отправку ``active_internal_squads`` (пустой список ложен в
+    Python), PATCH уходит частичным, и панель оставляет юзера в
+    fallback-скваде — а эта функция снимала флаги, делая подписку невидимой
+    для reconcile. Используйте ``restore_fallback_after_purchase`` в местах
+    покупки/продления вместо этой функции. Оставлена для обратной
+    совместимости и на случай, когда панель гарантированно уже приведена
+    в правильное состояние в этой же транзакции.
     """
     if not subscription.expiry_fallback_active and not subscription.traffic_fallback_active:
         return False
@@ -1059,6 +1066,22 @@ async def clear_fallback_after_purchase(db: AsyncSession, subscription: Subscrip
         user_id=subscription.user_id,
     )
     return True
+
+
+async def restore_fallback_after_purchase(db: AsyncSession, subscription: Subscription) -> bool:
+    """Восстанавливает сквады в панели после покупки/продления, если подписка была в fallback.
+
+    Замена ``clear_fallback_after_purchase`` в местах покупки/продления
+    (``subscription_purchase_service.py``, ``handlers/subscription/purchase.py``,
+    ``cabinet/routes/subscription_modules/purchase.py``): та функция снимала
+    fallback-флаги без проверки, что панель действительно вернула юзера в
+    рабочие сквады. Здесь переиспользуется уже проверенный
+    ``restore_from_fallback`` — тот же путь, что и у докупки трафика, ручного
+    возврата админом и вебхука. Флаги снимаются только при подтверждённом
+    PATCH; если стоящих fallback-флагов нет — no-op (идентично прежнему
+    поведению).
+    """
+    return await restore_from_fallback(db, subscription)
 
 
 # ============================================================================
@@ -1093,6 +1116,7 @@ async def reconcile_fallback_subscriptions(db: AsyncSession) -> dict:
         'extended_grace': 0,
         'moved_lost_webhook': 0,
         'cleaned_total_expired': 0,
+        'restored_stuck_no_flags': 0,
         'errors': 0,
     }
 
@@ -1204,6 +1228,88 @@ async def reconcile_fallback_subscriptions(db: AsyncSession) -> dict:
         except Exception as exc:
             stats['errors'] += 1
             logger.error('Reconcile move error', subscription_id=sub.id, error=str(exc))
+
+    # ----------------------------------------------------------------
+    # 3. Страховочная сеть: подписки БЕЗ fallback-флагов (баг снял их раньше
+    #    времени — см. restore_fallback_after_purchase), но реально
+    #    застрявшие в fallback-скваде в панели.
+    #    Дешёвый признак-кандидат в SQL: активная подписка с пустым
+    #    connected_squads и известной панельной идентичностью. connected_squads
+    #    пуст здесь и в норме сразу после переезда в fallback, поэтому панель
+    #    дёргаем только для этих кандидатов, а не для всей таблицы.
+    # ----------------------------------------------------------------
+    stuck_result = await db.execute(
+        select(Subscription)
+        .options(selectinload(Subscription.user))
+        .where(
+            and_(
+                Subscription.status == SubscriptionStatus.ACTIVE.value,
+                Subscription.expiry_fallback_active.is_(False),
+                Subscription.traffic_fallback_active.is_(False),
+                or_(
+                    Subscription.remnawave_id.is_not(None),
+                    Subscription.remnawave_short_uuid.is_not(None),
+                ),
+                # Пустой connected_squads отбираем В SQL, а не в Python. Если
+                # фильтровать после LIMIT, то на базе в тысячи активных подписок
+                # застрявшие в выборку почти никогда не попадут и страховка
+                # окажется декоративной. JSON-равенство пустому списку
+                # непереносимо между Postgres и SQLite, поэтому сравниваем
+                # текстовое представление — оно одинаково в обоих.
+                or_(
+                    Subscription.connected_squads.is_(None),
+                    cast(Subscription.connected_squads, String).in_(('[]', 'null', '[ ]')),
+                ),
+            )
+        )
+        .order_by(Subscription.id)
+        .limit(50)
+    )
+    # Python-фильтр оставлен как страховка на случай экзотического
+    # представления пустого JSON, которое не покрылось условием выше.
+    stuck_candidates = [sub for sub in stuck_result.scalars().all() if not sub.connected_squads]
+
+    for sub in stuck_candidates:
+        try:
+            rw_user = await _get_remnawave_user(sub.remnawave_id, db=db, subscription=sub)
+            if rw_user is None:
+                continue
+            current_squads = set(
+                _extract_squad_uuids(getattr(rw_user, 'active_internal_squads', None))
+            )
+            if fallback_uuid not in current_squads:
+                continue  # реально не в fallback-скваде — не наш случай
+
+            target_squads = list(sub.pre_expiry_squads or [])
+            if not target_squads and settings.DEFAULT_SQUAD_UUID:
+                target_squads = [settings.DEFAULT_SQUAD_UUID]
+            if not target_squads:
+                logger.warning(
+                    'Reconcile stuck-no-flags: нет цели восстановления '
+                    '(ни снимка pre_expiry_squads, ни DEFAULT_SQUAD_UUID)',
+                    subscription_id=sub.id,
+                )
+                continue
+
+            ok = await _patch_user_full(
+                sub.remnawave_id,
+                squads=target_squads,
+                verify_squad_in=target_squads,
+                db=db,
+                subscription=sub,
+            )
+            if ok:
+                stats['restored_stuck_no_flags'] += 1
+                logger.info(
+                    '✅ Reconcile: восстановлена «застрявшая без флагов» fallback-подписка',
+                    subscription_id=sub.id,
+                    restored_squads=target_squads,
+                )
+            else:
+                stats['errors'] += 1
+        except Exception as exc:
+            stats['errors'] += 1
+            logger.error('Reconcile stuck-no-flags error', subscription_id=sub.id, error=str(exc))
 
     if any(v > 0 for v in stats.values() if isinstance(v, int)):
         logger.info('🔁 Reconcile fallback подписок завершён', **stats)

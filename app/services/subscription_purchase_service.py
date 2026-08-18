@@ -1410,10 +1410,12 @@ class MiniAppSubscriptionPurchaseService:
                     sync_squads=True,
                 )
 
-            # Снимаем fallback-флаги если подписка была в fallback (после покупки уже в нормальных сквадах).
+            # Реально восстанавливаем сквады в панели, если подписка была в fallback
+            # (пустой connected_squads не гарантирует, что create/update выше отправили
+            # active_internal_squads — см. restore_fallback_after_purchase).
             try:
-                from app.services.expiry_fallback_service import clear_fallback_after_purchase
-                await clear_fallback_after_purchase(db, subscription)
+                from app.services.expiry_fallback_service import restore_fallback_after_purchase
+                await restore_fallback_after_purchase(db, subscription)
             except Exception as clear_err:
                 logger.warning('Failed to clear fallback flags after purchase', error=str(clear_err))
         except Exception as remnawave_error:  # pragma: no cover - defensive logging
