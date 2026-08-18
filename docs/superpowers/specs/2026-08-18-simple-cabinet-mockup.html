@@ -1,0 +1,1304 @@
+<title>Простой режим кабинета</title>
+<style>
+:root{
+  --ground:#F2F5F4; --surface:#FFFFFF; --surface-2:#E9EEED; --sunk:#F7F9F8;
+  --ink:#141F1D; --ink-2:#4A5C59; --ink-3:#7C8D8A;
+  --line:#DBE3E1; --line-soft:#E8EDEC;
+  --accent:#0E7C7B; --accent-ink:#FFFFFF; --accent-soft:#DDEDEC; --accent-line:#B6D8D6;
+  --ok:#2E9E5B; --ok-soft:#E0F2E7;
+  --warn:#B0770F; --warn-soft:#F7EBD3;
+  --danger:#B94A40; --danger-soft:#F7E3E1;
+  --frame:#C9D3D1;
+  --shadow:0 1px 2px rgba(20,31,29,.05), 0 14px 40px rgba(20,31,29,.10);
+  --ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0B1211; --surface:#151F1D; --surface-2:#1E2A28; --sunk:#111A19;
+    --ink:#E7EEEC; --ink-2:#A2B2AF; --ink-3:#788986;
+    --line:#25322F; --line-soft:#1D2827;
+    --accent:#37A8A4; --accent-ink:#05201F; --accent-soft:#11312F; --accent-line:#255450;
+    --ok:#4FBB7C; --ok-soft:#102E1F;
+    --warn:#D5A044; --warn-soft:#2F2611;
+    --danger:#DF6A5E; --danger-soft:#331B18;
+    --frame:#2C3937;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 16px 44px rgba(0,0,0,.45);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0B1211; --surface:#151F1D; --surface-2:#1E2A28; --sunk:#111A19;
+  --ink:#E7EEEC; --ink-2:#A2B2AF; --ink-3:#788986;
+  --line:#25322F; --line-soft:#1D2827;
+  --accent:#37A8A4; --accent-ink:#05201F; --accent-soft:#11312F; --accent-line:#255450;
+  --ok:#4FBB7C; --ok-soft:#102E1F;
+  --warn:#D5A044; --warn-soft:#2F2611;
+  --danger:#DF6A5E; --danger-soft:#331B18;
+  --frame:#2C3937;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 16px 44px rgba(0,0,0,.45);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:var(--mono); font-size:14px; line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1640px; margin:0 auto; padding:48px 24px 80px}
+
+/* ---------- page chrome ---------- */
+.masthead{display:flex; flex-direction:column; gap:14px; max-width:70ch; margin-bottom:44px}
+.eyebrow{
+  font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--accent); font-weight:600;
+}
+.masthead h1{
+  font-family:var(--ui); font-size:clamp(28px,4vw,40px); line-height:1.1;
+  letter-spacing:-.022em; margin:0; font-weight:680; text-wrap:balance;
+}
+.lede{margin:0; color:var(--ink-2); font-size:14px; line-height:1.65}
+.lede b{color:var(--ink); font-weight:600}
+
+.grid{
+  display:grid; gap:40px 28px;
+  grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+  align-items:start;
+}
+.slot{display:flex; flex-direction:column; gap:14px; align-items:center}
+.slot-head{width:100%; max-width:372px; display:flex; flex-direction:column; gap:3px}
+.slot-name{
+  font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--ink); font-weight:600;
+}
+.slot-note{font-size:12px; color:var(--ink-3); line-height:1.5}
+
+.section-head{
+  margin:64px 0 30px; padding-top:30px; border-top:1px solid var(--line);
+  display:flex; flex-direction:column; gap:9px; max-width:70ch;
+}
+.section-head h2{
+  font-family:var(--ui); font-size:24px; font-weight:680; letter-spacing:-.02em; margin:0;
+}
+.section-head p{margin:0; color:var(--ink-2); font-size:13.5px; line-height:1.65}
+.section-head p b{color:var(--ink); font-weight:600}
+
+/* ---------- phone ---------- */
+.phone{
+  width:100%; max-width:372px; min-height:748px;
+  background:var(--surface); border:1px solid var(--frame); border-radius:34px;
+  box-shadow:var(--shadow); overflow:hidden;
+  display:flex; flex-direction:column;
+  font-family:var(--ui); font-size:15px; line-height:1.45;
+}
+.screen{flex:1; display:flex; flex-direction:column; gap:16px; padding:18px 16px 8px; overflow:hidden}
+
+.topbar{display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:26px}
+.brand{
+  font-family:var(--mono); font-size:11px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--ink-3); font-weight:600;
+}
+.screen-title{font-size:24px; font-weight:680; letter-spacing:-.02em; margin:0}
+.chip-mode{
+  font-family:var(--mono); font-size:10px; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--accent); background:var(--accent-soft); border:1px solid var(--accent-line);
+  border-radius:999px; padding:3px 9px; font-weight:600; white-space:nowrap;
+}
+
+/* cards */
+.card{
+  background:var(--surface); border:1px solid var(--line);
+  border-radius:18px; padding:16px;
+}
+.card-hero{background:var(--sunk); border-color:var(--line); padding:18px}
+.card-invite{background:var(--accent-soft); border-color:var(--accent-line)}
+
+.status-line{display:flex; align-items:center; gap:8px; margin-bottom:12px}
+.dot{width:8px; height:8px; border-radius:50%; background:var(--ok); flex:none;
+  box-shadow:0 0 0 4px var(--ok-soft)}
+.status-text{font-size:13px; font-weight:640; color:var(--ok); letter-spacing:.01em}
+.dot.idle{background:var(--ink-3); box-shadow:0 0 0 4px var(--surface-2)}
+.status-text.idle{color:var(--ink-3)}
+.dot.warn{background:var(--warn); box-shadow:0 0 0 4px var(--warn-soft)}
+.status-text.warn{color:var(--warn)}
+.card-warn{background:var(--warn-soft); border-color:transparent}
+.card-ok{background:var(--ok-soft); border-color:transparent}
+.seal{
+  width:58px; height:58px; border-radius:50%; background:var(--ok); color:var(--surface);
+  display:flex; align-items:center; justify-content:center; margin:2px auto 14px;
+}
+.seal svg{width:30px; height:30px; stroke:currentColor; fill:none; stroke-width:2.4; stroke-linecap:round; stroke-linejoin:round}
+.centered{text-align:center}
+.seal-warn{background:var(--warn)}
+.stepper{display:flex; align-items:center; gap:12px; flex:none}
+.step-btn{
+  width:34px; height:34px; border-radius:11px; border:1px solid var(--line);
+  background:var(--surface); color:var(--ink);
+  display:flex; align-items:center; justify-content:center;
+  font-size:19px; font-weight:600; line-height:1;
+}
+.step-btn.off{color:var(--ink-3); opacity:.45}
+.step-val{font-size:19px; font-weight:680; font-variant-numeric:tabular-nums; min-width:22px; text-align:center}
+.sumrow{display:flex; align-items:center; gap:12px; padding:10px 0; border-top:1px solid var(--line-soft)}
+.sumrow:first-child{border-top:none; padding-top:0}
+.sumrow:last-child{padding-bottom:0}
+.sumrow .row-main{flex:1; min-width:0}
+.field{
+  flex:1; min-width:0; display:flex; align-items:center; gap:2px;
+  border:1.5px solid var(--accent); border-radius:11px; padding:8px 10px;
+  background:var(--surface); font-size:15px; font-weight:560;
+}
+.caret{width:1.5px; height:17px; background:var(--accent); display:inline-block; margin-left:1px}
+.tick{
+  width:22px; height:22px; border-radius:7px; border:1.5px solid var(--line);
+  flex:none; display:flex; align-items:center; justify-content:center; color:var(--surface);
+}
+.tick.on{background:var(--accent); border-color:var(--accent)}
+.tick svg{width:13px; height:13px; stroke:currentColor; fill:none; stroke-width:3; stroke-linecap:round; stroke-linejoin:round}
+.btn-danger{background:var(--danger-soft); color:var(--danger); border-color:transparent}
+.amount{
+  display:flex; align-items:center; justify-content:center; gap:2px;
+  border:1.5px solid var(--accent); border-radius:16px; padding:18px 16px;
+  font-size:30px; font-weight:700; letter-spacing:-.03em; font-variant-numeric:tabular-nums;
+}
+.amount .caret{height:30px; width:2px}
+.chips{display:flex; flex-wrap:wrap; gap:8px}
+.chip{
+  border:1px solid var(--line); border-radius:12px; padding:9px 13px; background:var(--surface);
+  font-size:14px; font-weight:620; font-variant-numeric:tabular-nums; white-space:nowrap;
+}
+.chip.sel{border-color:var(--accent); background:var(--accent-soft); color:var(--accent)}
+.chip small{display:block; font-size:10.5px; font-weight:500; color:var(--ink-3); letter-spacing:0; margin-top:1px}
+.chip.sel small{color:var(--accent)}
+.timer{
+  font-family:var(--mono); font-size:11.5px; color:var(--warn); font-weight:600;
+  letter-spacing:.02em;
+}
+
+.big{font-size:31px; font-weight:700; letter-spacing:-.03em; line-height:1.05; font-variant-numeric:tabular-nums}
+.sub{font-size:13.5px; color:var(--ink-2); margin-top:5px}
+
+.bar{height:6px; border-radius:99px; background:var(--surface-2); overflow:hidden; margin-top:14px}
+.bar > i{display:block; height:100%; border-radius:99px; background:var(--accent)}
+.bar.warnbar > i{background:var(--warn)}
+
+/* buttons */
+.btn{
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  width:100%; border-radius:14px; padding:15px 16px;
+  font-family:var(--ui); font-size:16px; font-weight:640; letter-spacing:-.01em;
+  border:1px solid transparent; cursor:default; text-decoration:none;
+}
+.btn-primary{background:var(--accent); color:var(--accent-ink)}
+.btn-ghost{background:var(--surface); color:var(--ink); border-color:var(--line)}
+.btn-outline{background:transparent; color:var(--accent); border-color:var(--accent-line)}
+.btn-sm{padding:11px 14px; font-size:14px; border-radius:12px}
+
+.pairbtn{display:flex; gap:9px}
+.pairbtn .btn{width:auto; flex:1}
+
+/* metric tiles */
+.tiles{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+.tiles-3{grid-template-columns:repeat(3,1fr)}
+.tile{background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:13px 13px 14px}
+.tile-label{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); font-weight:600}
+.tile-value{font-size:19px; font-weight:680; letter-spacing:-.02em; margin-top:5px; font-variant-numeric:tabular-nums}
+.tile-value small{font-size:12.5px; font-weight:500; color:var(--ink-3); letter-spacing:0}
+
+/* list rows */
+.label{
+  font-family:var(--mono); font-size:10px; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--ink-3); font-weight:600; margin-bottom:9px; display:block;
+}
+.rows{display:flex; flex-direction:column; background:var(--surface); border:1px solid var(--line); border-radius:16px; overflow:hidden}
+.row{display:flex; align-items:center; gap:12px; padding:13px 14px; border-top:1px solid var(--line-soft)}
+.row:first-child{border-top:none}
+.row-main{flex:1; min-width:0}
+.row-title{font-size:15px; font-weight:560; letter-spacing:-.005em}
+.row-sub{font-size:12.5px; color:var(--ink-3); margin-top:2px}
+.row-value{font-size:15px; font-weight:640; font-variant-numeric:tabular-nums; white-space:nowrap}
+.row-value.pos{color:var(--ok)}
+.row-value.muted{color:var(--ink-3); font-weight:500; font-size:13px}
+.chev{color:var(--ink-3); flex:none}
+
+/* selectable options */
+.opts{display:flex; flex-direction:column; gap:9px}
+.opt{
+  display:flex; align-items:center; gap:12px;
+  border:1px solid var(--line); border-radius:15px; padding:13px 14px; background:var(--surface);
+}
+.opt.sel{border-color:var(--accent); background:var(--accent-soft)}
+.opt.off{opacity:.5}
+.radio{width:19px; height:19px; border-radius:50%; border:1.5px solid var(--line); flex:none; position:relative}
+.opt.sel .radio{border-color:var(--accent); border-width:6px}
+.opt-main{flex:1; min-width:0}
+.opt-title{font-size:15px; font-weight:600; letter-spacing:-.005em}
+.opt-sub{font-size:12.5px; color:var(--ink-3); margin-top:2px}
+.opt-price{font-size:16px; font-weight:680; font-variant-numeric:tabular-nums; white-space:nowrap}
+.save{
+  font-family:var(--mono); font-size:10px; font-weight:700; letter-spacing:.05em;
+  color:var(--ok); background:var(--ok-soft); border-radius:6px; padding:2px 6px; margin-left:7px;
+  vertical-align:2px; white-space:nowrap;
+}
+
+/* total + toggle */
+.total{display:flex; align-items:baseline; justify-content:space-between; padding:2px 2px 0}
+.total-label{font-size:14px; color:var(--ink-2)}
+.total-value{font-size:26px; font-weight:700; letter-spacing:-.03em; font-variant-numeric:tabular-nums}
+
+.toggle{width:42px; height:25px; border-radius:99px; background:var(--surface-2); flex:none; position:relative}
+.toggle > i{position:absolute; top:3px; left:3px; width:19px; height:19px; border-radius:50%; background:var(--surface); box-shadow:0 1px 3px rgba(0,0,0,.25)}
+.toggle.on{background:var(--accent)}
+.toggle.on > i{left:20px}
+
+.linkline{
+  text-align:center; font-size:13.5px; color:var(--accent); font-weight:560;
+  padding:2px 0 4px;
+}
+.hint{font-size:12px; color:var(--ink-3); line-height:1.5; padding:0 2px}
+
+.linkbox{
+  font-family:var(--mono); font-size:12px; color:var(--ink);
+  background:var(--surface); border:1px solid var(--accent-line); border-radius:11px;
+  padding:10px 11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.linkgroup{display:flex; flex-direction:column; gap:5px; margin-bottom:10px}
+.linkcap{
+  font-family:var(--mono); font-size:10px; letter-spacing:.11em; text-transform:uppercase;
+  color:var(--accent); font-weight:600; opacity:.85;
+}
+.linkrow{display:flex; gap:7px; align-items:stretch}
+.linkrow .linkbox{flex:1; min-width:0; display:flex; align-items:center}
+
+.avatar{
+  width:52px; height:52px; border-radius:50%; flex:none;
+  background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent);
+  display:flex; align-items:center; justify-content:center;
+  font-size:17px; font-weight:680; letter-spacing:.02em;
+}
+.pill{
+  font-family:var(--mono); font-size:10px; letter-spacing:.07em; text-transform:uppercase;
+  font-weight:700; border-radius:999px; padding:3px 8px; white-space:nowrap;
+}
+.pill-ok{color:var(--ok); background:var(--ok-soft)}
+.pill-warn{color:var(--warn); background:var(--warn-soft)}
+.mini{
+  font-family:var(--ui); font-size:13px; font-weight:600; border-radius:10px;
+  padding:7px 11px; border:1px solid var(--line); background:var(--surface); color:var(--ink-2); white-space:nowrap;
+}
+.mini-danger{color:var(--danger); border-color:var(--danger-soft); background:var(--danger-soft)}
+.mini-accent{color:var(--accent-ink); background:var(--accent); border-color:var(--accent)}
+
+.spacer{flex:1}
+
+/* tab bar */
+.tabs{
+  display:grid; grid-template-columns:repeat(4,1fr);
+  border-top:1px solid var(--line); background:var(--surface);
+  padding:9px 6px 20px;
+}
+.tab{display:flex; flex-direction:column; align-items:center; gap:4px; color:var(--ink-3)}
+.tab span{font-size:10.5px; font-weight:600; letter-spacing:.005em}
+.tab.act{color:var(--accent)}
+.tab svg{width:23px; height:23px; stroke:currentColor; fill:none; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round}
+
+/* notes */
+.notes{
+  margin-top:56px; display:grid; gap:22px;
+  grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+  border-top:1px solid var(--line); padding-top:34px;
+}
+.note h2{
+  font-family:var(--ui); font-size:16px; font-weight:660; letter-spacing:-.01em; margin:0 0 10px;
+}
+.note ul{margin:0; padding-left:17px; color:var(--ink-2); font-size:13px; line-height:1.7}
+.note li{margin-bottom:5px}
+.note li b{color:var(--ink); font-weight:600}
+.note p{margin:0; color:var(--ink-2); font-size:13px; line-height:1.7}
+
+@media (prefers-reduced-motion: reduce){*{animation:none !important; transition:none !important}}
+</style>
+
+<div class="wrap">
+
+  <div class="masthead">
+    <div class="eyebrow">Статичный рендер · без функционала</div>
+    <h1>Простой режим кабинета</h1>
+    <p class="lede">Четыре экрана, четыре задачи. Каждый экран отвечает на один вопрос и ведёт к одному действию: <b>подключиться</b>, <b>оплатить</b>, <b>пригласить и вывести</b>, <b>управлять входом</b>. Оплата встроена в шаг покупки — уходить в баланс и возвращаться не нужно. Возможности не урезаны, сокращено число решений на экран.</p>
+  </div>
+
+  <div class="grid">
+
+    <!-- ============ ГЛАВНАЯ ============ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Главная</div>
+        <div class="slot-note">Работает ли подписка и как подключить устройство</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar">
+            <div class="brand">Бедолага VPN</div>
+            <div class="chip-mode">Простой режим</div>
+          </div>
+
+          <div class="card card-hero">
+            <div class="status-line"><span class="dot"></span><span class="status-text">Подключено</span></div>
+            <div class="big">Осталось 24 дня</div>
+            <div class="sub">Подписка активна до 9 сентября</div>
+            <div class="bar"><i style="width:62%"></i></div>
+          </div>
+
+          <div class="btn btn-primary">Подключить устройство</div>
+          <div class="pairbtn">
+            <div class="btn btn-ghost btn-sm">Показать QR-код</div>
+            <div class="btn btn-ghost btn-sm">Скопировать ссылку</div>
+          </div>
+          <div class="linkline">Поделиться подпиской</div>
+
+          <div class="tiles">
+            <div class="tile">
+              <div class="tile-label">Трафик</div>
+              <div class="tile-value">84 <small>из 200 ГБ</small></div>
+              <div class="bar"><i style="width:42%"></i></div>
+            </div>
+            <div class="tile">
+              <div class="tile-label" style="display:flex; align-items:center; justify-content:space-between">
+                <span>Устройства</span>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+              </div>
+              <div class="tile-value">5 <small>из 5</small></div>
+              <div class="bar warnbar"><i style="width:100%"></i></div>
+            </div>
+          </div>
+
+          <div class="rows">
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">Баланс</div>
+                <div class="row-sub">Нажмите, чтобы пополнить</div>
+              </div>
+              <div class="row-value">340 ₽</div>
+              <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            </div>
+          </div>
+
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab act"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ ПОДПИСКА ============ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Подписка</div>
+        <div class="slot-note">Период, устройства и оплата на одном экране</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar"><h2 class="screen-title">Подписка</h2></div>
+
+          <div class="card">
+            <div class="status-line"><span class="dot"></span><span class="status-text">Активна</span></div>
+            <div class="row-title" style="font-size:16px">До 9 сентября 2026</div>
+            <div class="row-sub">Тариф «Стандарт» · 5 устройств · 200 ГБ</div>
+          </div>
+
+          <div>
+            <span class="label">Продлить на</span>
+            <div class="opts">
+              <div class="opt"><span class="radio"></span><div class="opt-main"><div class="opt-title">1 месяц</div></div><div class="opt-price">249 ₽</div></div>
+              <div class="opt sel"><span class="radio"></span><div class="opt-main"><div class="opt-title">3 месяца <span class="save">−13%</span></div><div class="opt-sub">216 ₽ в месяц</div></div><div class="opt-price">649 ₽</div></div>
+              <div class="opt"><span class="radio"></span><div class="opt-main"><div class="opt-title">6 месяцев <span class="save">−20%</span></div><div class="opt-sub">198 ₽ в месяц</div></div><div class="opt-price">1 190 ₽</div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="sumrow">
+              <div class="row-main">
+                <div class="row-title">Устройства</div>
+                <div class="row-sub">Три включены в тариф, каждое следующее — 180 ₽ за 3 месяца</div>
+              </div>
+              <div class="stepper">
+                <span class="step-btn">−</span>
+                <span class="step-val">5</span>
+                <span class="step-btn">+</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="rows">
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">Продлевать автоматически</div>
+                <div class="row-sub">Спишем 1 009 ₽ 9 сентября</div>
+              </div>
+              <span class="toggle on"><i></i></span>
+            </div>
+          </div>
+          <div class="hint" style="margin-top:-6px">Списываем <b>только с баланса кабинета</b> — карту и банк для этого не трогаем. Держите нужную сумму на балансе к дате списания, иначе продления не будет.</div>
+
+          <div>
+            <span class="label">Чем пополнить</span>
+            <div class="opts">
+              <div class="opt sel"><span class="radio"></span><div class="opt-main"><div class="opt-title">СБП</div><div class="opt-sub">По QR из приложения банка</div></div></div>
+              <div class="opt"><span class="radio"></span><div class="opt-main"><div class="opt-title">Банковская карта</div></div></div>
+              <div class="opt"><span class="radio"></span><div class="opt-main"><div class="opt-title">Криптовалюта</div></div></div>
+            </div>
+            <div class="hint" style="margin-top:9px">Список зависит от способов, включённых в админке.</div>
+          </div>
+
+          <div class="card">
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:500">3 месяца · 5 устройств</div><div class="row-sub">649 ₽ тариф + 360 ₽ за два места</div></div>
+              <div class="row-value">1 009 ₽</div>
+            </div>
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:500">Спишем с баланса</div><div class="row-sub">На балансе 340 ₽</div></div>
+              <div class="row-value">− 340 ₽</div>
+            </div>
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:680">Пополнить</div><div class="row-sub">Только недостающую часть</div></div>
+              <div class="row-value" style="font-size:19px; color:var(--warn)">669 ₽</div>
+            </div>
+          </div>
+
+          <div class="btn btn-primary">Пополнить 669 ₽ и включить</div>
+          <div class="hint">Подписка включится сразу после оплаты. Возвращаться сюда не нужно.</div>
+
+          <div class="rows">
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">История подписки</div>
+                <div class="row-sub">Покупки, продления и перерывы</div>
+              </div>
+              <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            </div>
+          </div>
+
+          <div class="linkline">Изменить трафик и страны</div>
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab act"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ ИСТОРИЯ ПОДПИСКИ ============ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">История подписки</div>
+        <div class="slot-note">Покупки и продления, а также перерывы и перенесённый остаток</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar"><h2 class="screen-title">История</h2></div>
+
+          <div class="card card-hero">
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:500">С вами с</div></div>
+              <div class="row-value">1 июня 2026</div>
+            </div>
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:500">Всего оплачено</div></div>
+              <div class="row-value">1 507 ₽</div>
+            </div>
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:500">Дней с подпиской</div></div>
+              <div class="row-value">78</div>
+            </div>
+          </div>
+
+          <div>
+            <span class="label">Все события</span>
+            <div class="rows">
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-title">Продление на 3 месяца</div>
+                  <div class="row-sub">18 августа · продлили до 9 декабря</div>
+                  <div class="row-sub" style="color:var(--accent)">Перенесли 24 дня остатка</div>
+                </div>
+                <div class="row-value">1 009 ₽</div>
+              </div>
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-title">Продление на 1 месяц</div>
+                  <div class="row-sub">12 июля · продлили до 11 августа</div>
+                </div>
+                <div class="row-value">249 ₽</div>
+              </div>
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-title">Покупка «Стандарт», 1 месяц</div>
+                  <div class="row-sub">8 июня · действовала до 8 июля</div>
+                  <div class="row-sub" style="color:var(--warn)">Перерыв 4 дня без подписки</div>
+                </div>
+                <div class="row-value">249 ₽</div>
+              </div>
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-title">Пробный период, 3 дня</div>
+                  <div class="row-sub">1 июня · действовал до 4 июня</div>
+                </div>
+                <div class="row-value muted">бесплатно</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="hint">«Перенесли остаток» — это дни, которые не сгорели при досрочном продлении. «Перерыв» — время, когда подписка не действовала.</div>
+
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab act"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ УСТРОЙСТВА ============ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Устройства</div>
+        <div class="slot-note">По плитке с главной: клиент, имя, последний запрос подписки, отключение</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar">
+            <h2 class="screen-title">Устройства</h2>
+            <span class="mini">Выбрать</span>
+          </div>
+
+          <div class="card card-hero">
+            <div class="big" style="font-size:26px">5 из 5</div>
+            <div class="sub">Свободных мест не осталось</div>
+            <div class="bar warnbar"><i style="width:100%"></i></div>
+          </div>
+
+          <div class="card card-invite">
+            <div class="row-title">Одно приложение — одно место</div>
+            <div class="row-sub" style="margin-top:5px; color:var(--ink-2)">Место занимает не телефон, а программа. Поставили на один телефон Happ, INCY или другие — каждая займёт своё место. Поэтому в списке рядом с названием указан клиент.</div>
+          </div>
+
+          <div class="rows">
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">Лимит устройств</div>
+                <div class="row-sub">Добавить место — 48 ₽ до 9 сентября</div>
+              </div>
+              <div class="row-value">5</div>
+              <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            </div>
+          </div>
+
+          <div class="hint" style="margin-top:-6px">Отключите ненужное, чтобы подключить новое. Доступ на нём пропадёт сразу.</div>
+
+          <div class="rows">
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">iPhone Миши</div>
+                <div class="row-sub">Happ · iOS · запрос сегодня, 08:41</div>
+              </div>
+              <span class="mini">Имя</span>
+            </div>
+            <div class="row">
+              <div class="field"><span>MacBook на работе</span><span class="caret"></span></div>
+              <span class="mini mini-accent">Готово</span>
+            </div>
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">Телевизор в зале</div>
+                <div class="row-sub">Happ · Android TV · запрос 14 августа</div>
+              </div>
+              <span class="mini">Имя</span>
+            </div>
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">iPad дома</div>
+                <div class="row-sub">Streisand · iPadOS · запрос 5 августа</div>
+              </div>
+              <span class="mini">Имя</span>
+            </div>
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">Redmi Note 12</div>
+                <div class="row-sub">INCY · Android · запрос 28 июля</div>
+              </div>
+              <span class="mini">Имя</span>
+            </div>
+          </div>
+
+          <div class="hint">Пока имя не задано, показываем модель устройства из панели. Нажмите «Имя», чтобы назвать по-своему — название видно только вам и сохраняется для всех ваших подписок. По дате последнего запроса подписки видно, каким устройством давно не пользовались.</div>
+
+          <div class="btn btn-danger btn-sm">Отключить все устройства</div>
+
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab act"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ УСТРОЙСТВА · ВЫБОР ============ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Устройства · выбрано несколько</div>
+        <div class="slot-note">Режим выбора для массового отключения</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar">
+            <h2 class="screen-title">Выбрано 2</h2>
+            <span class="mini">Отмена</span>
+          </div>
+
+          <div class="rows">
+            <div class="row">
+              <span class="tick on"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>
+              <div class="row-main">
+                <div class="row-title">iPhone Миши</div>
+                <div class="row-sub">Happ · iOS · запрос сегодня, 08:41</div>
+              </div>
+            </div>
+            <div class="row">
+              <span class="tick"></span>
+              <div class="row-main">
+                <div class="row-title">MacBook на работе</div>
+                <div class="row-sub">Happ · macOS · запрос вчера, 19:02</div>
+              </div>
+            </div>
+            <div class="row">
+              <span class="tick on"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>
+              <div class="row-main">
+                <div class="row-title">Телевизор в зале</div>
+                <div class="row-sub">Happ · Android TV · запрос 14 августа</div>
+              </div>
+            </div>
+            <div class="row">
+              <span class="tick"></span>
+              <div class="row-main">
+                <div class="row-title">iPad дома</div>
+                <div class="row-sub">Streisand · iPadOS · запрос 5 августа</div>
+              </div>
+            </div>
+            <div class="row">
+              <span class="tick"></span>
+              <div class="row-main">
+                <div class="row-title">Redmi Note 12</div>
+                <div class="row-sub">INCY · Android · запрос 28 июля</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="linkline">Выбрать все</div>
+
+          <div class="spacer"></div>
+
+          <div class="btn btn-danger">Отключить 2 устройства</div>
+          <div class="hint centered">Доступ на них пропадёт сразу. Подключить заново можно в любой момент.</div>
+        </div>
+        <div class="tabs">
+          <div class="tab act"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ ЛИМИТ УСТРОЙСТВ ============ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Лимит устройств</div>
+        <div class="slot-note">Цена и возврат считаются от оставшихся дней, отключаемое устройство выбирает человек</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar"><h2 class="screen-title">Лимит устройств</h2></div>
+
+          <div class="card card-hero">
+            <div class="sumrow">
+              <div class="row-main">
+                <div class="row-title">Сколько устройств</div>
+                <div class="row-sub">Сейчас 5, подключено 5 · подписка до 9 сентября</div>
+              </div>
+              <div class="stepper">
+                <span class="step-btn">−</span>
+                <span class="step-val">3</span>
+                <span class="step-btn">+</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:500">Даёт тариф</div><div class="row-sub">Ниже этого опуститься нельзя</div></div>
+              <div class="row-value">3 места</div>
+            </div>
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:500">Докуплено сверх тарифа</div></div>
+              <div class="row-value">2 места</div>
+            </div>
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:500">Освобождаете</div></div>
+              <div class="row-value">2 места</div>
+            </div>
+          </div>
+
+          <div class="card card-ok">
+            <div class="sumrow">
+              <div class="row-main">
+                <div class="row-title" style="font-weight:500">Возврат за одно место</div>
+                <div class="row-sub">60 ₽ за 30 дней, осталось 24</div>
+              </div>
+              <div class="row-value">48 ₽</div>
+            </div>
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:500">Освобождается мест</div></div>
+              <div class="row-value">× 2</div>
+            </div>
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:680">Вернём на баланс</div></div>
+              <div class="row-value" style="font-size:19px; color:var(--ok)">96 ₽</div>
+            </div>
+          </div>
+
+          <div>
+            <span class="label">Какие устройства отключить — выбрано 2 из 2</span>
+            <div class="rows">
+              <div class="row"><span class="tick"></span><div class="row-main"><div class="row-title">iPhone Миши</div><div class="row-sub">Happ · iOS · запрос сегодня, 08:41</div></div></div>
+              <div class="row"><span class="tick"></span><div class="row-main"><div class="row-title">MacBook на работе</div><div class="row-sub">Happ · macOS · запрос вчера, 19:02</div></div></div>
+              <div class="row"><span class="tick on"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span><div class="row-main"><div class="row-title">Телевизор в зале</div><div class="row-sub">Happ · Android TV · запрос 14 августа</div></div></div>
+              <div class="row"><span class="tick"></span><div class="row-main"><div class="row-title">iPad дома</div><div class="row-sub">Streisand · iPadOS · запрос 5 августа</div></div></div>
+              <div class="row"><span class="tick on"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span><div class="row-main"><div class="row-title">Redmi Note 12</div><div class="row-sub">INCY · Android · запрос 28 июля</div></div></div>
+            </div>
+            <div class="hint" style="margin-top:9px">Подключено 5, останется 3 — отметьте два устройства. Доступ на них пропадёт сразу, подключить заново можно в любой момент.</div>
+          </div>
+
+          <div class="btn btn-primary">Отключить 2 и вернуть 96 ₽</div>
+          <div class="linkline">Отмена</div>
+
+          <div class="hint">На пробной подписке лимит менять нельзя.</div>
+
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab act"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ ПОПОЛНЕНИЕ ============ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Баланс · пополнение</div>
+        <div class="slot-note">Открывается по строке «Баланс»: своя сумма или готовая из ваших тарифов</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar"><h2 class="screen-title">Пополнить</h2></div>
+
+          <div class="card">
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:500">Сейчас на балансе</div></div>
+              <div class="row-value">340 ₽</div>
+            </div>
+            <div class="sumrow">
+              <div class="row-main"><div class="row-title" style="font-weight:500">Станет после пополнения</div></div>
+              <div class="row-value" style="color:var(--ok)">989 ₽</div>
+            </div>
+          </div>
+
+          <div>
+            <span class="label">Сумма</span>
+            <div class="amount"><span>649</span><span class="caret"></span><span>&#8201;₽</span></div>
+          </div>
+
+          <div>
+            <span class="label">Или готовая сумма</span>
+            <div class="chips">
+              <span class="chip">249 ₽<small>1 месяц</small></span>
+              <span class="chip sel">649 ₽<small>3 месяца</small></span>
+              <span class="chip">1 190 ₽<small>6 месяцев</small></span>
+              <span class="chip">2 190 ₽<small>12 месяцев</small></span>
+            </div>
+            <div class="hint" style="margin-top:9px">Суммы равны цене ваших тарифов — пополнили и сразу купили, без остатка на балансе.</div>
+          </div>
+
+          <div>
+            <span class="label">Чем пополнить</span>
+            <div class="opts">
+              <div class="opt sel"><span class="radio"></span><div class="opt-main"><div class="opt-title">СБП</div><div class="opt-sub">От 100 ₽</div></div></div>
+              <div class="opt"><span class="radio"></span><div class="opt-main"><div class="opt-title">Банковская карта</div><div class="opt-sub">От 50 ₽</div></div></div>
+              <div class="opt"><span class="radio"></span><div class="opt-main"><div class="opt-title">Криптовалюта</div><div class="opt-sub">От 100 ₽</div></div></div>
+            </div>
+          </div>
+
+          <div class="btn btn-primary">Пополнить 649 ₽</div>
+          <div class="hint">У каждого способа свой минимум — если сумма меньше, способ станет недоступен.</div>
+
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab act"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ РЕФЕРАЛЫ ============ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Рефералы</div>
+        <div class="slot-note">Пригласить, увидеть кто пришёл и вывести заработанное</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar"><h2 class="screen-title">Рефералы</h2></div>
+
+          <div class="card card-invite">
+            <span class="label" style="color:var(--accent)">Ваши ссылки</span>
+            <div class="linkgroup">
+              <div class="linkcap">Регистрация через почту и другие сервисы</div>
+              <div class="linkrow">
+                <div class="linkbox">cabinet.example.ru/login?ref=8241</div>
+                <span class="mini">Копировать</span>
+              </div>
+            </div>
+            <div class="linkgroup">
+              <div class="linkcap">Регистрация через Телеграм</div>
+              <div class="linkrow">
+                <div class="linkbox">t.me/bedolaga_bot?start=ref8241</div>
+                <span class="mini">Копировать</span>
+              </div>
+            </div>
+            <div class="pairbtn" style="margin-top:12px">
+              <div class="btn btn-primary btn-sm">Отправить другу</div>
+              <div class="btn btn-ghost btn-sm">QR-код</div>
+            </div>
+          </div>
+
+          <div class="tiles tiles-3">
+            <div class="tile"><div class="tile-label">Пришли</div><div class="tile-value">7</div></div>
+            <div class="tile"><div class="tile-label">Заработано</div><div class="tile-value">1 240 <small>₽</small></div></div>
+            <div class="tile"><div class="tile-label">Доступно</div><div class="tile-value">890 <small>₽</small></div></div>
+          </div>
+
+          <div class="hint" style="margin-top:-4px">Вы получаете 25&nbsp;% с каждой оплаты приглашённого.</div>
+
+          <div class="card">
+            <div class="row-title">Вывод заработанного</div>
+            <div class="row-sub" style="margin-bottom:12px">Ещё 110 ₽ до минимальной суммы</div>
+            <div class="bar warnbar" style="margin-top:0"><i style="width:89%"></i></div>
+            <div class="btn btn-ghost btn-sm" style="margin-top:13px; opacity:.5">Вывести от 1 000 ₽</div>
+          </div>
+
+          <div>
+            <span class="label">Кто пришёл</span>
+            <div class="rows">
+              <div class="row"><div class="row-main"><div class="row-title">Алексей К.</div><div class="row-sub">12 августа · оплатил подписку</div></div><div class="row-value pos">+150 ₽</div></div>
+              <div class="row"><div class="row-main"><div class="row-title">Марина Д.</div><div class="row-sub">8 августа · оплатила подписку</div></div><div class="row-value pos">+150 ₽</div></div>
+              <div class="row"><div class="row-main"><div class="row-title">Игорь П.</div><div class="row-sub">2 августа · пополнил баланс</div></div><div class="row-value pos">+90 ₽</div></div>
+              <div class="row"><div class="row-main"><div class="row-title">Сергей В.</div><div class="row-sub">28 июля · ещё не оплатил</div></div><div class="row-value muted">ждём</div></div>
+            </div>
+          </div>
+
+          <div class="linkline">Показать всех — 7</div>
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab act"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ ПРОФИЛЬ ============ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Профиль</div>
+        <div class="slot-note">Способы входа, почта и возврат в полный интерфейс</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar"><h2 class="screen-title">Профиль</h2></div>
+
+          <div class="card" style="display:flex; align-items:center; gap:13px">
+            <div class="avatar">МК</div>
+            <div class="row-main">
+              <div class="row-title" style="font-size:17px">Михаил К.</div>
+              <div class="row-sub">@mihail · ID 8241</div>
+            </div>
+          </div>
+
+          <div>
+            <span class="label">Вход в аккаунт</span>
+            <div class="rows">
+              <div class="row">
+                <div class="row-main"><div class="row-title">Telegram</div><div class="row-sub">@mihail</div></div>
+                <span class="pill pill-ok">Привязан</span>
+              </div>
+              <div class="row">
+                <div class="row-main"><div class="row-title">Почта</div><div class="row-sub">mihail@example.com</div></div>
+                <span class="mini mini-danger">Отвязать</span>
+              </div>
+              <div class="row">
+                <div class="row-main"><div class="row-title">Яндекс ID</div><div class="row-sub">Вход одной кнопкой</div></div>
+                <span class="mini mini-accent">Привязать</span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <span class="label">Настройки</span>
+            <div class="rows">
+              <div class="row">
+                <div class="row-main"><div class="row-title">Простой интерфейс</div><div class="row-sub">Выключите, чтобы открыть все разделы</div></div>
+                <span class="toggle on"><i></i></span>
+              </div>
+              <div class="row">
+                <div class="row-main"><div class="row-title">Уведомления</div><div class="row-sub">Об окончании подписки</div></div>
+                <span class="toggle on"><i></i></span>
+              </div>
+              <div class="row">
+                <div class="row-main"><div class="row-title">Язык</div></div>
+                <div class="row-value muted">Русский</div>
+                <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+              </div>
+            </div>
+          </div>
+
+          <div class="rows">
+            <div class="row">
+              <div class="row-main"><div class="row-title">Админ-панель</div><div class="row-sub">Видна только администраторам</div></div>
+              <span class="pill pill-warn">Админ</span>
+              <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            </div>
+            <div class="row">
+              <div class="row-main"><div class="row-title">Поддержка</div><div class="row-sub">Отвечаем в течение часа</div></div>
+              <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            </div>
+            <div class="row">
+              <div class="row-main"><div class="row-title" style="color:var(--danger)">Выйти</div></div>
+            </div>
+          </div>
+
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab act"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="section-head">
+    <h2>Первый вход и корзина</h2>
+    <p>Те же четыре вкладки, другие состояния. Человек без подписки видит не пустоту, а один вопрос — и вопрос зависит от настроек: пробный период бывает <b>бесплатным, платным или вовсе недоступным</b>. Дальше, если денег не хватило, он пополняет <b>только недостающую разницу</b> и больше ничего не делает: подписка включается сама, экран обновляется на «готово, подключайтесь».</p>
+  </div>
+
+  <div class="grid">
+
+    <!-- ГЛАВНАЯ БЕЗ ПОДПИСКИ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Нет подписки · триал бесплатный</div>
+        <div class="slot-note">TRIAL_PAYMENT_ENABLED выключен — пробуют без денег</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar">
+            <div class="brand">Бедолага VPN</div>
+            <div class="chip-mode">Простой режим</div>
+          </div>
+
+          <div class="card card-hero">
+            <div class="status-line"><span class="dot idle"></span><span class="status-text idle">Подписки нет</span></div>
+            <div class="big">Подключитесь за минуту</div>
+            <div class="sub">Три дня бесплатно — проверить, что всё работает</div>
+          </div>
+
+          <div class="btn btn-primary">Попробовать 3 дня бесплатно</div>
+          <div class="btn btn-ghost btn-sm">Выбрать тариф</div>
+          <div class="hint">Карта не нужна, деньги не спишем. Пробный период даётся один раз.</div>
+
+          <div>
+            <span class="label">Что в пробном периоде</span>
+            <div class="rows">
+              <div class="row"><div class="row-main"><div class="row-title">3 дня доступа</div></div></div>
+              <div class="row"><div class="row-main"><div class="row-title">10 ГБ трафика</div></div></div>
+              <div class="row"><div class="row-main"><div class="row-title">2 устройства</div></div></div>
+            </div>
+          </div>
+
+          <div class="hint">Дальше — обычный тариф от 198 ₽ в месяц.</div>
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab act"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- ГЛАВНАЯ БЕЗ ПОДПИСКИ · ПЛАТНЫЙ ТРИАЛ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Нет подписки · триал платный</div>
+        <div class="slot-note">Цена стоит в кнопке, а не всплывает после нажатия</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar">
+            <div class="brand">Бедолага VPN</div>
+            <div class="chip-mode">Простой режим</div>
+          </div>
+
+          <div class="card card-hero">
+            <div class="status-line"><span class="dot idle"></span><span class="status-text idle">Подписки нет</span></div>
+            <div class="big">Подключитесь за минуту</div>
+            <div class="sub">Три дня за 10 ₽ — проверить, что всё работает</div>
+          </div>
+
+          <div class="btn btn-primary">Попробовать 3 дня за 10 ₽</div>
+          <div class="btn btn-ghost btn-sm">Выбрать тариф</div>
+          <div class="hint">Разовое списание 10 ₽. Само ничего не продлится.</div>
+
+          <div>
+            <span class="label">Что в пробном периоде</span>
+            <div class="rows">
+              <div class="row"><div class="row-main"><div class="row-title">3 дня доступа</div></div></div>
+              <div class="row"><div class="row-main"><div class="row-title">10 ГБ трафика</div></div></div>
+              <div class="row"><div class="row-main"><div class="row-title">2 устройства</div></div></div>
+              <div class="row"><div class="row-main"><div class="row-title">Стоимость</div></div><div class="row-value">10 ₽</div></div>
+            </div>
+          </div>
+
+          <div class="rows">
+            <div class="row">
+              <div class="row-main"><div class="row-title">Баланс</div><div class="row-sub">Хватает — спишем сразу</div></div>
+              <div class="row-value">340 ₽</div>
+            </div>
+          </div>
+
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab act"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- КОРЗИНА -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Ждём оплату</div>
+        <div class="slot-note">Человек ушёл в банк и вернулся — экран объясняет, что будет</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar"><h2 class="screen-title">Оплата</h2></div>
+
+          <div class="card card-warn centered">
+            <div class="seal seal-warn"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 7.6V12l3 1.8"/></svg></div>
+            <div class="big" style="font-size:24px">Ждём подтверждение</div>
+            <div class="sub" style="color:var(--ink-2)">Обычно меньше минуты. Банк может думать дольше.</div>
+          </div>
+
+          <div>
+            <span class="label">Что произойдёт дальше</span>
+            <div class="rows">
+              <div class="row"><div class="row-main"><div class="row-title">Пополним баланс</div></div><div class="row-value pos">+ 669 ₽</div></div>
+              <div class="row"><div class="row-main"><div class="row-title">Спишем за подписку</div><div class="row-sub">3 месяца · 5 устройств</div></div><div class="row-value">− 1 009 ₽</div></div>
+              <div class="row"><div class="row-main"><div class="row-title">Включим подписку</div><div class="row-sub">Автоматически, без вашего участия</div></div></div>
+            </div>
+          </div>
+
+          <div class="hint">Экран можно закрыть. Мы включим подписку сами и пришлём уведомление в Телеграм.</div>
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab act"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- УСПЕХ -->
+    <div class="slot">
+      <div class="slot-head">
+        <div class="slot-name">Готово</div>
+        <div class="slot-note">Экран сам обновился: подписка включена, можно подключаться</div>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="topbar">
+            <div class="brand">Бедолага VPN</div>
+            <div class="chip-mode">Простой режим</div>
+          </div>
+
+          <div class="card card-ok centered">
+            <div class="seal"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></div>
+            <div class="big" style="font-size:26px">Подписка активна</div>
+            <div class="sub" style="color:var(--ink-2)">3 месяца · 5 устройств · до 9 декабря</div>
+          </div>
+
+          <div class="btn btn-primary">Подключить устройство</div>
+          <div class="pairbtn">
+            <div class="btn btn-ghost btn-sm">Показать QR-код</div>
+            <div class="btn btn-ghost btn-sm">Скопировать ссылку</div>
+          </div>
+
+          <div>
+            <span class="label">Что произошло</span>
+            <div class="rows">
+              <div class="row"><div class="row-main"><div class="row-title">Пополнение</div><div class="row-sub">СБП · 20:14</div></div><div class="row-value pos">+ 669 ₽</div></div>
+              <div class="row"><div class="row-main"><div class="row-title">Оплата подписки</div><div class="row-sub">Автоматически · 20:14</div></div><div class="row-value">− 1 009 ₽</div></div>
+              <div class="row"><div class="row-main"><div class="row-title">Остаток на балансе</div></div><div class="row-value">0 ₽</div></div>
+            </div>
+          </div>
+
+          <div class="hint">Историю всех операций видно в расширенном режиме.</div>
+          <div class="spacer"></div>
+        </div>
+        <div class="tabs">
+          <div class="tab act"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3.5 19 6.2V12c0 4.1-2.8 7.5-7 8.5-4.2-1-7-4.4-7-8.5V6.2z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg><span>Подписка</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><path d="M16.2 5.2a3.3 3.3 0 0 1 0 6.2"/><path d="M17.6 14.4A6.2 6.2 0 0 1 21.2 20"/></svg><span>Рефералы</span></div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/></svg><span>Профиль</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="notes">
+    <div class="note">
+      <h2>Что изменилось по сравнению с текущим кабинетом</h2>
+      <ul>
+        <li><b>Оплата внутри покупки.</b> Сейчас нужно уйти в пополнение баланса, к провайдеру и вернуться. Здесь способ оплаты выбирается на том же экране.</li>
+        <li><b>Визард свёрнут в один экран.</b> Вместо пяти шагов — период, оплата, кнопка. Трафик, устройства и страны берутся из текущего тарифа, меняются по ссылке внизу.</li>
+        <li><b>История подписки переехала на видное место.</b> Эндпоинт <code>GET /cabinet/subscription/timeline</code> уже есть и уже считает <code>downtime_seconds</code> и <code>carried_seconds</code> — перерывы и перенесённый остаток. Именно они объясняют дыры в датах, из-за которых люди пишут «а куда делись мои дни».</li>
+        <li><b>Устройства управляются с главной.</b> Плитка «4 из 5» стала кнопкой: список, переименование, отключение по одному или разом. Сейчас это спрятано в деталях подписки.</li>
+        <li><b>Подключение — главный объект.</b> Не кнопка внутри карточки, а самое крупное действие на первом экране.</li>
+        <li><b>Меню 11 пунктов → 4.</b> Каждый пункт — задача человека, а не раздел системы.</li>
+        <li><b>Автопродление списывает только с баланса кабинета.</b> Это отдельный механизм от провайдерского рекуррента по карте или СБП, и включение одного выключает другой. В простом режиме показываем только баланс — и прямо пишем это под тумблером, иначе человек ждёт списания с карты и остаётся без подписки.</li>
+        <li><b>Тема и цвета наследуются</b> от основного кабинета — тот же брендинг, те же светлая и тёмная темы. Палитра на макете нейтральная и настоящие цвета не заменяет.</li>
+        <li><b>Админ не теряет админку.</b> Вход в панель остаётся в Профиле и в простом режиме — переключаться в расширенный ради него не нужно.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h2>Что уезжает в расширенный режим</h2>
+      <ul>
+        <li>Колесо удачи, Конкурсы, Опросы</li>
+        <li>Подарить подписку, Спонсорская оплата</li>
+        <li>Информация, Новости, Купоны</li>
+        <li>Отдельная страница баланса и сохранённые карты</li>
+        <li>Выбор стран, серверов и точная настройка трафика</li>
+      </ul>
+      <p style="margin-top:10px">Ничего не удаляется — всё возвращается тумблером в Профиле.</p>
+    </div>
+    <div class="note">
+      <h2>Что нужно доработать в боте под этот экран</h2>
+      <ul>
+        <li><b>Пропорциональный возврат за место.</b> <code>POST /devices/reduce</code> сегодня помечен как «no refund». Возврат считаем той же формулой, что и покупку — <code>уплаченное × оставшиеся_дни / оплаченные_дни</code>, — иначе разойдутся две арифметики. Деньги возвращаются на баланс, не наружу.</li>
+        <li><b>Выбор отключаемых устройств.</b> Сейчас <code>reduce</code> молча сносит подключившиеся последними. Нужно принимать список <code>hwid</code> и проверять, что после отключения останется ровно новый лимит. Количество отмеченных устройств и количество освобождаемых мест — <b>разные величины</b>: если подключено меньше, чем текущий лимит, отключать придётся меньше, чем освобождается мест, и экран обязан считать это сам, а не требовать от человека.</li>
+        <li><b>Идемпотентность.</b> Уменьшение теперь меняет баланс и отключает устройства одной операцией — повтор запроса не должен вернуть деньги дважды.</li>
+        <li><b>Что с местами из тарифа.</b> Возврат положен только за докупленные сверх тарифа места. Опускаться ниже тарифного минимума нельзя, так что этот случай в возврат не попадает.</li>
+        <li><b>Bulk-удаление устройств.</b> Отдельно от лимита: <code>DELETE /devices</code> сносит все, выборочного нет. Нужен эндпоинт, принимающий список hwid.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h2>Пополнение: минимумы решают больше, чем кажется</h2>
+      <ul>
+        <li><b>Готовых сумм в конфиге нет.</b> Сетку предлагаю считать из цен действующих тарифов: пополнил ровно на тариф — купил без остатка на балансе. Это новая логика, её надо написать.</li>
+        <li><b>У каждого способа свой минимум:</b> YooKassa и CloudPayments от 50 ₽, MulenPay, Pal24, Platega, WATA, FreeKassa и прочие — от 100 ₽. Способ, который не примет введённую сумму, должен гаснуть сразу, а не отваливаться после перехода к провайдеру.</li>
+        <li><b>Отсюда же старый баг с 10 ₽.</b> Платный триал за 10 ₽ при нулевом балансе нельзя оплатить «разницей»: 10 ₽ ниже минимума любого способа. Значит для дешёвых покупок интерфейс обязан предлагать минимум способа, а не разницу, и честно говорить, что часть денег останется на балансе.</li>
+        <li><b><code>AUTO_PURCHASE_AFTER_TOPUP_ENABLED</code> по умолчанию выключен</b> (<code>app/config.py:697</code>). Всё обещание «подписка включится сама» держится на нём — в простом режиме он обязан быть включён, иначе экраны врут.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h2>Устройства: API уже готов, им просто не пользуются</h2>
+      <ul>
+        <li><code>GET /devices</code>, <code>PATCH /devices/{hwid}/name</code>, <code>DELETE /devices/{hwid}</code>, <code>DELETE /devices</code> — всё это в боте уже есть.</li>
+        <li><b>Имя привязано к паре «юзер + устройство»</b>, а не к подписке: переименовал один раз — видно во всех своих подписках. Пустое имя сбрасывает алиас.</li>
+        <li><b>Название клиента надо дотащить до кабинета.</b> В панели оно есть — <code>userAgent</code> в HWID-записи и в истории запросов подписки (<code>remnawave_api.py:951</code>), — но <code>formatted_devices</code> собирает только hwid, platform, device_model и дату. Без клиента список выглядит как перечень телефонов, и человек не понимает, почему их «больше, чем у него есть».</li>
+        <li><b>Устройство — это приложение, а не телефон.</b> Каждая установка получает свой hwid, поэтому Happ, INCY и любые другие клиенты на одном телефоне занимают по месту каждый. Это главный источник непонимания, и объяснение должно стоять прямо в списке, а не в справке.</li>
+        <li><b>Пустых названий в списке быть не должно.</b> <code>local_name</code> равен <code>null</code>, только пока алиас не задан — тогда показываем модель из панели (<code>deviceModel || model || name</code>). Заглушку «Без названия» не показываем никогда.</li>
+        <li><b>Выборочного массового удаления в API нет.</b> <code>DELETE /devices</code> сносит все. Режим выбора придётся собирать из N запросов по одному hwid либо заводить bulk-эндпоинт — это решение стоит принять до реализации.</li>
+        <li>Отключение освобождает место сразу — экран говорит об этом до нажатия, а не после.</li>
+        <li><b>Дата последнего запроса подписки</b> у устройства уже приходит: <code>updatedAt || lastSeen || createdAt</code>. По ней человек сам поймёт, какое устройство можно отключить без сожалений.</li>
+        <li><b>Лимит меняется в обе стороны, и это тоже готово:</b> <code>GET /devices/price</code> + <code>POST /devices/purchase</code> на увеличение, <code>GET /devices/reduction-info</code> + <code>POST /devices/reduce</code> на уменьшение.</li>
+        <li><b>Цена места пропорциональна остатку подписки</b> и фиксированной цифрой в интерфейсе быть не может: <code>device_price × devices × days_left / 30</code> (<code>devices.py:850</code>). Купил на полмесяца — заплатил половину. Экран показывает цену на сегодня и говорит, за сколько дней она посчитана.</li>
+        <li><b>Две правки в боте, без них экран лимита не собрать.</b> Сегодня <code>reduce</code> не возвращает денег и сам сносит устройства, подключившиеся последними — оба поведения меняются.</li>
+        <li>Нижняя граница уменьшения — лимит устройств тарифа, а не единица (<code>ALLOW_DEVICES_BELOW_TARIFF_LIMIT</code> возвращает старое поведение). На пробной подписке уменьшение запрещено вовсе.</li>
+        <li>Увеличение платное и списывается с баланса, поэтому при нехватке денег оно идёт тем же кругом, что и покупка: <code>cart_mode: add_devices</code>.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h2>Пробный период: три состояния, а не одно</h2>
+      <ul>
+        <li><b>Бесплатный.</b> <code>TRIAL_PAYMENT_ENABLED=false</code> — кнопка обещает «бесплатно» и обязана это сдержать: ни карты, ни списаний.</li>
+        <li><b>Платный.</b> Флаг включён и <code>TRIAL_ACTIVATION_PRICE &gt; 0</code> — цена стоит прямо в кнопке. Узнать о ней после нажатия — худший из возможных сценариев для новичка.</li>
+        <li><b>Недоступен.</b> <code>TRIAL_DISABLED_FOR</code> = <code>email</code> / <code>telegram</code> / <code>all</code> отключает триал по способу входа. Тогда первая кнопка просто исчезает, «Выбрать тариф» становится главной, и экран не должен упоминать пробный период вообще.</li>
+        <li>Параметры берутся из своих настроек и отличаются от платных тарифов: 3 дня, 10 ГБ, 2 устройства.</li>
+        <li><b>Платный триал — это покупка.</b> При нулевом балансе он идёт ровно тем же кругом: пополнить разницу → включить. Здесь и жил баг с пополнением на 10 ₽, которое не активировало подписку.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h2>Корзина работает, но человек её не видит</h2>
+      <ul>
+        <li><b>Никаких «вернуться к корзине».</b> Нажал «Купить» → не хватило → пополнил разницу → подписка включилась. Одна прямая линия, без промежуточного экрана заказа.</li>
+        <li><b>Пополняется разница, а не полная сумма.</b> Баланс не пропадает: 340 ₽ уходят в счёт покупки, к оплате остаётся 669 ₽ — и это видно в разбивке до нажатия кнопки.</li>
+        <li><b>Флаг намерения ставит та же кнопка.</b> Без него авто-покупка после пополнения молча не сработает — деньги списаны, подписки нет. Это внутренняя механика, наружу она выходить не должна.</li>
+        <li><b>После оплаты экран обновляется сам</b> и показывает подключение. Медленная оплата (банк, 3DS, крипта — до часа) получает промежуточный экран «ждём подтверждение», а не тишину.</li>
+        <li>Пробная подписка идёт тем же путём: <code>trial_purchase</code> — такой же режим корзины, как платная покупка.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h2>Правила, которые экран «Рефералы» обязан объяснить</h2>
+      <ul>
+        <li><b>Вывод от 1 000 ₽</b>, не чаще раза в 30 дней, одна активная заявка. Сейчас человек узнаёт об этом, только упёршись в отказ.</li>
+        <li><b>Заявку подтверждает админ вручную</b> — от «отправил» до «получил» проходит время, и это надо показывать статусом.</li>
+        <li><b>Выводится только реферальный заработок</b>, не весь баланс кошелька.</li>
+        <li><b>Анкета партнёра для вывода не нужна</b> — это отдельный B2B-инструмент, он уезжает в расширенный режим.</li>
+        <li>Два списка — приглашённые и история начислений — слиты в один. Это упрощение, а не текущее поведение.</li>
+      </ul>
+    </div>
+  </div>
+
+</div>
