@@ -302,6 +302,15 @@ async def _prepare_auto_extend_context(
         )
         return None
 
+    # Не продлевать замороженную подписку
+    if getattr(subscription, 'is_frozen', False):
+        logger.debug(
+            '🔁 Автопокупка: пропускаем продление — подписка заморожена',
+            subscription_id=subscription.id,
+            format_user_id=_format_user_id(user),
+        )
+        return None
+
     period_days = _safe_int(cart_data.get('period_days'))
 
     if period_days <= 0:
@@ -2522,6 +2531,15 @@ async def try_auto_extend_expired_after_topup(
             '🔄 Автопродление expired: пропуск — автоплатёж пользователем не включён',
             format_user_id=_format_user_id(user),
             subscription_id=getattr(subscription, 'id', None),
+        )
+        return False
+
+    # Не продлевать замороженную подписку
+    if getattr(subscription, 'is_frozen', False):
+        logger.debug(
+            '🔄 Автопродление expired: пропуск — подписка заморожена',
+            format_user_id=_format_user_id(user),
+            user_id=user.id,
         )
         return False
 

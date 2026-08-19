@@ -295,3 +295,74 @@ async def test_unfreeze_idempotent():
     assert sub.end_date == original_end_date
     # flush не вызывался
     db.flush.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Задача 5 — пропуск автопродления при заморозке
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_auto_extend_skipped_when_frozen():
+    """_auto_extend_subscription возвращает False без списания при is_frozen=True."""
+    from app.services.subscription_auto_purchase_service import _auto_extend_subscription
+
+    user = make_user()
+    frozen_sub = make_subscription(is_frozen=True, status='disabled')
+    db = AsyncMock()
+
+    # cart_data без subscription_id → стандартный путь get_subscription_by_user_id
+    cart_data = {'period_days': '30'}
+
+    with (
+        patch(
+            'app.services.subscription_auto_purchase_service.settings'
+        ) as mock_settings,
+        patch(
+            'app.database.crud.subscription.get_subscription_by_user_id',
+            new_callable=AsyncMock,
+            return_value=frozen_sub,
+        ),
+        patch(
+            'app.services.subscription_auto_purchase_service.subtract_user_balance',
+            new_callable=AsyncMock,
+        ) as mock_charge,
+    ):
+        mock_settings.is_multi_tariff_enabled.return_value = False
+        mock_settings.is_tariffs_mode.return_value = False
+
+        result = await _auto_extend_subscription(db=db, user=user, cart_data=cart_data)
+
+    assert result is False
+    mock_charge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_topup_extend_skipped_when_frozen():
+    """try_auto_extend_expired_after_topup возвращает False при is_frozen=True."""
+    from app.services.subscription_auto_purchase_service import try_auto_extend_expired_after_topup
+
+    user = make_user()
+    frozen_sub = make_subscription(is_frozen=True, status='expired')
+    frozen_sub.autopay_enabled = True
+    db = AsyncMock()
+
+    with (
+        patch(
+            'app.services.subscription_auto_purchase_service.settings'
+        ) as mock_settings,
+        patch(
+            'app.database.crud.subscription.get_subscription_by_user_id',
+            new_callable=AsyncMock,
+            return_value=frozen_sub,
+        ),
+        patch(
+            'app.services.subscription_auto_purchase_service.subtract_user_balance',
+            new_callable=AsyncMock,
+        ) as mock_charge,
+    ):
+        mock_settings.is_multi_tariff_enabled.return_value = False
+
+        result = await try_auto_extend_expired_after_topup(db=db, user=user)
+
+    assert result is False
+    mock_charge.assert_not_awaited()
