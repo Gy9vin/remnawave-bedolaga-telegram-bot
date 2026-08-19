@@ -51,6 +51,40 @@ def _freeze_payload():
 # freeze endpoint — success
 # ---------------------------------------------------------------------------
 
+async def test_subscription_data_freeze_fields_present():
+    """SubscriptionData содержит freeze_subscriptions_enabled из settings."""
+    from unittest.mock import patch as mock_patch
+    from app.cabinet.schemas.subscription import SubscriptionData
+    from datetime import date
+
+    data = SubscriptionData(
+        id=1,
+        status='active',
+        is_trial=False,
+        start_date=datetime(2026, 1, 1, tzinfo=UTC),
+        end_date=datetime(2027, 1, 1, tzinfo=UTC),
+        days_left=365,
+        hours_left=0,
+        minutes_left=0,
+        time_left_display='365d',
+        traffic_limit_gb=100,
+        traffic_used_gb=0.0,
+        traffic_used_percent=0.0,
+        device_limit=3,
+        connected_squads=[],
+        servers=[],
+        autopay_enabled=False,
+        autopay_days_before=3,
+        is_active=True,
+        is_expired=False,
+        freeze_subscriptions_enabled=True,
+    )
+    assert data.freeze_subscriptions_enabled is True
+    assert data.is_frozen is False
+    assert data.frozen_days_banked is None
+    assert data.frozen_auto_unfreeze_at is None
+
+
 async def test_freeze_endpoint_200():
     """Успешная заморозка: status 200, is_frozen=True, frozen_days_banked возвращён."""
     sub = _make_sub(is_frozen=False)

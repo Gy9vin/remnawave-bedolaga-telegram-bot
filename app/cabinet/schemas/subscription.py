@@ -78,6 +78,7 @@ class SubscriptionData(BaseModel):
     is_frozen: bool = False
     frozen_days_banked: int | None = None
     frozen_auto_unfreeze_at: datetime | None = None
+    freeze_subscriptions_enabled: bool = False
 
     class Config:
         from_attributes = True
