@@ -7699,20 +7699,32 @@ async def freeze_subscription_endpoint(
 
     user = await _authorize_miniapp_user(payload.init_data, db)
     subs = getattr(user, 'subscriptions', None) or []
-    subscription = next(
-        (s for s in subs if getattr(s, 'status', None) in ('active', 'trial')), None
-    )
-    if not subscription:
-        # Если активной/пробной нет, но есть уже замороженная — передаём её в сервис:
-        # _validate_freeze_preconditions бросит FreezeNotAllowedError('already_frozen') → 422.
-        frozen_sub = next((s for s in subs if getattr(s, 'is_frozen', False)), None)
-        if frozen_sub:
-            subscription = frozen_sub
-        else:
+
+    if payload.subscription_id is not None:
+        # Multi-tariff: искать конкретную подписку пользователя по id
+        subscription = next(
+            (s for s in subs if getattr(s, 'id', None) == payload.subscription_id), None
+        )
+        if not subscription:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail={'code': 'no_subscription', 'message': 'No active subscription found'},
+                detail={'code': 'no_subscription', 'message': 'Subscription not found'},
             )
+    else:
+        subscription = next(
+            (s for s in subs if getattr(s, 'status', None) in ('active', 'trial')), None
+        )
+        if not subscription:
+            # Если активной/пробной нет, но есть уже замороженная — передаём её в сервис:
+            # _validate_freeze_preconditions бросит FreezeNotAllowedError('already_frozen') → 422.
+            frozen_sub = next((s for s in subs if getattr(s, 'is_frozen', False)), None)
+            if frozen_sub:
+                subscription = frozen_sub
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={'code': 'no_subscription', 'message': 'No active subscription found'},
+                )
 
     try:
         await SubscriptionService().freeze_subscription(user=user, subscription=subscription, db=db)
@@ -7742,14 +7754,26 @@ async def unfreeze_subscription_endpoint(
 
     user = await _authorize_miniapp_user(payload.init_data, db)
     subs = getattr(user, 'subscriptions', None) or []
-    subscription = next(
-        (s for s in subs if getattr(s, 'is_frozen', False)), None
-    )
-    if not subscription:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={'code': 'no_frozen_subscription', 'message': 'No frozen subscription found'},
+
+    if payload.subscription_id is not None:
+        # Multi-tariff: искать конкретную подписку пользователя по id
+        subscription = next(
+            (s for s in subs if getattr(s, 'id', None) == payload.subscription_id), None
         )
+        if not subscription:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={'code': 'no_frozen_subscription', 'message': 'Subscription not found'},
+            )
+    else:
+        subscription = next(
+            (s for s in subs if getattr(s, 'is_frozen', False)), None
+        )
+        if not subscription:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={'code': 'no_frozen_subscription', 'message': 'No frozen subscription found'},
+            )
 
     try:
         await SubscriptionService().unfreeze_subscription(

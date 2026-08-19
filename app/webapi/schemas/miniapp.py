@@ -708,9 +708,10 @@ class MiniAppDailySubscriptionToggleResponse(BaseModel):
 
 
 class MiniAppSubscriptionFreezeRequest(BaseModel):
-    """Запрос на заморозку подписки (тело пустое, только init_data)."""
+    """Запрос на заморозку подписки."""
 
     init_data: str = Field(...)
+    subscription_id: int | None = None
 
 
 class MiniAppSubscriptionFreezeResponse(BaseModel):
@@ -724,9 +725,10 @@ class MiniAppSubscriptionFreezeResponse(BaseModel):
 
 
 class MiniAppSubscriptionUnfreezeRequest(BaseModel):
-    """Запрос на разморозку подписки (тело пустое, только init_data)."""
+    """Запрос на разморозку подписки."""
 
     init_data: str = Field(...)
+    subscription_id: int | None = None
 
 
 class MiniAppSubscriptionUnfreezeResponse(BaseModel):

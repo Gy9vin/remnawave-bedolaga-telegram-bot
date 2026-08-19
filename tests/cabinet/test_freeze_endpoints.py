@@ -11,7 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.webapi.routes.miniapp import freeze_subscription_endpoint, unfreeze_subscription_endpoint
-from app.webapi.schemas.miniapp import MiniAppSubscriptionFreezeRequest
+from app.webapi.schemas.miniapp import MiniAppSubscriptionFreezeRequest, MiniAppSubscriptionUnfreezeRequest
 
 
 UTC = timezone.utc
@@ -52,10 +52,8 @@ def _freeze_payload():
 # ---------------------------------------------------------------------------
 
 async def test_subscription_data_freeze_fields_present():
-    """SubscriptionData содержит freeze_subscriptions_enabled из settings."""
-    from unittest.mock import patch as mock_patch
+    """SubscriptionData содержит freeze_subscriptions_enabled и freeze_min_days_remaining из settings."""
     from app.cabinet.schemas.subscription import SubscriptionData
-    from datetime import date
 
     data = SubscriptionData(
         id=1,
@@ -78,8 +76,11 @@ async def test_subscription_data_freeze_fields_present():
         is_active=True,
         is_expired=False,
         freeze_subscriptions_enabled=True,
+        freeze_min_days_remaining=3,
     )
     assert data.freeze_subscriptions_enabled is True
+    assert data.freeze_min_days_remaining == 3
+    assert data.days_left == 365
     assert data.is_frozen is False
     assert data.frozen_days_banked is None
     assert data.frozen_auto_unfreeze_at is None
@@ -113,6 +114,64 @@ async def test_freeze_endpoint_200():
     assert response.frozen_auto_unfreeze_at == _FUTURE
     assert response.new_end_date == _END_DATE
     db.commit.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# freeze endpoint — успех с явным subscription_id (multi-tariff)
+# ---------------------------------------------------------------------------
+
+async def test_freeze_endpoint_200_with_subscription_id():
+    """Заморозка с явным subscription_id=1 из двух подписок пользователя."""
+    sub1 = _make_sub(is_frozen=False)  # id=1
+    sub2 = SimpleNamespace(
+        id=2, status='active', is_frozen=False,
+        frozen_days_banked=0, frozen_auto_unfreeze_at=None, end_date=_END_DATE,
+    )
+    user = SimpleNamespace(id=42, subscriptions=[sub1, sub2], balance_kopeks=0)
+    db = _fake_db()
+
+    async def fake_freeze(user, subscription, db):
+        subscription.is_frozen = True
+        subscription.frozen_days_banked = 10
+        subscription.frozen_auto_unfreeze_at = _FUTURE
+
+    payload = MiniAppSubscriptionFreezeRequest(init_data='test_init_data', subscription_id=1)
+
+    with patch(
+        'app.webapi.routes.miniapp._authorize_miniapp_user',
+        new_callable=AsyncMock,
+        return_value=user,
+    ), patch(
+        'app.services.subscription_service.SubscriptionService.freeze_subscription',
+        side_effect=fake_freeze,
+    ):
+        response = await freeze_subscription_endpoint(payload=payload, db=db)
+
+    # Должны заморозить именно sub1 (id=1)
+    assert response.success is True
+    assert response.is_frozen is True
+    assert response.frozen_days_banked == 10
+    # sub2 не должна быть тронута
+    assert sub2.is_frozen is False
+
+
+async def test_freeze_endpoint_404_wrong_subscription_id():
+    """subscription_id не принадлежит пользователю → HTTP 404."""
+    sub = _make_sub(is_frozen=False)
+    user = _make_user(sub)
+    db = _fake_db()
+
+    payload = MiniAppSubscriptionFreezeRequest(init_data='test_init_data', subscription_id=999)
+
+    with patch(
+        'app.webapi.routes.miniapp._authorize_miniapp_user',
+        new_callable=AsyncMock,
+        return_value=user,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await freeze_subscription_endpoint(payload=payload, db=db)
+
+    assert exc_info.value.status_code == 404
 
 
 # ---------------------------------------------------------------------------

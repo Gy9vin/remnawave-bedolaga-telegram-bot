@@ -243,4 +243,5 @@ def _subscription_to_response(
         frozen_days_banked=getattr(subscription, 'frozen_days_banked', None),
         frozen_auto_unfreeze_at=getattr(subscription, 'frozen_auto_unfreeze_at', None),
         freeze_subscriptions_enabled=settings.FREEZE_SUBSCRIPTIONS_ENABLED,
+        freeze_min_days_remaining=settings.FREEZE_MIN_DAYS_REMAINING,
     )

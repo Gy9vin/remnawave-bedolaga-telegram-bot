@@ -20,21 +20,44 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _get_freeze_confirm_keyboard(language: str) -> InlineKeyboardMarkup:
-    """Клавиатура подтверждения заморозки."""
+def _parse_freeze_sub_id(callback_data: str | None) -> int | None:
+    """Извлечь sub_id из callback_data вида 'prefix:{sub_id}'. None если не задан."""
+    if not callback_data:
+        return None
+    parts = callback_data.split(':')
+    if len(parts) == 2:
+        try:
+            return int(parts[1])
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def _resolve_subscription(db_user, sub_id: int | None):
+    """Найти подписку по sub_id или вернуть первую (db_user.subscription)."""
+    if sub_id is not None:
+        subs = getattr(db_user, 'subscriptions', None) or []
+        found = next((s for s in subs if getattr(s, 'id', None) == sub_id), None)
+        return found  # None если не нашли — вызывающий обработает
+    return db_user.subscription
+
+
+def _get_freeze_confirm_keyboard(language: str, sub_id: int | None = None) -> InlineKeyboardMarkup:
+    """Клавиатура подтверждения заморозки. sub_id прокидывается в callback_data."""
     texts = get_texts(language)
+    suffix = f':{sub_id}' if sub_id is not None else ''
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text=texts.t('FREEZE_CONFIRM_YES', '✅ Заморозить'),
-                    callback_data='subscription_freeze_confirm',
+                    callback_data=f'subscription_freeze_confirm{suffix}',
                 )
             ],
             [
                 InlineKeyboardButton(
                     text=texts.t('FREEZE_CONFIRM_CANCEL', '❌ Отмена'),
-                    callback_data='subscription_freeze_cancel',
+                    callback_data=f'subscription_freeze_cancel{suffix}',
                 )
             ],
         ]
@@ -92,10 +115,9 @@ async def handle_freeze_request(callback: types.CallbackQuery, db_user: User, db
         await callback.answer()
         return
 
-    # В multi-tariff режиме: для простоты берём subscription из db_user
-    # (в single-tariff mode это db_user.subscription)
+    sub_id = _parse_freeze_sub_id(callback.data)
     await db.refresh(db_user)
-    subscription = db_user.subscription
+    subscription = _resolve_subscription(db_user, sub_id)
 
     if not subscription:
         await callback.answer(texts.t('NO_SUBSCRIPTION_ERROR', '❌ У вас нет активной подписки'), show_alert=True)
@@ -120,7 +142,7 @@ async def handle_freeze_request(callback: types.CallbackQuery, db_user: User, db
     try:
         await callback.message.edit_text(
             confirm_text,
-            reply_markup=_get_freeze_confirm_keyboard(db_user.language),
+            reply_markup=_get_freeze_confirm_keyboard(db_user.language, sub_id=sub_id),
             parse_mode='HTML',
         )
     except TelegramBadRequest:
@@ -138,8 +160,9 @@ async def handle_freeze_confirm(callback: types.CallbackQuery, db_user: User, db
         await callback.answer()
         return
 
+    sub_id = _parse_freeze_sub_id(callback.data)
     await db.refresh(db_user)
-    subscription = db_user.subscription
+    subscription = _resolve_subscription(db_user, sub_id)
 
     if not subscription:
         await callback.answer(texts.t('NO_SUBSCRIPTION_ERROR', '❌ У вас нет активной подписки'), show_alert=True)
@@ -193,12 +216,13 @@ async def handle_freeze_confirm(callback: types.CallbackQuery, db_user: User, db
 
     # Клавиатура после заморозки: кнопка "Разморозить" + "Назад"
     texts_obj = get_texts(db_user.language)
+    _unfreeze_suffix = f':{sub_id}' if sub_id is not None else ''
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text=texts_obj.t('UNFREEZE_BUTTON', '▶️ Разморозить подписку'),
-                    callback_data='subscription_unfreeze',
+                    callback_data=f'subscription_unfreeze{_unfreeze_suffix}',
                 )
             ],
             [
@@ -235,8 +259,9 @@ async def handle_unfreeze(callback: types.CallbackQuery, db_user: User, db: Asyn
         await callback.answer()
         return
 
+    sub_id = _parse_freeze_sub_id(callback.data)
     await db.refresh(db_user)
-    subscription = db_user.subscription
+    subscription = _resolve_subscription(db_user, sub_id)
 
     if not subscription:
         await callback.answer(texts.t('NO_SUBSCRIPTION_ERROR', '❌ У вас нет активной подписки'), show_alert=True)
@@ -297,7 +322,9 @@ async def handle_unfreeze(callback: types.CallbackQuery, db_user: User, db: Asyn
 
 def register_handlers(dp: Dispatcher) -> None:
     """Зарегистрировать freeze/unfreeze хендлеры в диспетчере."""
-    dp.callback_query.register(handle_freeze_request, F.data == 'subscription_freeze_request')
-    dp.callback_query.register(handle_freeze_confirm, F.data == 'subscription_freeze_confirm')
-    dp.callback_query.register(handle_freeze_cancel, F.data == 'subscription_freeze_cancel')
-    dp.callback_query.register(handle_unfreeze, F.data == 'subscription_unfreeze')
+    # Фильтр startswith: поддерживает как 'subscription_freeze_request' (фолбэк),
+    # так и 'subscription_freeze_request:{sub_id}' (multi-tariff).
+    dp.callback_query.register(handle_freeze_request, F.data.startswith('subscription_freeze_request'))
+    dp.callback_query.register(handle_freeze_confirm, F.data.startswith('subscription_freeze_confirm'))
+    dp.callback_query.register(handle_freeze_cancel, F.data.startswith('subscription_freeze_cancel'))
+    dp.callback_query.register(handle_unfreeze, F.data.startswith('subscription_unfreeze'))

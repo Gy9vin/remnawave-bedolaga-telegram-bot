@@ -1298,12 +1298,18 @@ def get_subscription_keyboard(
                 from app.database.models import SubscriptionStatus
 
                 is_frozen = getattr(subscription, 'is_frozen', False)
+                # Всегда кладём sub_id в callback, чтобы действие было однозначным
+                _freeze_sub_suffix = (
+                    f':{subscription.id}'
+                    if subscription and hasattr(subscription, 'id') and subscription.id is not None
+                    else ''
+                )
                 if is_frozen:
                     keyboard.append(
                         [
                             InlineKeyboardButton(
                                 text=texts.t('UNFREEZE_BUTTON', '▶️ Разморозить подписку'),
-                                callback_data='subscription_unfreeze',
+                                callback_data=f'subscription_unfreeze{_freeze_sub_suffix}',
                             )
                         ]
                     )
@@ -1316,7 +1322,7 @@ def get_subscription_keyboard(
                         [
                             InlineKeyboardButton(
                                 text=texts.t('FREEZE_BUTTON', '❄️ Заморозить подписку'),
-                                callback_data='subscription_freeze_request',
+                                callback_data=f'subscription_freeze_request{_freeze_sub_suffix}',
                             )
                         ]
                     )
