@@ -707,6 +707,30 @@ class MiniAppDailySubscriptionToggleResponse(BaseModel):
     balance_label: str = ''
 
 
+class MiniAppSubscriptionFreezeRequest(BaseModel):
+    """Запрос на заморозку подписки (тело пустое, только init_data)."""
+
+    init_data: str = Field(...)
+
+
+class MiniAppSubscriptionFreezeResponse(BaseModel):
+    """Ответ на заморозку подписки."""
+
+    success: bool = True
+    is_frozen: bool = False
+    frozen_days_banked: int | None = None
+    frozen_auto_unfreeze_at: datetime | None = None
+    new_end_date: datetime
+
+
+class MiniAppSubscriptionUnfreezeResponse(BaseModel):
+    """Ответ на разморозку подписки."""
+
+    success: bool = True
+    is_frozen: bool = False
+    new_end_date: datetime
+
+
 class MiniAppTrafficPurchase(BaseModel):
     """Докупка трафика с индивидуальной датой истечения."""
 

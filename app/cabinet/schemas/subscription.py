@@ -74,6 +74,10 @@ class SubscriptionData(BaseModel):
     expiry_fallback_active: bool = False
     traffic_fallback_active: bool = False
     fallback_reason: str | None = None  # 'expired' | 'traffic' | None
+    # Freeze fields
+    is_frozen: bool = False
+    frozen_days_banked: int | None = None
+    frozen_auto_unfreeze_at: datetime | None = None
 
     class Config:
         from_attributes = True

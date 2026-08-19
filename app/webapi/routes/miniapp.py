@@ -195,6 +195,9 @@ from ..schemas.miniapp import (
     MiniAppTariffSwitchResponse,
     MiniAppTrafficTopupRequest,
     MiniAppTransaction,
+    MiniAppSubscriptionFreezeRequest,
+    MiniAppSubscriptionFreezeResponse,
+    MiniAppSubscriptionUnfreezeResponse,
 )
 
 
@@ -7682,4 +7685,78 @@ async def toggle_daily_subscription_pause_endpoint(
         is_paused=new_paused_state,
         balance_kopeks=user.balance_kopeks,
         balance_label=settings.format_price(user.balance_kopeks),
+    )
+
+
+@router.post('/cabinet/subscription/freeze')
+async def freeze_subscription_endpoint(
+    payload: MiniAppSubscriptionFreezeRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Заморозить активную подписку пользователя."""
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    user = await _authorize_miniapp_user(payload.init_data, db)
+    subs = getattr(user, 'subscriptions', None) or []
+    subscription = next(
+        (s for s in subs if getattr(s, 'status', None) in ('active', 'trial')), None
+    )
+    if not subscription:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={'code': 'no_subscription', 'message': 'No active subscription found'},
+        )
+
+    try:
+        await SubscriptionService().freeze_subscription(user=user, subscription=subscription, db=db)
+        await db.commit()
+    except FreezeNotAllowedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={'error_code': e.reason},
+        )
+
+    return MiniAppSubscriptionFreezeResponse(
+        success=True,
+        is_frozen=subscription.is_frozen,
+        frozen_days_banked=subscription.frozen_days_banked,
+        frozen_auto_unfreeze_at=subscription.frozen_auto_unfreeze_at,
+        new_end_date=subscription.end_date,
+    )
+
+
+@router.post('/cabinet/subscription/unfreeze')
+async def unfreeze_subscription_endpoint(
+    payload: MiniAppSubscriptionFreezeRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Разморозить замороженную подписку пользователя."""
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    user = await _authorize_miniapp_user(payload.init_data, db)
+    subs = getattr(user, 'subscriptions', None) or []
+    subscription = next(
+        (s for s in subs if getattr(s, 'is_frozen', False)), None
+    )
+    if not subscription:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={'code': 'no_frozen_subscription', 'message': 'No frozen subscription found'},
+        )
+
+    try:
+        await SubscriptionService().unfreeze_subscription(
+            user=user, subscription=subscription, db=db, reason='manual'
+        )
+        await db.commit()
+    except FreezeNotAllowedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={'error_code': e.reason},
+        )
+
+    return MiniAppSubscriptionUnfreezeResponse(
+        success=True,
+        is_frozen=False,
+        new_end_date=subscription.end_date,
     )
