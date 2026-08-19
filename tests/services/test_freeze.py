@@ -366,3 +366,126 @@ async def test_topup_extend_skipped_when_frozen():
 
     assert result is False
     mock_charge.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _check_frozen_subscriptions_for_auto_unfreeze (MonitoringService cron)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_auto_unfreeze_cron_triggers():
+    """Подписка с frozen_auto_unfreeze_at в прошлом → unfreeze_subscription вызван с reason='auto'."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.monitoring_service import MonitoringService
+
+    now = datetime.now(UTC)
+    sub = make_subscription(is_frozen=True)
+    sub.frozen_at = now - timedelta(days=30)
+    sub.frozen_auto_unfreeze_at = now - timedelta(seconds=1)  # в прошлом
+    user = make_user()
+    sub.user = user
+
+    db = AsyncMock()
+    mock_unfreeze = AsyncMock()
+
+    with (
+        patch(
+            'app.services.monitoring_service.get_subscriptions_for_auto_unfreeze',
+            new_callable=AsyncMock,
+            return_value=[sub],
+        ),
+        patch.object(
+            MonitoringService,
+            '__init__',
+            lambda self: None,
+        ),
+    ):
+        service = MonitoringService.__new__(MonitoringService)
+        service.subscription_service = MagicMock()
+        service.subscription_service.unfreeze_subscription = mock_unfreeze
+
+        await service._check_frozen_subscriptions_for_auto_unfreeze(db)
+
+    mock_unfreeze.assert_awaited_once_with(
+        user=user, subscription=sub, db=db, reason='auto'
+    )
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_unfreeze_cron_skips_future():
+    """CRUD вернул пустой список (будущая дата) → unfreeze не вызван."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.monitoring_service import MonitoringService
+
+    db = AsyncMock()
+    mock_unfreeze = AsyncMock()
+
+    with (
+        patch(
+            'app.services.monitoring_service.get_subscriptions_for_auto_unfreeze',
+            new_callable=AsyncMock,
+            return_value=[],  # CRUD уже отфильтровал будущие даты
+        ),
+        patch.object(
+            MonitoringService,
+            '__init__',
+            lambda self: None,
+        ),
+    ):
+        service = MonitoringService.__new__(MonitoringService)
+        service.subscription_service = MagicMock()
+        service.subscription_service.unfreeze_subscription = mock_unfreeze
+
+        await service._check_frozen_subscriptions_for_auto_unfreeze(db)
+
+    mock_unfreeze.assert_not_awaited()
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_unfreeze_cron_rollback_on_error():
+    """При ошибке unfreeze_subscription → rollback; вторая подписка всё равно обрабатывается."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.monitoring_service import MonitoringService
+
+    now = datetime.now(UTC)
+    sub1 = make_subscription(is_frozen=True)
+    sub1.frozen_at = now - timedelta(days=30)
+    sub1.frozen_auto_unfreeze_at = now - timedelta(seconds=1)
+    sub1.user = make_user()
+
+    sub2 = make_subscription(is_frozen=True)
+    sub2.frozen_at = now - timedelta(days=30)
+    sub2.frozen_auto_unfreeze_at = now - timedelta(seconds=1)
+    sub2.user = make_user()
+
+    db = AsyncMock()
+    # Первый вызов падает, второй — успешен
+    mock_unfreeze = AsyncMock(side_effect=[Exception('panel error'), None])
+
+    with (
+        patch(
+            'app.services.monitoring_service.get_subscriptions_for_auto_unfreeze',
+            new_callable=AsyncMock,
+            return_value=[sub1, sub2],
+        ),
+        patch.object(
+            MonitoringService,
+            '__init__',
+            lambda self: None,
+        ),
+    ):
+        service = MonitoringService.__new__(MonitoringService)
+        service.subscription_service = MagicMock()
+        service.subscription_service.unfreeze_subscription = mock_unfreeze
+
+        await service._check_frozen_subscriptions_for_auto_unfreeze(db)
+
+    assert mock_unfreeze.await_count == 2
+    db.rollback.assert_awaited_once()
+    db.commit.assert_awaited_once()

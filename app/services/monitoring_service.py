@@ -28,6 +28,7 @@ from app.database.crud.subscription import (
     get_expiring_subscriptions,
     get_subscriptions_for_autopay,
     reactivate_subscription,
+    get_subscriptions_for_auto_unfreeze,
 )
 from app.database.crud.user import (
     cleanup_expired_promo_offer_discounts,
@@ -426,6 +427,9 @@ class MonitoringService:
 
             # Каждая задача изолирована: ошибка одной не роняет остальные
             await self._run_monitoring_task(db, self._check_expired_subscriptions(db), '_check_expired_subscriptions')
+            await self._run_monitoring_task(
+                db, self._check_frozen_subscriptions_for_auto_unfreeze(db), '_check_frozen_subscriptions_for_auto_unfreeze'
+            )
             await self._run_monitoring_task(db, self._check_expiring_subscriptions(db), '_check_expiring_subscriptions')
             await self._run_monitoring_task(db, self._check_trial_expiring_soon(db), '_check_trial_expiring_soon')
             await self._run_monitoring_task(
@@ -637,6 +641,21 @@ class MonitoringService:
         apply_autopay_fail_notification(state, reason, now_ts)
         ttl_seconds = int(max(0.0, hours_left) * 3600) + 72 * 3600
         await self._save_autopay_fail_state(subscription.id, cycle_token, state, ttl_seconds)
+
+    async def _check_frozen_subscriptions_for_auto_unfreeze(self, db: AsyncSession) -> None:
+        now = datetime.now(UTC)
+        subscriptions = await get_subscriptions_for_auto_unfreeze(db, now)
+        for subscription in subscriptions:
+            user = subscription.user
+            try:
+                await self.subscription_service.unfreeze_subscription(
+                    user=user, subscription=subscription, db=db, reason='auto'
+                )
+                await db.commit()
+                logger.info('Авто-разморозка выполнена', subscription_id=subscription.id)
+            except Exception as e:
+                await db.rollback()
+                logger.error('Ошибка авто-разморозки', subscription_id=subscription.id, error=str(e))
 
     async def _check_expired_subscriptions(self, db: AsyncSession):
         try:
