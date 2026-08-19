@@ -115,6 +115,16 @@ def test_has_cabinet_access_false_when_both_false() -> None:
         assert has_cabinet_access(user) is False
 
 
+def test_has_cabinet_access_true_by_default() -> None:
+    """По умолчанию CABINET_OPEN_TO_ALL=True → доступ открыт всем без per-user флага."""
+    from app.utils.cabinet_access import has_cabinet_access
+
+    user = _make_user(cabinet_access=False)
+    with patch('app.utils.cabinet_access.settings') as mock_settings:
+        mock_settings.CABINET_OPEN_TO_ALL = True  # дефолт после фикса
+        assert has_cabinet_access(user) is True
+
+
 # ---------------------------------------------------------------------------
 # 4. Гейт: 403 при отсутствии доступа
 # ---------------------------------------------------------------------------

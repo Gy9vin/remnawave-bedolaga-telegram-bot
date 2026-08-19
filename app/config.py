@@ -1414,7 +1414,9 @@ class Settings(BaseSettings):
     # Глобальный флаг бета-раскатки: если True — любой активный пользователь
     # может войти в кабинет (не только те, у кого cabinet_access=True).
     # Переключается через admin-UI настроек (system_settings) без редеплоя.
-    CABINET_OPEN_TO_ALL: bool = False
+    # По умолчанию True: кабинет открыт всем; при бета-ограничении — False
+    # (тогда работает per-user allowlist через cabinet_access).
+    CABINET_OPEN_TO_ALL: bool = True
 
     # OAuth 2.0 provider settings for cabinet
     OAUTH_GOOGLE_CLIENT_ID: str = ''
