@@ -15,8 +15,6 @@ from app.services.blacklist_service import blacklist_service
 from app.services.maintenance_service import maintenance_service
 from app.services.user_action_log_service import schedule_cabinet_action_log
 from app.services.user_revival_service import NotDeletedError, revive_deleted_user
-from app.utils.cabinet_access import has_cabinet_access
-
 from .auth.jwt_handler import get_token_payload
 from .auth.telegram_auth import validate_telegram_init_data
 from .ip_utils import get_client_ip
@@ -194,19 +192,6 @@ async def get_current_cabinet_user(
     # comment at the top of that section) so that DELETED-but-banned
     # users see the blacklist message instead of the friendly revival
     # screen. No duplicate check needed here.
-
-    # Cabinet access gate: per-user flag OR global rollout flag.
-    # Admins bypass the gate so they can always access the cabinet UI.
-    if not has_cabinet_access(user):
-        is_admin = settings.is_admin(telegram_id=user.telegram_id, email=user.email if user.email_verified else None)
-        if not is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    'code': 'cabinet_access_denied',
-                    'message': 'Cabinet access is not enabled for your account.',
-                },
-            )
 
     # Check maintenance mode (allow admins to pass)
     if maintenance_service.is_maintenance_active():

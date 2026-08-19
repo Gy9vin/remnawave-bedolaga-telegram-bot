@@ -1,16 +1,12 @@
-"""Тесты доступа к веб-кабинету: хелпер has_cabinet_access + гейт зависимости.
+"""Тесты инфраструктуры доступа к веб-кабинету (спящей, гейт убран).
 
 Покрывает:
-  1. has_cabinet_access — поведение при разных комбинациях флагов.
-  2. get_current_cabinet_user — 403 cabinet_access_denied при отсутствии доступа.
-  3. get_current_cabinet_user — пропускает пользователя при cabinet_access=True.
-  4. get_current_cabinet_user — пропускает пользователя при CABINET_OPEN_TO_ALL=True.
-  5. get_current_cabinet_user — пропускает админа без cabinet_access.
-  8. _build_cabinet_main_menu_keyboard — скрывает кнопки ЛК при has_cabinet_access=False.
-  9. _build_cabinet_main_menu_keyboard — показывает кнопки ЛК при has_cabinet_access=True.
-  10. get_user_management_keyboard — показывает «Включить» при cabinet_access=False.
-  11. get_user_management_keyboard — показывает «Выключить» при cabinet_access=True.
-  12. toggle_cabinet_access — устанавливает cabinet_access в True/False и коммитит.
+  1-4. has_cabinet_access — поведение хелпера при разных комбинациях флагов.
+  5-6. get_current_cabinet_user — пропускает пользователя (гейт удалён, все проходят).
+  9.   _build_cabinet_main_menu_keyboard — показывает кнопки ЛК при has_cabinet_access=True.
+  10.  get_user_management_keyboard — показывает «Включить» при cabinet_access=False.
+  11.  get_user_management_keyboard — показывает «Выключить» при cabinet_access=True.
+  12.  toggle_cabinet_access — устанавливает cabinet_access в True/False и коммитит.
 """
 
 from __future__ import annotations
@@ -20,9 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException, status as http_status
 
-from app.config import Settings
 from app.database.models import UserStatus
 
 
@@ -126,45 +120,7 @@ def test_has_cabinet_access_true_by_default() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. Гейт: 403 при отсутствии доступа
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_dependency_raises_403_when_no_cabinet_access(db: AsyncMock) -> None:
-    """Активный пользователь без cabinet_access и без глобального флага → 403."""
-    from app.cabinet.dependencies import get_current_cabinet_user
-
-    user = _make_user(cabinet_access=False)
-
-    with (
-        patch('app.cabinet.dependencies.get_token_payload', return_value={'sub': '1', 'type': 'access'}),
-        patch('app.cabinet.dependencies.get_user_by_id', AsyncMock(return_value=user)),
-        patch(
-            'app.cabinet.dependencies.blacklist_service.is_user_blacklisted',
-            AsyncMock(return_value=(False, None)),
-        ),
-        patch('app.cabinet.dependencies.maintenance_service.is_maintenance_active', return_value=False),
-        patch('app.cabinet.dependencies.settings.CHANNEL_IS_REQUIRED_SUB', False, create=True),
-        patch('app.cabinet.dependencies.has_cabinet_access', return_value=False),
-        # is_admin — метод класса Settings; патчим через patch.object на типе
-        patch.object(Settings, 'is_admin', return_value=False),
-    ):
-        with pytest.raises(HTTPException) as exc:
-            await get_current_cabinet_user(
-                request=_make_request(),
-                credentials=_credentials(),
-                db=db,
-            )
-
-    assert exc.value.status_code == http_status.HTTP_403_FORBIDDEN
-    detail = exc.value.detail
-    assert isinstance(detail, dict)
-    assert detail['code'] == 'cabinet_access_denied'
-
-
-# ---------------------------------------------------------------------------
-# 5. Гейт: пропуск при cabinet_access=True
+# 5. Гейт убран: пропуск при cabinet_access=True (все пользователи проходят)
 # ---------------------------------------------------------------------------
 
 
@@ -184,7 +140,6 @@ async def test_dependency_passes_when_user_cabinet_access_true(db: AsyncMock) ->
         ),
         patch('app.cabinet.dependencies.maintenance_service.is_maintenance_active', return_value=False),
         patch('app.cabinet.dependencies.settings.CHANNEL_IS_REQUIRED_SUB', False, create=True),
-        patch('app.cabinet.dependencies.has_cabinet_access', return_value=True),
         patch('app.cabinet.dependencies.schedule_cabinet_action_log', MagicMock()),
     ):
         result = await get_current_cabinet_user(
@@ -197,13 +152,13 @@ async def test_dependency_passes_when_user_cabinet_access_true(db: AsyncMock) ->
 
 
 # ---------------------------------------------------------------------------
-# 6. Гейт: пропуск при CABINET_OPEN_TO_ALL=True
+# 6. Гейт убран: пользователь без cabinet_access тоже проходит
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_dependency_passes_when_global_flag_set(db: AsyncMock) -> None:
-    """CABINET_OPEN_TO_ALL=True → пользователь без cabinet_access всё равно проходит."""
+    """Гейт убран — пользователь без cabinet_access всё равно проходит."""
     from app.cabinet.dependencies import get_current_cabinet_user
 
     user = _make_user(cabinet_access=False)
@@ -217,7 +172,6 @@ async def test_dependency_passes_when_global_flag_set(db: AsyncMock) -> None:
         ),
         patch('app.cabinet.dependencies.maintenance_service.is_maintenance_active', return_value=False),
         patch('app.cabinet.dependencies.settings.CHANNEL_IS_REQUIRED_SUB', False, create=True),
-        patch('app.cabinet.dependencies.has_cabinet_access', return_value=True),
         patch('app.cabinet.dependencies.schedule_cabinet_action_log', MagicMock()),
     ):
         result = await get_current_cabinet_user(
@@ -230,42 +184,7 @@ async def test_dependency_passes_when_global_flag_set(db: AsyncMock) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. Гейт: администратор проходит без cabinet_access
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_dependency_passes_admin_without_cabinet_access(db: AsyncMock) -> None:
-    """Администратор без cabinet_access не получает 403 (admin bypass)."""
-    from app.cabinet.dependencies import get_current_cabinet_user
-
-    user = _make_user(cabinet_access=False, telegram_id=777)
-
-    with (
-        patch('app.cabinet.dependencies.get_token_payload', return_value={'sub': '1', 'type': 'access'}),
-        patch('app.cabinet.dependencies.get_user_by_id', AsyncMock(return_value=user)),
-        patch(
-            'app.cabinet.dependencies.blacklist_service.is_user_blacklisted',
-            AsyncMock(return_value=(False, None)),
-        ),
-        patch('app.cabinet.dependencies.maintenance_service.is_maintenance_active', return_value=False),
-        patch('app.cabinet.dependencies.settings.CHANNEL_IS_REQUIRED_SUB', False, create=True),
-        patch('app.cabinet.dependencies.has_cabinet_access', return_value=False),
-        # is_admin — метод класса Settings; патчим через patch.object на типе
-        patch.object(Settings, 'is_admin', return_value=True),
-        patch('app.cabinet.dependencies.schedule_cabinet_action_log', MagicMock()),
-    ):
-        result = await get_current_cabinet_user(
-            request=_make_request(),
-            credentials=_credentials(),
-            db=db,
-        )
-
-    assert result is user
-
-
-# ---------------------------------------------------------------------------
-# 8-9. Клавиатура: скрытие/показ кнопок ЛК
+# 9. Клавиатура: кнопки ЛК показываются всем
 # ---------------------------------------------------------------------------
 
 
@@ -290,44 +209,6 @@ def _has_webapp_buttons(markup) -> bool:
             if btn.web_app:
                 return True
     return False
-
-
-def test_cabinet_keyboard_hides_buttons_when_no_access() -> None:
-    """has_cabinet_access=False — кнопки с WebApp-ссылками не добавляются."""
-    from unittest.mock import MagicMock, patch
-
-    from app.keyboards.inline import _build_cabinet_main_menu_keyboard
-
-    stub_texts = _StubTexts()
-    fake_layout = {
-        'row_1': {'buttons': ['home', 'subscription', 'balance'], 'max_per_row': 3},
-    }
-    fake_styles: dict = {}
-
-    # Импорты происходят внутри функции, патчим по исходному пути модуля
-    with (
-        patch('app.utils.menu_layout_cache.get_cached_menu_layout', return_value=fake_layout),
-        patch('app.utils.button_styles_cache.get_cached_button_styles', return_value=fake_styles),
-        patch('app.utils.miniapp_buttons.build_cabinet_url', return_value='https://example.com'),
-        patch('app.utils.miniapp_buttons._resolve_style', return_value=None),
-        patch('app.utils.miniapp_buttons.CALLBACK_TO_CABINET_STYLE', {}),
-        patch('app.utils.button_styles_cache.CALLBACK_TO_SECTION', {}),
-        patch('app.keyboards.inline.settings') as mock_settings,
-    ):
-        mock_settings.CABINET_BUTTON_STYLE = ''
-        mock_settings.is_referral_program_enabled.return_value = True
-        mock_settings.is_language_selection_enabled.return_value = True
-        mock_settings.is_multi_tariff_enabled.return_value = False
-
-        markup = _build_cabinet_main_menu_keyboard(
-            'ru',
-            stub_texts,
-            is_admin=False,
-            is_moderator=False,
-            has_cabinet_access=False,
-        )
-
-    assert not _has_webapp_buttons(markup), 'WebApp-кнопок быть не должно при has_cabinet_access=False'
 
 
 def test_cabinet_keyboard_shows_buttons_when_access_granted() -> None:
