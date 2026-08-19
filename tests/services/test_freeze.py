@@ -276,6 +276,25 @@ async def test_unfreeze_auto():
 
 
 @pytest.mark.asyncio
+async def test_freeze_skip_email_check_bypasses_email_not_verified():
+    """skip_email_check=True позволяет заморозить подписку без верифицированной почты (admin-путь, §12)."""
+    from app.services.subscription_service import SubscriptionService
+
+    service = SubscriptionService()
+    # Пользователь без верифицированной почты
+    user = make_user(email=None)
+    sub = make_subscription(days_left=10)
+    db = AsyncMock()
+
+    with patch.object(service, 'disable_remnawave_user', new_callable=AsyncMock, return_value=True):
+        # Не должно бросать FreezeNotAllowedError('email_not_verified')
+        await service.freeze_subscription(user=user, subscription=sub, db=db, skip_email_check=True)
+
+    assert sub.is_frozen is True
+    assert sub.status == 'disabled'
+
+
+@pytest.mark.asyncio
 async def test_unfreeze_idempotent():
     """При is_frozen=False — ранний возврат, никаких изменений, нет ошибок."""
     from app.services.subscription_service import SubscriptionService

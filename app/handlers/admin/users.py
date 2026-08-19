@@ -936,6 +936,8 @@ async def _render_user_subscription_overview(
             traffic_display += f'{subscription.traffic_limit_gb} ГБ'
 
         text += f'<b>Статус:</b> {status_emoji} {"Активна" if subscription.is_active else "Неактивна"}\n'
+        if getattr(subscription, 'is_frozen', False):
+            text += '❄️ <b>Заморожена</b>\n'
         text += f'<b>Тип:</b> {type_emoji} {"Триал" if subscription.is_trial else "Платная"}\n'
 
         # Отображение тарифа
@@ -1013,6 +1015,25 @@ async def _render_user_subscription_overview(
                     ),
                 ]
             )
+
+        # Кнопки заморозки / разморозки (§12)
+        if settings.FREEZE_SUBSCRIPTIONS_ENABLED:
+            if getattr(subscription, 'is_frozen', False):
+                keyboard.append(
+                    [
+                        types.InlineKeyboardButton(
+                            text='▶️ Разморозить', callback_data=f'admin_sub_unfreeze_{user_id}{_sid}'
+                        )
+                    ]
+                )
+            else:
+                keyboard.append(
+                    [
+                        types.InlineKeyboardButton(
+                            text='❄️ Заморозить', callback_data=f'admin_sub_freeze_{user_id}{_sid}'
+                        )
+                    ]
+                )
 
         if subscription.is_active:
             keyboard.append(
@@ -7143,6 +7164,95 @@ async def set_admin_user_autopay_period(callback: types.CallbackQuery, db_user: 
     await show_admin_user_autopay(callback, db_user, db)
 
 
+@admin_required
+@error_handler
+async def admin_freeze_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Admin: заморозить подписку пользователя без проверки email (§12)."""
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    user_profile = await UserService().get_user_profile(db, user_id)
+    if not user_profile:
+        await callback.answer('❌ Пользователь не найден', show_alert=True)
+        return
+    target_user = user_profile['user']
+
+    subscription = await _load_admin_subscription(db, user_id, subscription_id)
+    if subscription is None:
+        await callback.answer('❌ Подписка не найдена', show_alert=True)
+        return
+
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    subscription_service = SubscriptionService()
+    try:
+        await subscription_service.freeze_subscription(
+            user=target_user, subscription=subscription, db=db, skip_email_check=True
+        )
+        await db.commit()
+        await db.refresh(subscription)
+        logger.info(
+            'Admin заморозил подписку',
+            admin_id=db_user.id,
+            user_id=user_id,
+            subscription_id=subscription.id,
+        )
+    except FreezeNotAllowedError as e:
+        await callback.answer(f'❌ Нельзя заморозить: {e.reason}', show_alert=True)
+        return
+    except Exception as e:
+        logger.error('Ошибка заморозки подписки (admin)', error=str(e), user_id=user_id)
+        await callback.answer('❌ Произошла ошибка при заморозке', show_alert=True)
+        return
+
+    await callback.answer('❄️ Подписка заморожена')
+    _sid = f'_s{subscription_id}' if subscription_id and settings.is_multi_tariff_enabled() else ''
+    callback.data = f'admin_user_subscription_{user_id}{_sid}'
+    await _render_user_subscription_overview(callback, db, user_id, subscription_id=subscription_id)
+
+
+@admin_required
+@error_handler
+async def admin_unfreeze_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Admin: разморозить подписку пользователя (§12)."""
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    user_profile = await UserService().get_user_profile(db, user_id)
+    if not user_profile:
+        await callback.answer('❌ Пользователь не найден', show_alert=True)
+        return
+    target_user = user_profile['user']
+
+    subscription = await _load_admin_subscription(db, user_id, subscription_id)
+    if subscription is None:
+        await callback.answer('❌ Подписка не найдена', show_alert=True)
+        return
+
+    from app.services.subscription_service import SubscriptionService
+
+    subscription_service = SubscriptionService()
+    try:
+        await subscription_service.unfreeze_subscription(
+            user=target_user, subscription=subscription, db=db, reason='admin'
+        )
+        await db.commit()
+        await db.refresh(subscription)
+        logger.info(
+            'Admin разморозил подписку',
+            admin_id=db_user.id,
+            user_id=user_id,
+            subscription_id=subscription.id,
+        )
+    except Exception as e:
+        logger.error('Ошибка разморозки подписки (admin)', error=str(e), user_id=user_id)
+        await callback.answer('❌ Произошла ошибка при разморозке', show_alert=True)
+        return
+
+    await callback.answer('▶️ Подписка разморожена')
+    _sid = f'_s{subscription_id}' if subscription_id and settings.is_multi_tariff_enabled() else ''
+    callback.data = f'admin_user_subscription_{user_id}{_sid}'
+    await _render_user_subscription_overview(callback, db, user_id, subscription_id=subscription_id)
+
+
 def register_handlers(dp: Dispatcher):
     dp.callback_query.register(show_users_menu, F.data == 'admin_users')
 
@@ -7420,3 +7530,7 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(show_potential_customers, F.data == 'admin_users_potential_customers_filter')
 
     dp.callback_query.register(show_users_list_by_campaign, F.data == 'admin_users_campaign_filter')
+
+    # Регистрация обработчиков заморозки/разморозки подписки (§12)
+    dp.callback_query.register(admin_freeze_subscription, F.data.startswith('admin_sub_freeze_'))
+    dp.callback_query.register(admin_unfreeze_subscription, F.data.startswith('admin_sub_unfreeze_'))

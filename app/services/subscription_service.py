@@ -1144,10 +1144,13 @@ class SubscriptionService:
     # Заморозка подписки
     # ------------------------------------------------------------------
 
-    async def _validate_freeze_preconditions(self, user, subscription) -> None:
+    async def _validate_freeze_preconditions(
+        self, user, subscription, *, skip_email_check: bool = False
+    ) -> None:
         """Проверяет 8 предусловий для заморозки в порядке спеки §6.
 
         При нарушении бросает ``FreezeNotAllowedError`` с кодом причины.
+        skip_email_check=True пропускает проверку #8 (для admin-пути, §12).
         """
         # 1. Фича включена
         if not settings.FREEZE_SUBSCRIPTIONS_ENABLED:
@@ -1178,16 +1181,20 @@ class SubscriptionService:
             raise FreezeNotAllowedError('in_grace')
 
         # 8. Привязана и верифицирована почта (путь разморозки через кабинет)
-        if not (user.email is not None and user.email_verified):
+        #    Пропускается для admin-пути (skip_email_check=True).
+        if not skip_email_check and not (user.email is not None and user.email_verified):
             raise FreezeNotAllowedError('email_not_verified')
 
-    async def freeze_subscription(self, user, subscription, db: AsyncSession) -> None:
+    async def freeze_subscription(
+        self, user, subscription, db: AsyncSession, *, skip_email_check: bool = False
+    ) -> None:
         """Заморозить подписку: отключить VPN, сохранить дни, уведомить.
 
         §5.1 спеки: validate → записать поля → flush → disable panel → notify.
         Commit остаётся за вызывающей стороной (роутер/сервис).
+        skip_email_check=True для admin-пути (§12): пропускает проверку email_not_verified.
         """
-        await self._validate_freeze_preconditions(user, subscription)
+        await self._validate_freeze_preconditions(user, subscription, skip_email_check=skip_email_check)
 
         now = datetime.now(UTC)
         subscription.frozen_days_banked = subscription.days_left
