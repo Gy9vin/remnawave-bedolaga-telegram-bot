@@ -6,6 +6,11 @@
   3. get_current_cabinet_user — пропускает пользователя при cabinet_access=True.
   4. get_current_cabinet_user — пропускает пользователя при CABINET_OPEN_TO_ALL=True.
   5. get_current_cabinet_user — пропускает админа без cabinet_access.
+  8. _build_cabinet_main_menu_keyboard — скрывает кнопки ЛК при has_cabinet_access=False.
+  9. _build_cabinet_main_menu_keyboard — показывает кнопки ЛК при has_cabinet_access=True.
+  10. get_user_management_keyboard — показывает «Включить» при cabinet_access=False.
+  11. get_user_management_keyboard — показывает «Выключить» при cabinet_access=True.
+  12. toggle_cabinet_access — устанавливает cabinet_access в True/False и коммитит.
 """
 
 from __future__ import annotations
@@ -247,3 +252,180 @@ async def test_dependency_passes_admin_without_cabinet_access(db: AsyncMock) -> 
         )
 
     assert result is user
+
+
+# ---------------------------------------------------------------------------
+# 8-9. Клавиатура: скрытие/показ кнопок ЛК
+# ---------------------------------------------------------------------------
+
+
+class _StubTexts:
+    MENU_SUBSCRIPTION = '📱 Подписка'
+    MENU_REFERRALS = '🤝 Рефералы'
+    MENU_SUPPORT = '💬 Поддержка'
+    MENU_ADMIN = '🛠 Админ'
+    BACK = '⬅️ Назад'
+    BALANCE_BUTTON = '💰 Баланс: {balance}'
+
+    def t(self, key, default=''):
+        return default
+
+    def format_price(self, kopeks: int) -> str:
+        return f'{kopeks / 100:.2f} ₽'
+
+
+def _has_webapp_buttons(markup) -> bool:
+    for row in markup.inline_keyboard:
+        for btn in row:
+            if btn.web_app:
+                return True
+    return False
+
+
+def test_cabinet_keyboard_hides_buttons_when_no_access() -> None:
+    """has_cabinet_access=False — кнопки с WebApp-ссылками не добавляются."""
+    from unittest.mock import MagicMock, patch
+
+    from app.keyboards.inline import _build_cabinet_main_menu_keyboard
+
+    stub_texts = _StubTexts()
+    fake_layout = {
+        'row_1': {'buttons': ['home', 'subscription', 'balance'], 'max_per_row': 3},
+    }
+    fake_styles: dict = {}
+
+    # Импорты происходят внутри функции, патчим по исходному пути модуля
+    with (
+        patch('app.utils.menu_layout_cache.get_cached_menu_layout', return_value=fake_layout),
+        patch('app.utils.button_styles_cache.get_cached_button_styles', return_value=fake_styles),
+        patch('app.utils.miniapp_buttons.build_cabinet_url', return_value='https://example.com'),
+        patch('app.utils.miniapp_buttons._resolve_style', return_value=None),
+        patch('app.utils.miniapp_buttons.CALLBACK_TO_CABINET_STYLE', {}),
+        patch('app.utils.button_styles_cache.CALLBACK_TO_SECTION', {}),
+        patch('app.keyboards.inline.settings') as mock_settings,
+    ):
+        mock_settings.CABINET_BUTTON_STYLE = ''
+        mock_settings.is_referral_program_enabled.return_value = True
+        mock_settings.is_language_selection_enabled.return_value = True
+        mock_settings.is_multi_tariff_enabled.return_value = False
+
+        markup = _build_cabinet_main_menu_keyboard(
+            'ru',
+            stub_texts,
+            is_admin=False,
+            is_moderator=False,
+            has_cabinet_access=False,
+        )
+
+    assert not _has_webapp_buttons(markup), 'WebApp-кнопок быть не должно при has_cabinet_access=False'
+
+
+def test_cabinet_keyboard_shows_buttons_when_access_granted() -> None:
+    """has_cabinet_access=True — кнопки с WebApp-ссылками присутствуют."""
+    from unittest.mock import patch
+
+    from app.keyboards.inline import _build_cabinet_main_menu_keyboard
+
+    stub_texts = _StubTexts()
+    fake_layout = {
+        'row_1': {'buttons': ['home', 'subscription'], 'max_per_row': 2},
+    }
+    fake_styles: dict = {}
+
+    with (
+        patch('app.utils.menu_layout_cache.get_cached_menu_layout', return_value=fake_layout),
+        patch('app.utils.button_styles_cache.get_cached_button_styles', return_value=fake_styles),
+        patch('app.utils.miniapp_buttons.build_cabinet_url', return_value='https://example.com'),
+        patch('app.utils.miniapp_buttons._resolve_style', return_value=None),
+        patch('app.utils.miniapp_buttons.CALLBACK_TO_CABINET_STYLE', {}),
+        patch('app.utils.button_styles_cache.CALLBACK_TO_SECTION', {}),
+        patch('app.keyboards.inline.settings') as mock_settings,
+    ):
+        mock_settings.CABINET_BUTTON_STYLE = ''
+        mock_settings.is_referral_program_enabled.return_value = True
+        mock_settings.is_language_selection_enabled.return_value = True
+        mock_settings.is_multi_tariff_enabled.return_value = False
+
+        markup = _build_cabinet_main_menu_keyboard(
+            'ru',
+            stub_texts,
+            is_admin=False,
+            is_moderator=False,
+            has_cabinet_access=True,
+        )
+
+    assert _has_webapp_buttons(markup), 'WebApp-кнопки должны быть при has_cabinet_access=True'
+
+
+# ---------------------------------------------------------------------------
+# 10-11. get_user_management_keyboard — cabinet_access toggle button text
+# ---------------------------------------------------------------------------
+
+
+def test_admin_keyboard_shows_enable_when_no_cabinet_access() -> None:
+    """cabinet_access=False — кнопка содержит слово 'Включить'."""
+    from app.keyboards.admin import get_user_management_keyboard
+
+    kb = get_user_management_keyboard(42, 'active', cabinet_access=False)
+    btns = [
+        btn.text
+        for row in kb.inline_keyboard
+        for btn in row
+        if 'cabinet_toggle' in (btn.callback_data or '')
+    ]
+    assert btns, 'Кнопка cabinet_toggle не найдена'
+    assert 'Включить' in btns[0]
+
+
+def test_admin_keyboard_shows_disable_when_cabinet_access_true() -> None:
+    """cabinet_access=True — кнопка содержит слово 'Выключить'."""
+    from app.keyboards.admin import get_user_management_keyboard
+
+    kb = get_user_management_keyboard(42, 'active', cabinet_access=True)
+    btns = [
+        btn.text
+        for row in kb.inline_keyboard
+        for btn in row
+        if 'cabinet_toggle' in (btn.callback_data or '')
+    ]
+    assert btns, 'Кнопка cabinet_toggle не найдена'
+    assert 'Выключить' in btns[0]
+
+
+# ---------------------------------------------------------------------------
+# 12. toggle_cabinet_access — устанавливает поле и коммитит
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_toggle_cabinet_access_sets_flag_and_commits() -> None:
+    """toggle_cabinet_access переключает cabinet_access=False→True и вызывает db.commit()."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.handlers.admin.users import toggle_cabinet_access
+
+    target_user = _make_user(user_id=99, cabinet_access=False)
+    target_user.status = 'active'
+
+    db = AsyncMock()
+    db.commit = AsyncMock(return_value=None)
+
+    admin_user = _make_user(user_id=1, telegram_id=111)
+    admin_user.language = 'ru'  # требуется для get_user_management_keyboard
+
+    callback = MagicMock()
+    callback.data = 'admin_user_cabinet_toggle_99'
+    callback.answer = AsyncMock()
+    callback.message = MagicMock()
+    callback.message.edit_reply_markup = AsyncMock()
+
+    with (
+        patch('app.handlers.admin.users.get_user_by_id', AsyncMock(return_value=target_user)),
+        patch('app.handlers.admin.users.get_user_management_keyboard', return_value=MagicMock()),
+    ):
+        # Два уровня __wrapped__: admin_required → error_handler → actual func
+        actual_func = toggle_cabinet_access.__wrapped__.__wrapped__
+        await actual_func(callback, admin_user, db)
+
+    assert target_user.cabinet_access is True
+    db.commit.assert_awaited_once()

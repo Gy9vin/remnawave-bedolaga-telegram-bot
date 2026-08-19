@@ -140,6 +140,11 @@ async def get_main_menu_keyboard_async(
         return await MenuLayoutService.build_keyboard(db, context)
 
     # Fallback на синхронную версию
+    _has_cabinet_access = True
+    if settings.is_cabinet_mode() and user is not None:
+        from app.utils.cabinet_access import has_cabinet_access as _check_cabinet_access
+
+        _has_cabinet_access = _check_cabinet_access(user)
     return get_main_menu_keyboard(
         language=language,
         is_admin=is_admin,
@@ -152,6 +157,7 @@ async def get_main_menu_keyboard_async(
         has_saved_cart=has_saved_cart,
         is_moderator=is_moderator,
         custom_buttons=custom_buttons,
+        has_cabinet_access=_has_cabinet_access,
     )
 
 
@@ -372,6 +378,7 @@ def _build_cabinet_main_menu_keyboard(
     is_admin: bool,
     is_moderator: bool,
     balance_kopeks: int = 0,
+    has_cabinet_access: bool = True,
 ) -> InlineKeyboardMarkup:
     """Build the main-menu keyboard for Cabinet mode.
 
@@ -480,6 +487,8 @@ def _build_cabinet_main_menu_keyboard(
 
             match btn_id:
                 case 'home':
+                    if not has_cabinet_access:
+                        continue
                     if not section_cfg.get('enabled', True):
                         continue
                     home_text = section_cfg.get('labels', {}).get(language, '') or texts.t(
@@ -488,6 +497,8 @@ def _build_cabinet_main_menu_keyboard(
                     row_buttons.append(_cabinet_button(home_text, '/', 'menu_profile_unavailable'))
 
                 case 'subscription':
+                    if not has_cabinet_access:
+                        continue
                     if not section_cfg.get('enabled', True):
                         continue
                     default_sub_text = (
@@ -499,12 +510,16 @@ def _build_cabinet_main_menu_keyboard(
                     row_buttons.append(_cabinet_button(sub_text, '/subscription', 'menu_subscription'))
 
                 case 'balance':
+                    if not has_cabinet_access:
+                        continue
                     if not section_cfg.get('enabled', True):
                         continue
                     balance_text = _get_balance_text(cached_styles, language, texts, balance_kopeks)
                     row_buttons.append(_cabinet_button(balance_text, '/balance', 'menu_balance'))
 
                 case 'referral':
+                    if not has_cabinet_access:
+                        continue
                     if not settings.is_referral_program_enabled():
                         continue
                     if not section_cfg.get('enabled', True):
@@ -513,6 +528,8 @@ def _build_cabinet_main_menu_keyboard(
                     row_buttons.append(_cabinet_button(ref_text, '/referral', 'menu_referrals'))
 
                 case 'support':
+                    if not has_cabinet_access:
+                        continue
                     if not _is_support_enabled():
                         continue
                     if not section_cfg.get('enabled', True):
@@ -521,6 +538,8 @@ def _build_cabinet_main_menu_keyboard(
                     row_buttons.append(_cabinet_button(sup_text, '/support', 'menu_support'))
 
                 case 'info':
+                    if not has_cabinet_access:
+                        continue
                     if not section_cfg.get('enabled', True):
                         continue
                     info_text = section_cfg.get('labels', {}).get(language, '') or texts.t('MENU_INFO', 'ℹ️ Инфо')
@@ -556,7 +575,7 @@ def _build_cabinet_main_menu_keyboard(
                             text=texts.MENU_ADMIN, callback_data='admin_panel', style=admin_callback_style
                         )
                     ]
-                    if section_cfg.get('enabled', True):
+                    if has_cabinet_access and section_cfg.get('enabled', True):
                         admin_web_text = section_cfg.get('labels', {}).get(language, '') or '🖥 Веб-Админка'
                         admin_row.append(_cabinet_button(admin_web_text, '/admin', 'admin_panel'))
                     keyboard_rows.append(admin_row)
@@ -587,6 +606,7 @@ def get_main_menu_keyboard(
     *,
     is_moderator: bool = False,
     custom_buttons: list[InlineKeyboardButton] | None = None,
+    has_cabinet_access: bool = True,
 ) -> InlineKeyboardMarkup:
     texts = get_texts(language)
 
@@ -597,6 +617,7 @@ def get_main_menu_keyboard(
             is_admin=is_admin,
             is_moderator=is_moderator,
             balance_kopeks=balance_kopeks,
+            has_cabinet_access=has_cabinet_access,
         )
 
     if settings.DEBUG:

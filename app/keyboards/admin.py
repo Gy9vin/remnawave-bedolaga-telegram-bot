@@ -1143,7 +1143,11 @@ def get_admin_statistics_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
 
 
 def get_user_management_keyboard(
-    user_id: int, user_status: str, language: str = 'ru', back_callback: str = 'admin_users_list'
+    user_id: int,
+    user_status: str,
+    language: str = 'ru',
+    back_callback: str = 'admin_users_list',
+    cabinet_access: bool = False,
 ) -> InlineKeyboardMarkup:
     texts = get_texts(language)
 
@@ -1217,6 +1221,17 @@ def get_user_management_keyboard(
             InlineKeyboardButton(
                 text='🛟 Вытащить из fallback',
                 callback_data=f'admin_user_fallback_restore_{user_id}',
+            )
+        ]
+    )
+
+    # Доступ к новому ЛК (кабинет)
+    cabinet_btn_text = '🔓 Выключить новый ЛК' if cabinet_access else '🔑 Включить новый ЛК'
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text=cabinet_btn_text,
+                callback_data=f'admin_user_cabinet_toggle_{user_id}',
             )
         ]
     )

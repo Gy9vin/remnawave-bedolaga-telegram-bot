@@ -1455,7 +1455,10 @@ async def show_user_management(callback: types.CallbackQuery, db_user: User, db:
         back_callback = 'admin_users_potential_customers_filter'
 
     # Базовая клавиатура профиля
-    kb = get_user_management_keyboard(user.id, user.status, db_user.language, back_callback)
+    kb = get_user_management_keyboard(
+        user.id, user.status, db_user.language, back_callback,
+        cabinet_access=bool(getattr(user, 'cabinet_access', False)),
+    )
     # Если пришли из тикета — добавим в начало кнопку возврата к тикету
     try:
         if origin_ticket_id:
@@ -3006,6 +3009,41 @@ async def clear_user_restrictions(callback: types.CallbackQuery, db_user: User, 
 
     # Обновляем меню
     await show_user_restrictions(callback, db_user, db)
+
+
+@admin_required
+@error_handler
+async def toggle_cabinet_access(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Переключить доступ пользователя к новому веб-кабинету."""
+    user_id = int(callback.data.split('_')[-1])
+    user = await get_user_by_id(db, user_id)
+
+    if not user:
+        await callback.answer('Пользователь не найден', show_alert=True)
+        return
+
+    current_value = bool(getattr(user, 'cabinet_access', False))
+    user.cabinet_access = not current_value
+    await db.commit()
+
+    new_value = user.cabinet_access
+    action_text = 'включён' if new_value else 'выключен'
+    logger.info(
+        'Администратор изменил cabinet_access пользователя',
+        admin_id=db_user.telegram_id,
+        target_user_id=user.telegram_id,
+        cabinet_access=new_value,
+    )
+    await callback.answer(f'Доступ к новому ЛК {action_text}', show_alert=False)
+
+    # Перерисовываем клавиатуру карточки с обновлённым значением cabinet_access
+    kb = get_user_management_keyboard(
+        user.id, user.status, db_user.language, cabinet_access=new_value
+    )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=kb)
+    except Exception:
+        pass
 
 
 @admin_required
@@ -7298,6 +7336,8 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(clear_user_restrictions, F.data.startswith('admin_user_restriction_clear_'))
 
     dp.message.register(save_restriction_reason, AdminStates.editing_user_restriction_reason)
+
+    dp.callback_query.register(toggle_cabinet_access, F.data.startswith('admin_user_cabinet_toggle_'))
 
     dp.callback_query.register(handle_users_list_pagination_fixed, F.data.startswith('admin_users_list_page_'))
 
