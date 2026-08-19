@@ -8,13 +8,13 @@ This service handles notification delivery through appropriate channels:
 
 import asyncio
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from aiogram import Bot
 
 from app.config import settings
-from app.database.models import User, UserStatus
+from app.database.models import Subscription, User, UserStatus
 from app.utils.timezone import format_email_datetime
 
 
@@ -34,6 +34,8 @@ class NotificationType(Enum):
     SUBSCRIPTION_EXPIRING = 'subscription_expiring'
     SUBSCRIPTION_EXPIRED = 'subscription_expired'
     SUBSCRIPTION_RENEWED = 'subscription_renewed'
+    SUBSCRIPTION_FROZEN = 'subscription_frozen'
+    SUBSCRIPTION_UNFROZEN = 'subscription_unfrozen'
     WINBACK_EXPIRED_1D = 'winback_expired_1d'
     WINBACK_DISCOUNT = 'winback_discount'
     WINBACK_TRIAL_ENDING = 'winback_trial_ending'
@@ -511,6 +513,52 @@ class NotificationDeliveryService:
             user=user,
             notification_type=NotificationType.SUBSCRIPTION_EXPIRED,
             context={},
+            bot=bot,
+            telegram_message=telegram_message,
+            telegram_markup=telegram_markup,
+        )
+
+    async def notify_subscription_frozen(
+        self,
+        user: User,
+        subscription: Subscription,
+        bot: Bot | None = None,
+        telegram_message: str | None = None,
+        telegram_markup: Any | None = None,
+    ) -> bool:
+        """Notify user that their subscription has been frozen."""
+        context = {
+            'frozen_days_banked': subscription.frozen_days_banked,
+            'auto_unfreeze_at': format_email_datetime(subscription.frozen_auto_unfreeze_at),
+            'freeze_max_days': settings.FREEZE_MAX_DAYS,
+        }
+        return await self.send_notification(
+            user=user,
+            notification_type=NotificationType.SUBSCRIPTION_FROZEN,
+            context=context,
+            bot=bot,
+            telegram_message=telegram_message,
+            telegram_markup=telegram_markup,
+        )
+
+    async def notify_subscription_unfrozen(
+        self,
+        user: User,
+        subscription: Subscription,
+        reason: Literal['manual', 'auto', 'admin'] = 'manual',
+        bot: Bot | None = None,
+        telegram_message: str | None = None,
+        telegram_markup: Any | None = None,
+    ) -> bool:
+        """Notify user that their subscription has been unfrozen."""
+        context = {
+            'reason': reason,
+            'new_end_date': format_email_datetime(subscription.end_date),
+        }
+        return await self.send_notification(
+            user=user,
+            notification_type=NotificationType.SUBSCRIPTION_UNFROZEN,
+            context=context,
             bot=bot,
             telegram_message=telegram_message,
             telegram_markup=telegram_markup,
