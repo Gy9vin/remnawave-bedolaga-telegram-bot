@@ -1834,11 +1834,31 @@ async def get_expired_subscriptions(db: AsyncSession) -> list[Subscription]:
                 Subscription.status == SubscriptionStatus.ACTIVE.value,
                 User.status == UserStatus.ACTIVE.value,
                 Subscription.end_date <= datetime.now(UTC),
+                Subscription.is_frozen == False,
                 # Не трогаем активные суточные подписки — ими управляет DailySubscriptionService
                 ~and_(
                     Tariff.is_daily.is_(True),
                     Subscription.is_daily_paused.is_(False),
                 ),
+            )
+        )
+    )
+    return result.scalars().all()
+
+
+async def get_subscriptions_for_auto_unfreeze(
+    db: AsyncSession,
+    now: datetime,
+) -> list[Subscription]:
+    """Возвращает замороженные подписки, у которых истёк срок авто-разморозки."""
+    result = await db.execute(
+        select(Subscription)
+        .join(User, Subscription.user_id == User.id)
+        .options(selectinload(Subscription.user), selectinload(Subscription.tariff))
+        .where(
+            and_(
+                Subscription.is_frozen == True,
+                Subscription.frozen_auto_unfreeze_at <= now,
             )
         )
     )
