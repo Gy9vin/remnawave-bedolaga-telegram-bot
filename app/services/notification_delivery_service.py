@@ -527,11 +527,19 @@ class NotificationDeliveryService:
         telegram_markup: Any | None = None,
     ) -> bool:
         """Notify user that their subscription has been frozen."""
+        auto_unfreeze_at_str = format_email_datetime(subscription.frozen_auto_unfreeze_at)
         context = {
             'frozen_days_banked': subscription.frozen_days_banked,
-            'auto_unfreeze_at': format_email_datetime(subscription.frozen_auto_unfreeze_at),
+            'auto_unfreeze_at': auto_unfreeze_at_str,
             'freeze_max_days': settings.FREEZE_MAX_DAYS,
         }
+        if telegram_message is None:
+            telegram_message = (
+                f'❄️ Ваша подписка заморожена.\n'
+                f'Сохранено дней: <b>{subscription.frozen_days_banked}</b>.\n'
+                f'Авто-разморозка: <b>{auto_unfreeze_at_str}</b>.\n'
+                f'Разморозить раньше — через Telegram-бот или войдя в кабинет по email.'
+            )
         return await self.send_notification(
             user=user,
             notification_type=NotificationType.SUBSCRIPTION_FROZEN,
@@ -551,10 +559,20 @@ class NotificationDeliveryService:
         telegram_markup: Any | None = None,
     ) -> bool:
         """Notify user that their subscription has been unfrozen."""
+        new_end_date_str = format_email_datetime(subscription.end_date)
         context = {
             'reason': reason,
-            'new_end_date': format_email_datetime(subscription.end_date),
+            'new_end_date': new_end_date_str,
         }
+        if telegram_message is None:
+            if reason == 'auto':
+                reason_text = 'Ваша подписка автоматически разморожена (истёк максимальный срок заморозки).'
+            else:
+                reason_text = 'Ваша подписка разморожена.'
+            telegram_message = (
+                f'✅ {reason_text}\n'
+                f'VPN снова активен. Подписка действует до: <b>{new_end_date_str}</b>.'
+            )
         return await self.send_notification(
             user=user,
             notification_type=NotificationType.SUBSCRIPTION_UNFROZEN,

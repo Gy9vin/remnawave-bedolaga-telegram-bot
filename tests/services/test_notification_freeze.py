@@ -226,3 +226,168 @@ async def test_notify_subscription_unfrozen_default_reason():
         await service.notify_subscription_unfrozen(user=user, subscription=sub)
 
     assert mock_send.await_args.kwargs['context']['reason'] == 'manual'
+
+
+# ---------------------------------------------------------------------------
+# Default Telegram text — непустые сообщения с ключевыми фразами
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_frozen_telegram_text_contains_key_phrases():
+    """notify_subscription_frozen строит непустой telegram_message с ключевыми фразами."""
+    from app.services.notification_delivery_service import NotificationDeliveryService
+
+    service = NotificationDeliveryService()
+    user = make_user()
+    sub = make_subscription(frozen_days_banked=7)
+
+    captured_kwargs = {}
+
+    async def capture_send(**kwargs):
+        captured_kwargs.update(kwargs)
+        return True
+
+    with (
+        patch.object(service, 'send_notification', side_effect=capture_send),
+        patch(
+            'app.services.notification_delivery_service.format_email_datetime',
+            return_value='01.01.2027 00:00',
+        ),
+        patch('app.services.notification_delivery_service.settings') as mock_settings,
+    ):
+        mock_settings.FREEZE_MAX_DAYS = 60
+        await service.notify_subscription_frozen(user=user, subscription=sub)
+
+    msg = captured_kwargs.get('telegram_message', '')
+    assert msg, 'telegram_message не должен быть пустым'
+    assert 'заморожена' in msg
+    assert 'Сохранено дней' in msg
+    assert '7' in msg  # frozen_days_banked
+
+
+@pytest.mark.asyncio
+async def test_unfrozen_telegram_text_auto_reason():
+    """notify_subscription_unfrozen(reason='auto') строит текст с фразой об авто-разморозке."""
+    from app.services.notification_delivery_service import NotificationDeliveryService
+
+    service = NotificationDeliveryService()
+    user = make_user()
+    sub = make_subscription()
+
+    captured_kwargs = {}
+
+    async def capture_send(**kwargs):
+        captured_kwargs.update(kwargs)
+        return True
+
+    with (
+        patch.object(service, 'send_notification', side_effect=capture_send),
+        patch('app.services.notification_delivery_service.format_email_datetime', return_value='31.12.2026 00:00'),
+    ):
+        await service.notify_subscription_unfrozen(user=user, subscription=sub, reason='auto')
+
+    msg = captured_kwargs.get('telegram_message', '')
+    assert msg, 'telegram_message не должен быть пустым'
+    assert 'автоматически разморожена' in msg
+    assert 'VPN снова активен' in msg
+
+
+@pytest.mark.asyncio
+async def test_unfrozen_telegram_text_manual_reason():
+    """notify_subscription_unfrozen(reason='manual') строит текст с «VPN снова активен»."""
+    from app.services.notification_delivery_service import NotificationDeliveryService
+
+    service = NotificationDeliveryService()
+    user = make_user()
+    sub = make_subscription()
+
+    captured_kwargs = {}
+
+    async def capture_send(**kwargs):
+        captured_kwargs.update(kwargs)
+        return True
+
+    with (
+        patch.object(service, 'send_notification', side_effect=capture_send),
+        patch('app.services.notification_delivery_service.format_email_datetime', return_value='31.12.2026 00:00'),
+    ):
+        await service.notify_subscription_unfrozen(user=user, subscription=sub, reason='manual')
+
+    msg = captured_kwargs.get('telegram_message', '')
+    assert msg
+    assert 'VPN снова активен' in msg
+    assert 'автоматически' not in msg  # manual reason — нет упоминания авто
+
+
+# ---------------------------------------------------------------------------
+# Email templates — непустой рендер с ключевыми фразами
+# ---------------------------------------------------------------------------
+
+def test_email_template_frozen_renders_nonempty():
+    """EmailNotificationTemplates рендерит непустой шаблон SUBSCRIPTION_FROZEN."""
+    from app.cabinet.services.email_templates import EmailNotificationTemplates
+    from app.services.notification_delivery_service import NotificationType
+
+    with patch('app.cabinet.services.email_templates.settings') as mock_settings:
+        mock_settings.SMTP_FROM_NAME = 'TestVPN'
+        mock_settings.CABINET_URL = 'https://example.com'
+        templates = EmailNotificationTemplates()
+
+    context = {
+        'frozen_days_banked': 14,
+        'auto_unfreeze_at': '19.10.2026 00:00',
+        'freeze_max_days': 60,
+    }
+    result = templates.get_template(NotificationType.SUBSCRIPTION_FROZEN, 'ru', context)
+
+    assert result is not None
+    assert result.get('subject'), 'subject не должен быть пустым'
+    body = result.get('body_html', '')
+    assert body, 'body_html не должен быть пустым'
+    assert 'заморожена' in body.lower() or 'заморожен' in body.lower()
+    assert 'Сохранено дней' in body
+    assert '14' in body
+
+
+def test_email_template_unfrozen_auto_renders_nonempty():
+    """EmailNotificationTemplates рендерит шаблон SUBSCRIPTION_UNFROZEN для reason=auto."""
+    from app.cabinet.services.email_templates import EmailNotificationTemplates
+    from app.services.notification_delivery_service import NotificationType
+
+    with patch('app.cabinet.services.email_templates.settings') as mock_settings:
+        mock_settings.SMTP_FROM_NAME = 'TestVPN'
+        mock_settings.CABINET_URL = 'https://example.com'
+        templates = EmailNotificationTemplates()
+
+    context = {
+        'reason': 'auto',
+        'new_end_date': '31.12.2026 00:00',
+    }
+    result = templates.get_template(NotificationType.SUBSCRIPTION_UNFROZEN, 'ru', context)
+
+    assert result is not None
+    body = result.get('body_html', '')
+    assert 'автоматически разморожена' in body or 'автоматически' in body
+    assert 'VPN снова активен' in body
+
+
+def test_email_template_unfrozen_manual_renders_nonempty():
+    """EmailNotificationTemplates рендерит шаблон SUBSCRIPTION_UNFROZEN для reason=manual."""
+    from app.cabinet.services.email_templates import EmailNotificationTemplates
+    from app.services.notification_delivery_service import NotificationType
+
+    with patch('app.cabinet.services.email_templates.settings') as mock_settings:
+        mock_settings.SMTP_FROM_NAME = 'TestVPN'
+        mock_settings.CABINET_URL = 'https://example.com'
+        templates = EmailNotificationTemplates()
+
+    context = {
+        'reason': 'manual',
+        'new_end_date': '31.12.2026 00:00',
+    }
+    result = templates.get_template(NotificationType.SUBSCRIPTION_UNFROZEN, 'ru', context)
+
+    assert result is not None
+    body = result.get('body_html', '')
+    assert 'VPN снова активен' in body
+    assert '31.12.2026' in body

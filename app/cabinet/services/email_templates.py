@@ -44,6 +44,8 @@ class EmailNotificationTemplates:
             NotificationType.SUBSCRIPTION_EXPIRING: self._subscription_expiring_template,
             NotificationType.SUBSCRIPTION_EXPIRED: self._subscription_expired_template,
             NotificationType.SUBSCRIPTION_RENEWED: self._subscription_renewed_template,
+            NotificationType.SUBSCRIPTION_FROZEN: self._subscription_frozen_template,
+            NotificationType.SUBSCRIPTION_UNFROZEN: self._subscription_unfrozen_template,
             NotificationType.SUBSCRIPTION_ACTIVATED: self._subscription_activated_template,
             NotificationType.WINBACK_EXPIRED_1D: self._winback_expired_1d_template,
             NotificationType.WINBACK_DISCOUNT: self._winback_discount_template,
@@ -536,6 +538,129 @@ class EmailNotificationTemplates:
                     <p>New expiration date: <strong>{new_expires_at}</strong></p>
                 </div>
                 <p>Thank you for using our service!</p>
+                {self._get_cabinet_button(language)}
+            """,
+        }
+
+        return {
+            'subject': subjects.get(language, subjects['ru']),
+            'body_html': self._get_base_template(bodies.get(language, bodies['ru']), language),
+        }
+
+    def _subscription_frozen_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
+        """Template for subscription frozen notification."""
+        frozen_days_banked = context.get('frozen_days_banked', '')
+        auto_unfreeze_at = html.escape(str(context.get('auto_unfreeze_at', '')))
+
+        subjects = {
+            'ru': 'Подписка заморожена',
+            'en': 'Subscription Frozen',
+            'zh': '订阅已冻结',
+            'ua': 'Підписку заморожено',
+        }
+
+        bodies = {
+            'ru': f"""
+                <h2>Подписка заморожена</h2>
+                <div class="highlight warning">
+                    <p>Ваша подписка заморожена.</p>
+                    <p>Сохранено дней: <strong>{frozen_days_banked}</strong>.</p>
+                    <p>Авто-разморозка: <strong>{auto_unfreeze_at}</strong>.</p>
+                </div>
+                <p>Разморозить раньше — через Telegram-бот или войдя в кабинет по email.</p>
+                {self._get_cabinet_button(language)}
+            """,
+            'en': f"""
+                <h2>Subscription Frozen</h2>
+                <div class="highlight warning">
+                    <p>Your subscription has been frozen.</p>
+                    <p>Days saved: <strong>{frozen_days_banked}</strong>.</p>
+                    <p>Auto-unfreeze at: <strong>{auto_unfreeze_at}</strong>.</p>
+                </div>
+                <p>To unfreeze earlier — use the Telegram bot or sign in to the cabinet via email.</p>
+                {self._get_cabinet_button(language)}
+            """,
+            'zh': f"""
+                <h2>订阅已冻结</h2>
+                <div class="highlight warning">
+                    <p>您的订阅已被冻结。</p>
+                    <p>已保存天数: <strong>{frozen_days_banked}</strong>。</p>
+                    <p>自动解冻时间: <strong>{auto_unfreeze_at}</strong>。</p>
+                </div>
+                <p>如需提前解冻，请通过 Telegram 机器人或通过电子邮件登录个人中心。</p>
+                {self._get_cabinet_button(language)}
+            """,
+            'ua': f"""
+                <h2>Підписку заморожено</h2>
+                <div class="highlight warning">
+                    <p>Вашу підписку заморожено.</p>
+                    <p>Збережено днів: <strong>{frozen_days_banked}</strong>.</p>
+                    <p>Авто-розморожування: <strong>{auto_unfreeze_at}</strong>.</p>
+                </div>
+                <p>Розморозити раніше — через Telegram-бот або увійшовши в кабінет по email.</p>
+                {self._get_cabinet_button(language)}
+            """,
+        }
+
+        return {
+            'subject': subjects.get(language, subjects['ru']),
+            'body_html': self._get_base_template(bodies.get(language, bodies['ru']), language),
+        }
+
+    def _subscription_unfrozen_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
+        """Template for subscription unfrozen notification."""
+        reason = context.get('reason', 'manual')
+        new_end_date = html.escape(str(context.get('new_end_date', '')))
+
+        subjects = {
+            'ru': 'Подписка разморожена',
+            'en': 'Subscription Unfrozen',
+            'zh': '订阅已解冻',
+            'ua': 'Підписку розморожено',
+        }
+
+        if reason == 'auto':
+            reason_text_ru = 'Ваша подписка автоматически разморожена (истёк максимальный срок заморозки).'
+            reason_text_en = 'Your subscription has been automatically unfrozen (maximum freeze period has expired).'
+            reason_text_zh = '您的订阅已自动解冻（已达最长冻结期限）。'
+            reason_text_ua = 'Вашу підписку автоматично розморожено (закінчився максимальний термін заморозки).'
+        else:
+            reason_text_ru = 'Ваша подписка разморожена.'
+            reason_text_en = 'Your subscription has been unfrozen.'
+            reason_text_zh = '您的订阅已解冻。'
+            reason_text_ua = 'Вашу підписку розморожено.'
+
+        bodies = {
+            'ru': f"""
+                <h2>Подписка разморожена</h2>
+                <div class="highlight success">
+                    <p>{reason_text_ru}</p>
+                    <p>VPN снова активен. Подписка действует до: <strong>{new_end_date}</strong>.</p>
+                </div>
+                {self._get_cabinet_button(language)}
+            """,
+            'en': f"""
+                <h2>Subscription Unfrozen</h2>
+                <div class="highlight success">
+                    <p>{reason_text_en}</p>
+                    <p>VPN is active again. Subscription valid until: <strong>{new_end_date}</strong>.</p>
+                </div>
+                {self._get_cabinet_button(language)}
+            """,
+            'zh': f"""
+                <h2>订阅已解冻</h2>
+                <div class="highlight success">
+                    <p>{reason_text_zh}</p>
+                    <p>VPN 已重新激活。订阅有效期至: <strong>{new_end_date}</strong>。</p>
+                </div>
+                {self._get_cabinet_button(language)}
+            """,
+            'ua': f"""
+                <h2>Підписку розморожено</h2>
+                <div class="highlight success">
+                    <p>{reason_text_ua}</p>
+                    <p>VPN знову активний. Підписка діє до: <strong>{new_end_date}</strong>.</p>
+                </div>
                 {self._get_cabinet_button(language)}
             """,
         }
