@@ -473,6 +473,11 @@ class Settings(BaseSettings):
     SUBSCRIPTION_REVOKE_ENABLED: bool = True
     SUBSCRIPTION_REVOKE_COOLDOWN_SECONDS: int = 900  # 15 minutes
 
+    # Заморозка подписки
+    FREEZE_SUBSCRIPTIONS_ENABLED: bool = False
+    FREEZE_MAX_DAYS: int = 60
+    FREEZE_MIN_DAYS_REMAINING: int = 3
+
     # Настройки простой покупки
     SIMPLE_SUBSCRIPTION_ENABLED: bool = False
     SIMPLE_SUBSCRIPTION_PERIOD_DAYS: int = 30
