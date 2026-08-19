@@ -1,5 +1,11 @@
 # Automatically generated module exports
 
+from .freeze import (
+    handle_freeze_cancel,
+    handle_freeze_confirm,
+    handle_freeze_request,
+    handle_unfreeze,
+)
 from .autopay import (
     handle_autopay_menu,
     handle_confirm_unlink,
@@ -133,6 +139,10 @@ from .traffic import (
 
 
 __all__ = [
+    'handle_freeze_cancel',
+    'handle_freeze_confirm',
+    'handle_freeze_request',
+    'handle_unfreeze',
     'activate_trial',
     'add_traffic',
     'apply_countries_changes',

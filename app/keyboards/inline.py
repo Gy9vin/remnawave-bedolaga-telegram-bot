@@ -1293,6 +1293,34 @@ def get_subscription_keyboard(
                     ]
                 )
 
+            # Кнопка заморозки / разморозки (только для не-триальных платных подписок)
+            if settings.FREEZE_SUBSCRIPTIONS_ENABLED and subscription:
+                from app.database.models import SubscriptionStatus
+
+                is_frozen = getattr(subscription, 'is_frozen', False)
+                if is_frozen:
+                    keyboard.append(
+                        [
+                            InlineKeyboardButton(
+                                text=texts.t('UNFREEZE_BUTTON', '▶️ Разморозить подписку'),
+                                callback_data='subscription_unfreeze',
+                            )
+                        ]
+                    )
+                elif (
+                    not is_trial
+                    and getattr(subscription, 'status', None) == SubscriptionStatus.ACTIVE.value
+                    and not getattr(subscription, 'is_trial', False)
+                ):
+                    keyboard.append(
+                        [
+                            InlineKeyboardButton(
+                                text=texts.t('FREEZE_BUTTON', '❄️ Заморозить подписку'),
+                                callback_data='subscription_freeze_request',
+                            )
+                        ]
+                    )
+
     keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

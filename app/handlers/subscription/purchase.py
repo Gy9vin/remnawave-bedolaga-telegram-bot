@@ -263,6 +263,10 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
         actual_status = 'limited'
         status_display = texts.t('SUBSCRIPTION_STATUS_LIMITED', 'Трафик исчерпан')
         status_emoji = '⚠️'
+    elif subscription.status == 'disabled' and getattr(subscription, 'is_frozen', False):
+        actual_status = 'frozen'
+        status_display = texts.t('SUBSCRIPTION_STATUS_FROZEN', 'Заморожена')
+        status_emoji = '❄️'
     elif subscription.status == 'disabled':
         actual_status = 'disabled'
         status_display = texts.t('SUBSCRIPTION_STATUS_DISABLED', 'Приостановлена')
@@ -4427,6 +4431,11 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_all_devices_reset_from_management, F.data == 'reset_all_devices')
 
     dp.callback_query.register(show_device_connection_help, F.data == 'device_connection_help')
+
+    # Регистрируем хендлеры заморозки/разморозки подписки
+    from .freeze import register_handlers as _register_freeze_handlers
+
+    _register_freeze_handlers(dp)
 
     # Регистрируем обработчики покупки по тарифам
     from .tariff_purchase import register_tariff_purchase_handlers
