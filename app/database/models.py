@@ -2396,6 +2396,12 @@ class Subscription(Base):
     )  # Приостановлена ли суточная подписка пользователем
     last_daily_charge_at = Column(AwareDateTime(), nullable=True)  # Время последнего суточного списания
 
+    # Freeze fields
+    is_frozen = Column(Boolean, nullable=False, default=False, server_default='false')
+    frozen_at = Column(AwareDateTime(), nullable=True)
+    frozen_days_banked = Column(Integer, nullable=True)
+    frozen_auto_unfreeze_at = Column(AwareDateTime(), nullable=True)
+
     user = relationship('User', back_populates='subscriptions')
     tariff = relationship('Tariff', back_populates='subscriptions')
     discount_offers = relationship('DiscountOffer', back_populates='subscription')
