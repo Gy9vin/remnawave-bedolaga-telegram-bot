@@ -101,6 +101,14 @@ class PropagateSquadsResult:
     failed_ids: list[int] = field(default_factory=list)
 
 
+class FreezeNotAllowedError(Exception):
+    """Исключение, бросаемое при нарушении предусловий заморозки подписки."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
 class SubscriptionService:
     def __init__(self):
         self._config_error: str | None = None
@@ -1131,6 +1139,111 @@ class SubscriptionService:
                 return True
             logger.error('Ошибка включения RemnaWave пользователя', error=e)
             return False
+
+    # ------------------------------------------------------------------
+    # Заморозка подписки
+    # ------------------------------------------------------------------
+
+    async def _validate_freeze_preconditions(self, user, subscription) -> None:
+        """Проверяет 8 предусловий для заморозки в порядке спеки §6.
+
+        При нарушении бросает ``FreezeNotAllowedError`` с кодом причины.
+        """
+        # 1. Фича включена
+        if not settings.FREEZE_SUBSCRIPTIONS_ENABLED:
+            raise FreezeNotAllowedError('freeze_disabled')
+
+        # 2. Статус — только ACTIVE
+        if subscription.status != SubscriptionStatus.ACTIVE.value:
+            raise FreezeNotAllowedError('invalid_status')
+
+        # 3. Не триальная подписка (is_trial=False)
+        if subscription.is_trial:
+            raise FreezeNotAllowedError('trial_not_allowed')
+
+        # 4. Достаточно дней до конца
+        if subscription.days_left < settings.FREEZE_MIN_DAYS_REMAINING:
+            raise FreezeNotAllowedError('too_few_days')
+
+        # 5. Ещё не заморожена
+        if subscription.is_frozen:
+            raise FreezeNotAllowedError('already_frozen')
+
+        # 6. Суточная пауза не активна
+        if subscription.is_daily_paused:
+            raise FreezeNotAllowedError('daily_paused')
+
+        # 7. Не в grace-window
+        if subscription.grace_candidate_at is not None:
+            raise FreezeNotAllowedError('in_grace')
+
+        # 8. Привязана и верифицирована почта (путь разморозки через кабинет)
+        if not (user.email is not None and user.email_verified):
+            raise FreezeNotAllowedError('email_not_verified')
+
+    async def freeze_subscription(self, user, subscription, db: AsyncSession) -> None:
+        """Заморозить подписку: отключить VPN, сохранить дни, уведомить.
+
+        §5.1 спеки: validate → записать поля → flush → disable panel → notify.
+        Commit остаётся за вызывающей стороной (роутер/сервис).
+        """
+        await self._validate_freeze_preconditions(user, subscription)
+
+        now = datetime.now(UTC)
+        subscription.frozen_days_banked = subscription.days_left
+        subscription.frozen_at = now
+        subscription.frozen_auto_unfreeze_at = now + timedelta(days=settings.FREEZE_MAX_DAYS)
+        subscription.is_frozen = True
+        subscription.status = SubscriptionStatus.DISABLED.value
+
+        await db.flush()
+
+        await self.disable_remnawave_user(panel_user_id=subscription.remnawave_id, db=db)
+
+        from app.services.notification_delivery_service import notification_delivery_service
+        await notification_delivery_service.notify_subscription_frozen(
+            user=user, subscription=subscription
+        )
+
+    async def unfreeze_subscription(
+        self,
+        user,
+        subscription,
+        db: AsyncSession,
+        reason: str = 'manual',
+    ) -> None:
+        """Разморозить подписку: вернуть дни сдвигом end_date, включить VPN.
+
+        §5.2 спеки: идемпотентен (ранний возврат если не заморожена).
+        reason: 'manual' | 'auto' | 'admin'
+        """
+        if not subscription.is_frozen:
+            return
+
+        now = datetime.now(UTC)
+        if subscription.frozen_at is not None:
+            frozen_duration = now - subscription.frozen_at
+            subscription.end_date = subscription.end_date + frozen_duration
+        else:
+            logger.warning(
+                'unfreeze_subscription: frozen_at is None, пропускаем сдвиг end_date',
+                subscription_id=getattr(subscription, 'id', None),
+            )
+
+        subscription.status = SubscriptionStatus.ACTIVE.value
+        subscription.is_frozen = False
+        subscription.frozen_at = None
+        subscription.frozen_days_banked = None
+        subscription.frozen_auto_unfreeze_at = None
+
+        await db.flush()
+
+        await self.enable_remnawave_user(panel_user_id=subscription.remnawave_id, db=db)
+
+        from app.services.notification_delivery_service import notification_delivery_service
+        await notification_delivery_service.notify_subscription_unfrozen(
+            user=user, subscription=subscription, reason=reason
+        )
 
     async def get_remnawave_squads(self) -> list[dict] | None:
         """Получить список internal squads из RemnaWave."""

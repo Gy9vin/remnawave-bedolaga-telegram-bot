@@ -1,0 +1,297 @@
+"""
+Юнит-тесты для freeze_subscription / unfreeze_subscription / _validate_freeze_preconditions.
+Задача 4 — ядро фичи заморозки подписки.
+"""
+import pytest
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def make_user(email: str | None = 'user@example.com', email_verified: bool = True):
+    user = MagicMock()
+    user.email = email
+    user.email_verified = email_verified
+    return user
+
+
+def make_subscription(
+    status: str = 'active',
+    is_trial: bool = False,
+    days_left: int = 10,
+    is_frozen: bool = False,
+    is_daily_paused: bool = False,
+    grace_candidate_at=None,
+    remnawave_id: int = 12345,
+):
+    sub = MagicMock()
+    sub.status = status
+    sub.is_trial = is_trial
+    sub.days_left = days_left
+    sub.is_frozen = is_frozen
+    sub.is_daily_paused = is_daily_paused
+    sub.grace_candidate_at = grace_candidate_at
+    sub.remnawave_id = remnawave_id
+    sub.end_date = datetime(2026, 12, 31, tzinfo=UTC)
+    sub.frozen_at = None
+    sub.frozen_days_banked = None
+    sub.frozen_auto_unfreeze_at = None
+    return sub
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def patch_settings():
+    """Глобальный патч settings для всех тестов этого модуля."""
+    with patch('app.services.subscription_service.settings') as mock_settings:
+        mock_settings.FREEZE_SUBSCRIPTIONS_ENABLED = True
+        mock_settings.FREEZE_MAX_DAYS = 60
+        mock_settings.FREEZE_MIN_DAYS_REMAINING = 3
+        yield mock_settings
+
+
+@pytest.fixture(autouse=True)
+def patch_nds():
+    """Мокаем notification_delivery_service глобально."""
+    with patch(
+        'app.services.notification_delivery_service.notification_delivery_service'
+    ) as mock_nds:
+        mock_nds.notify_subscription_frozen = AsyncMock(return_value=True)
+        mock_nds.notify_subscription_unfrozen = AsyncMock(return_value=True)
+        yield mock_nds
+
+
+# ---------------------------------------------------------------------------
+# freeze_subscription — успешный сценарий
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_freeze_success():
+    from app.services.subscription_service import SubscriptionService
+
+    user = make_user()
+    sub = make_subscription(days_left=10)
+    db = AsyncMock()
+
+    service = SubscriptionService()
+    with patch.object(service, 'disable_remnawave_user', new_callable=AsyncMock, return_value=True):
+        await service.freeze_subscription(user=user, subscription=sub, db=db)
+
+    assert sub.is_frozen is True
+    assert sub.status == 'disabled'
+    assert sub.frozen_days_banked == 10
+    assert sub.frozen_at is not None
+    assert sub.frozen_auto_unfreeze_at is not None
+    db.flush.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# freeze_subscription — предусловия (должны бросать FreezeNotAllowedError)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_freeze_disabled(patch_settings):
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    patch_settings.FREEZE_SUBSCRIPTIONS_ENABLED = False
+    service = SubscriptionService()
+    user = make_user()
+    sub = make_subscription()
+    db = AsyncMock()
+
+    with pytest.raises(FreezeNotAllowedError) as exc_info:
+        await service.freeze_subscription(user=user, subscription=sub, db=db)
+    assert exc_info.value.reason == 'freeze_disabled'
+
+
+@pytest.mark.asyncio
+async def test_freeze_invalid_status():
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user()
+    sub = make_subscription(status='expired')
+    db = AsyncMock()
+
+    with pytest.raises(FreezeNotAllowedError) as exc_info:
+        await service.freeze_subscription(user=user, subscription=sub, db=db)
+    assert exc_info.value.reason == 'invalid_status'
+
+
+@pytest.mark.asyncio
+async def test_freeze_trial_not_allowed():
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user()
+    sub = make_subscription(status='active', is_trial=True)
+    db = AsyncMock()
+
+    with pytest.raises(FreezeNotAllowedError) as exc_info:
+        await service.freeze_subscription(user=user, subscription=sub, db=db)
+    assert exc_info.value.reason == 'trial_not_allowed'
+
+
+@pytest.mark.asyncio
+async def test_freeze_too_few_days(patch_settings):
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    patch_settings.FREEZE_MIN_DAYS_REMAINING = 3
+    service = SubscriptionService()
+    user = make_user()
+    sub = make_subscription(days_left=2)
+    db = AsyncMock()
+
+    with pytest.raises(FreezeNotAllowedError) as exc_info:
+        await service.freeze_subscription(user=user, subscription=sub, db=db)
+    assert exc_info.value.reason == 'too_few_days'
+
+
+@pytest.mark.asyncio
+async def test_freeze_already_frozen():
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user()
+    sub = make_subscription(is_frozen=True)
+    db = AsyncMock()
+
+    with pytest.raises(FreezeNotAllowedError) as exc_info:
+        await service.freeze_subscription(user=user, subscription=sub, db=db)
+    assert exc_info.value.reason == 'already_frozen'
+
+
+@pytest.mark.asyncio
+async def test_freeze_daily_paused():
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user()
+    sub = make_subscription(is_daily_paused=True)
+    db = AsyncMock()
+
+    with pytest.raises(FreezeNotAllowedError) as exc_info:
+        await service.freeze_subscription(user=user, subscription=sub, db=db)
+    assert exc_info.value.reason == 'daily_paused'
+
+
+@pytest.mark.asyncio
+async def test_freeze_in_grace():
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user()
+    sub = make_subscription(grace_candidate_at=datetime(2026, 8, 20, tzinfo=UTC))
+    db = AsyncMock()
+
+    with pytest.raises(FreezeNotAllowedError) as exc_info:
+        await service.freeze_subscription(user=user, subscription=sub, db=db)
+    assert exc_info.value.reason == 'in_grace'
+
+
+@pytest.mark.asyncio
+async def test_freeze_email_not_verified():
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user(email_verified=False)
+    sub = make_subscription()
+    db = AsyncMock()
+
+    with pytest.raises(FreezeNotAllowedError) as exc_info:
+        await service.freeze_subscription(user=user, subscription=sub, db=db)
+    assert exc_info.value.reason == 'email_not_verified'
+
+
+@pytest.mark.asyncio
+async def test_freeze_email_none():
+    """Пользователь вообще без почты — тоже email_not_verified."""
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user(email=None)
+    sub = make_subscription()
+    db = AsyncMock()
+
+    with pytest.raises(FreezeNotAllowedError) as exc_info:
+        await service.freeze_subscription(user=user, subscription=sub, db=db)
+    assert exc_info.value.reason == 'email_not_verified'
+
+
+# ---------------------------------------------------------------------------
+# unfreeze_subscription
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_unfreeze_manual():
+    from app.services.subscription_service import SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user()
+    frozen_at = datetime.now(UTC) - timedelta(days=5)
+    sub = make_subscription(is_frozen=True)
+    sub.frozen_at = frozen_at
+    sub.end_date = datetime(2026, 12, 31, tzinfo=UTC)
+    original_end_date = sub.end_date
+    db = AsyncMock()
+
+    with patch.object(service, 'enable_remnawave_user', new_callable=AsyncMock, return_value=True):
+        await service.unfreeze_subscription(user=user, subscription=sub, db=db, reason='manual')
+
+    assert sub.is_frozen is False
+    assert sub.status == 'active'
+    assert sub.frozen_at is None
+    assert sub.frozen_days_banked is None
+    assert sub.frozen_auto_unfreeze_at is None
+    # end_date должна сдвинуться вперёд (на ~5 дней)
+    assert sub.end_date > original_end_date
+    db.flush.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unfreeze_auto():
+    from app.services.subscription_service import SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user()
+    frozen_at = datetime.now(UTC) - timedelta(days=60)
+    sub = make_subscription(is_frozen=True)
+    sub.frozen_at = frozen_at
+    sub.end_date = datetime(2026, 12, 31, tzinfo=UTC)
+    original_end_date = sub.end_date
+    db = AsyncMock()
+
+    with patch.object(service, 'enable_remnawave_user', new_callable=AsyncMock, return_value=True):
+        await service.unfreeze_subscription(user=user, subscription=sub, db=db, reason='auto')
+
+    assert sub.is_frozen is False
+    assert sub.status == 'active'
+    assert sub.end_date > original_end_date
+
+
+@pytest.mark.asyncio
+async def test_unfreeze_idempotent():
+    """При is_frozen=False — ранний возврат, никаких изменений, нет ошибок."""
+    from app.services.subscription_service import SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user()
+    sub = make_subscription(is_frozen=False)
+    sub.end_date = datetime(2026, 12, 31, tzinfo=UTC)
+    original_end_date = sub.end_date
+    db = AsyncMock()
+
+    with patch.object(service, 'enable_remnawave_user', new_callable=AsyncMock) as mock_enable:
+        await service.unfreeze_subscription(user=user, subscription=sub, db=db)
+        mock_enable.assert_not_called()
+
+    # end_date не изменилась
+    assert sub.end_date == original_end_date
+    # flush не вызывался
+    db.flush.assert_not_awaited()
