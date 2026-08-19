@@ -58,7 +58,7 @@ def _freeze_error_message(texts, reason: str) -> str:
     if reason == 'too_few_days':
         return texts.t(
             'FREEZE_ERROR_TOO_FEW_DAYS',
-            f'❌ Недостаточно дней для заморозки (нужно не менее {settings.FREEZE_MIN_DAYS_REMAINING} дней).',
+            '❌ Недостаточно дней для заморозки (нужно не менее {min_days} дней).',
         ).format(min_days=settings.FREEZE_MIN_DAYS_REMAINING)
     if reason == 'invalid_status':
         return texts.t('FREEZE_ERROR_INVALID_STATUS', '❌ Заморозка недоступна в текущем статусе подписки.')
@@ -70,7 +70,7 @@ def _freeze_error_message(texts, reason: str) -> str:
         return texts.t('FREEZE_ERROR_IN_GRACE', '❌ Заморозка недоступна в период дополнительного времени.')
     if reason == 'freeze_disabled':
         return texts.t('FREEZE_ERROR_DISABLED', '❌ Функция заморозки временно недоступна.')
-    return texts.t('FREEZE_ERROR_UNKNOWN', f'❌ Ошибка заморозки: {reason}').format(reason=reason)
+    return texts.t('FREEZE_ERROR_UNKNOWN', '❌ Ошибка заморозки: {reason}').format(reason=reason)
 
 
 # ---------------------------------------------------------------------------

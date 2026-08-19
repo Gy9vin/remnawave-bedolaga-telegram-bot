@@ -197,6 +197,7 @@ from ..schemas.miniapp import (
     MiniAppTransaction,
     MiniAppSubscriptionFreezeRequest,
     MiniAppSubscriptionFreezeResponse,
+    MiniAppSubscriptionUnfreezeRequest,
     MiniAppSubscriptionUnfreezeResponse,
 )
 
@@ -7702,10 +7703,16 @@ async def freeze_subscription_endpoint(
         (s for s in subs if getattr(s, 'status', None) in ('active', 'trial')), None
     )
     if not subscription:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={'code': 'no_subscription', 'message': 'No active subscription found'},
-        )
+        # Если активной/пробной нет, но есть уже замороженная — передаём её в сервис:
+        # _validate_freeze_preconditions бросит FreezeNotAllowedError('already_frozen') → 422.
+        frozen_sub = next((s for s in subs if getattr(s, 'is_frozen', False)), None)
+        if frozen_sub:
+            subscription = frozen_sub
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={'code': 'no_subscription', 'message': 'No active subscription found'},
+            )
 
     try:
         await SubscriptionService().freeze_subscription(user=user, subscription=subscription, db=db)
@@ -7727,7 +7734,7 @@ async def freeze_subscription_endpoint(
 
 @router.post('/cabinet/subscription/unfreeze')
 async def unfreeze_subscription_endpoint(
-    payload: MiniAppSubscriptionFreezeRequest,
+    payload: MiniAppSubscriptionUnfreezeRequest,
     db: AsyncSession = Depends(get_db_session),
 ):
     """Разморозить замороженную подписку пользователя."""

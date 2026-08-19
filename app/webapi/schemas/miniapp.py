@@ -723,6 +723,12 @@ class MiniAppSubscriptionFreezeResponse(BaseModel):
     new_end_date: datetime
 
 
+class MiniAppSubscriptionUnfreezeRequest(BaseModel):
+    """Запрос на разморозку подписки (тело пустое, только init_data)."""
+
+    init_data: str = Field(...)
+
+
 class MiniAppSubscriptionUnfreezeResponse(BaseModel):
     """Ответ на разморозку подписки."""
 

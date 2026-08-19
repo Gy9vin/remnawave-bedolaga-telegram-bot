@@ -120,10 +120,41 @@ async def test_freeze_endpoint_200():
 # ---------------------------------------------------------------------------
 
 async def test_freeze_endpoint_422_already_frozen():
-    """Повторная заморозка: FreezeNotAllowedError → HTTP 422 с error_code='already_frozen'."""
+    """Повторная заморозка (status='active', is_frozen=True): FreezeNotAllowedError → HTTP 422."""
     from app.services.subscription_service import FreezeNotAllowedError
 
     sub = _make_sub(is_frozen=True)
+    user = _make_user(sub)
+    db = _fake_db()
+
+    async def raise_already_frozen(user, subscription, db):
+        raise FreezeNotAllowedError('already_frozen')
+
+    with patch(
+        'app.webapi.routes.miniapp._authorize_miniapp_user',
+        new_callable=AsyncMock,
+        return_value=user,
+    ), patch(
+        'app.services.subscription_service.SubscriptionService.freeze_subscription',
+        side_effect=raise_already_frozen,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await freeze_subscription_endpoint(payload=_freeze_payload(), db=db)
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail['error_code'] == 'already_frozen'
+
+
+async def test_freeze_endpoint_422_already_frozen_disabled_status():
+    """Повторный freeze уже замороженной (status='disabled') подписки → 422 already_frozen.
+
+    Реалистичный сценарий: после freeze сервис выставляет status='disabled'.
+    Раньше эндпоинт возвращал 404, так как фильтровал только active/trial.
+    """
+    from app.services.subscription_service import FreezeNotAllowedError
+
+    # Реалистичное состояние замороженной подписки: status='disabled', is_frozen=True
+    sub = _make_sub(is_frozen=True, status='disabled')
     user = _make_user(sub)
     db = _fake_db()
 

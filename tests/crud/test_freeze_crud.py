@@ -195,3 +195,38 @@ async def test_expired_subscriptions_returns_normal_expired(session: AsyncSessio
     result = await get_expired_subscriptions(session)
     assert any(r.id == sub_normal.id for r in result), \
         "Обычная истёкшая подписка должна возвращаться"
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_subscriptions_for_auto_unfreeze — заблокированные пользователи
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_auto_unfreeze_skips_blocked_user(session: AsyncSession):
+    """Заблокированный пользователь с наступившей авто-разморозкой НЕ возвращается."""
+    now = datetime.now(UTC)
+    # Создаём пользователя со статусом 'blocked'
+    u = User(
+        id=10,
+        telegram_id=1000,
+        auth_type='telegram',
+        referral_code='rc10',
+        balance_kopeks=0,
+        status='blocked',
+    )
+    session.add(u)
+    await session.flush()
+
+    sub = await _add_sub(
+        session,
+        user_id=10,
+        status='disabled',
+        end_date=now + timedelta(days=10),
+        is_frozen=True,
+        frozen_auto_unfreeze_at=now - timedelta(hours=1),
+    )
+    await session.commit()
+
+    result = await get_subscriptions_for_auto_unfreeze(session, now)
+    assert not any(r.id == sub.id for r in result), \
+        "Заблокированный пользователь не должен получать авто-разморозку"

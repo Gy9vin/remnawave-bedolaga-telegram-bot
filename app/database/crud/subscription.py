@@ -1850,7 +1850,11 @@ async def get_subscriptions_for_auto_unfreeze(
     db: AsyncSession,
     now: datetime,
 ) -> list[Subscription]:
-    """Возвращает замороженные подписки, у которых истёк срок авто-разморозки."""
+    """Возвращает замороженные подписки, у которых истёк срок авто-разморозки.
+
+    Фильтрует по User.status == ACTIVE, чтобы заблокированные пользователи
+    не получали авто-разморозку и включение VPN.
+    """
     result = await db.execute(
         select(Subscription)
         .join(User, Subscription.user_id == User.id)
@@ -1859,6 +1863,7 @@ async def get_subscriptions_for_auto_unfreeze(
             and_(
                 Subscription.is_frozen == True,
                 Subscription.frozen_auto_unfreeze_at <= now,
+                User.status == UserStatus.ACTIVE.value,
             )
         )
     )

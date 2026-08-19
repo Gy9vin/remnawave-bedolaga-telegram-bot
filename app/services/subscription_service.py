@@ -1247,6 +1247,18 @@ class SubscriptionService:
 
         await self.enable_remnawave_user(panel_user_id=subscription.remnawave_id, db=db)
 
+        # Синхронизируем новую end_date в RemnaWave — enable_remnawave_user только
+        # меняет статус, но не обновляет expireAt. Без этого панель отключит
+        # пользователя по старой (до-замороженной) дате истечения.
+        try:
+            await self.update_remnawave_user(db, subscription, sync_squads=False)
+        except Exception as _upd_err:
+            logger.warning(
+                'unfreeze_subscription: не удалось синхронизировать end_date в RemnaWave',
+                subscription_id=getattr(subscription, 'id', None),
+                error=str(_upd_err)[:200],
+            )
+
         from app.services.notification_delivery_service import notification_delivery_service
         await notification_delivery_service.notify_subscription_unfrozen(
             user=user, subscription=subscription, reason=reason
