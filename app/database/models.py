@@ -2193,6 +2193,11 @@ class User(Base):
     last_pinned_message_id = Column(Integer, nullable=True)
     last_seen_channel_post_id = Column(Integer, nullable=True)
 
+    # Доступ к веб-кабинету (бета-раскатка)
+    # True — пользователь может войти в кабинет независимо от глобального флага.
+    # False — доступ только если включён глобальный флаг CABINET_OPEN_TO_ALL.
+    cabinet_access = Column(Boolean, default=False, nullable=False, server_default='false')
+
     # Ограничения пользователя
     restriction_topup = Column(Boolean, default=False, nullable=False)  # Запрет пополнения
     restriction_subscription = Column(Boolean, default=False, nullable=False)  # Запрет продления/покупки

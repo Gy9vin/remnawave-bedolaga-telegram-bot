@@ -60,6 +60,9 @@ def _make_user(
         referral_code='abc',
         referred_by_id=None,
         remnawave_uuid=None,
+        # Доступ к веб-кабинету: в тестах revival/status флаг открыт,
+        # чтобы эти тесты проверяли именно revival-логику, а не cabinet-гейт.
+        cabinet_access=True,
     )
 
 

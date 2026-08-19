@@ -1411,6 +1411,10 @@ class Settings(BaseSettings):
     CABINET_TRUSTED_PROXIES: str = (
         ''  # Comma-separated IPs/CIDRs of trusted reverse proxies (e.g. '127.0.0.1,10.0.0.0/8')
     )
+    # Глобальный флаг бета-раскатки: если True — любой активный пользователь
+    # может войти в кабинет (не только те, у кого cabinet_access=True).
+    # Переключается через admin-UI настроек (system_settings) без редеплоя.
+    CABINET_OPEN_TO_ALL: bool = False
 
     # OAuth 2.0 provider settings for cabinet
     OAUTH_GOOGLE_CLIENT_ID: str = ''
