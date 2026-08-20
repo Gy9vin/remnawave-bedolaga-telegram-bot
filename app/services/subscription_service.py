@@ -1156,21 +1156,23 @@ class SubscriptionService:
         if not settings.FREEZE_SUBSCRIPTIONS_ENABLED:
             raise FreezeNotAllowedError('freeze_disabled')
 
-        # 2. Статус — только ACTIVE
+        # 2. Ещё не заморожена — проверяем ДО статуса: после заморозки статус
+        #    становится DISABLED, поэтому без этой перестановки повторная заморозка
+        #    возвращала бы 'invalid_status' вместо задокументированного 'already_frozen'.
+        if subscription.is_frozen:
+            raise FreezeNotAllowedError('already_frozen')
+
+        # 3. Статус — только ACTIVE
         if subscription.status != SubscriptionStatus.ACTIVE.value:
             raise FreezeNotAllowedError('invalid_status')
 
-        # 3. Не триальная подписка (is_trial=False)
+        # 4. Не триальная подписка (is_trial=False)
         if subscription.is_trial:
             raise FreezeNotAllowedError('trial_not_allowed')
 
-        # 4. Достаточно дней до конца
+        # 5. Достаточно дней до конца
         if subscription.days_left < settings.FREEZE_MIN_DAYS_REMAINING:
             raise FreezeNotAllowedError('too_few_days')
-
-        # 5. Ещё не заморожена
-        if subscription.is_frozen:
-            raise FreezeNotAllowedError('already_frozen')
 
         # 6. Суточная пауза не активна
         if subscription.is_daily_paused:
@@ -1245,18 +1247,28 @@ class SubscriptionService:
 
         await db.flush()
 
-        await self.enable_remnawave_user(panel_user_id=subscription.remnawave_id, db=db)
+        # Панельная синхронизация обязательна: сбой прерывает транзакцию,
+        # DB-изменения откатываются, и подписка остаётся frozen=True для
+        # следующего цикла авто-разморозки.
+        enabled = await self.enable_remnawave_user(panel_user_id=subscription.remnawave_id, db=db)
+        if not enabled:
+            raise RuntimeError(
+                'unfreeze_subscription: enable_remnawave_user вернул False для '
+                f'subscription_id={getattr(subscription, "id", None)}, '
+                f'remnawave_id={subscription.remnawave_id} — откат, чтобы retry сработал'
+            )
 
         # Синхронизируем новую end_date в RemnaWave — enable_remnawave_user только
         # меняет статус, но не обновляет expireAt. Без этого панель отключит
         # пользователя по старой (до-замороженной) дате истечения.
-        try:
-            await self.update_remnawave_user(db, subscription, sync_squads=False)
-        except Exception as _upd_err:
-            logger.warning(
-                'unfreeze_subscription: не удалось синхронизировать end_date в RemnaWave',
-                subscription_id=getattr(subscription, 'id', None),
-                error=str(_upd_err)[:200],
+        # update_remnawave_user внутри перехватывает все исключения и возвращает None —
+        # проверяем возвращаемое значение и прерываем при сбое.
+        updated = await self.update_remnawave_user(db, subscription, sync_squads=False)
+        if updated is None:
+            raise RuntimeError(
+                'unfreeze_subscription: update_remnawave_user не смог синхронизировать '
+                f'end_date в RemnaWave для subscription_id={getattr(subscription, "id", None)} '
+                '— откат, чтобы retry сработал'
             )
 
         from app.services.notification_delivery_service import notification_delivery_service

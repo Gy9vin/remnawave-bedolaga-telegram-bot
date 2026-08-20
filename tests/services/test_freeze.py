@@ -241,7 +241,10 @@ async def test_unfreeze_manual():
     original_end_date = sub.end_date
     db = AsyncMock()
 
-    with patch.object(service, 'enable_remnawave_user', new_callable=AsyncMock, return_value=True):
+    with (
+        patch.object(service, 'enable_remnawave_user', new_callable=AsyncMock, return_value=True),
+        patch.object(service, 'update_remnawave_user', new_callable=AsyncMock, return_value=MagicMock()),
+    ):
         await service.unfreeze_subscription(user=user, subscription=sub, db=db, reason='manual')
 
     assert sub.is_frozen is False
@@ -267,7 +270,10 @@ async def test_unfreeze_auto():
     original_end_date = sub.end_date
     db = AsyncMock()
 
-    with patch.object(service, 'enable_remnawave_user', new_callable=AsyncMock, return_value=True):
+    with (
+        patch.object(service, 'enable_remnawave_user', new_callable=AsyncMock, return_value=True),
+        patch.object(service, 'update_remnawave_user', new_callable=AsyncMock, return_value=MagicMock()),
+    ):
         await service.unfreeze_subscription(user=user, subscription=sub, db=db, reason='auto')
 
     assert sub.is_frozen is False
@@ -414,6 +420,11 @@ async def test_auto_unfreeze_cron_triggers():
             new_callable=AsyncMock,
             return_value=[sub],
         ),
+        patch(
+            'app.services.monitoring_service.get_subscription_by_id',
+            new_callable=AsyncMock,
+            return_value=sub,
+        ),
         patch.object(
             MonitoringService,
             '__init__',
@@ -493,6 +504,11 @@ async def test_auto_unfreeze_cron_rollback_on_error():
             new_callable=AsyncMock,
             return_value=[sub1, sub2],
         ),
+        patch(
+            'app.services.monitoring_service.get_subscription_by_id',
+            new_callable=AsyncMock,
+            side_effect=[sub1, sub2],
+        ),
         patch.object(
             MonitoringService,
             '__init__',
@@ -508,3 +524,75 @@ async def test_auto_unfreeze_cron_rollback_on_error():
     assert mock_unfreeze.await_count == 2
     db.rollback.assert_awaited_once()
     db.commit.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# BUG A — панельный сбой при разморозке прерывает транзакцию
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_unfreeze_raises_when_enable_returns_false(patch_nds):
+    """Если enable_remnawave_user вернул False — RuntimeError, уведомление НЕ отправляется."""
+    from app.services.subscription_service import SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user()
+    sub = make_subscription(is_frozen=True)
+    sub.frozen_at = datetime.now(UTC) - timedelta(days=3)
+    sub.end_date = datetime(2026, 12, 31, tzinfo=UTC)
+    db = AsyncMock()
+
+    with (
+        patch.object(service, 'enable_remnawave_user', new_callable=AsyncMock, return_value=False),
+        patch.object(service, 'update_remnawave_user', new_callable=AsyncMock, return_value=MagicMock()),
+    ):
+        with pytest.raises(RuntimeError):
+            await service.unfreeze_subscription(user=user, subscription=sub, db=db, reason='manual')
+
+    # Уведомление НЕ должно быть отправлено при сбое панели
+    patch_nds.notify_subscription_unfrozen.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unfreeze_raises_when_update_returns_none(patch_nds):
+    """Если update_remnawave_user вернул None — RuntimeError, уведомление НЕ отправляется."""
+    from app.services.subscription_service import SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user()
+    sub = make_subscription(is_frozen=True)
+    sub.frozen_at = datetime.now(UTC) - timedelta(days=3)
+    sub.end_date = datetime(2026, 12, 31, tzinfo=UTC)
+    db = AsyncMock()
+
+    with (
+        patch.object(service, 'enable_remnawave_user', new_callable=AsyncMock, return_value=True),
+        patch.object(service, 'update_remnawave_user', new_callable=AsyncMock, return_value=None),
+    ):
+        with pytest.raises(RuntimeError):
+            await service.unfreeze_subscription(user=user, subscription=sub, db=db, reason='manual')
+
+    patch_nds.notify_subscription_unfrozen.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# BUG B — повторная заморозка уже замороженной подписки → 'already_frozen'
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_refreeze_already_frozen_returns_already_frozen_not_invalid_status():
+    """Повторная заморозка замороженной подписки (status=DISABLED) → 'already_frozen', а не 'invalid_status'."""
+    from app.services.subscription_service import FreezeNotAllowedError, SubscriptionService
+
+    service = SubscriptionService()
+    user = make_user()
+    # После заморозки status становится DISABLED, is_frozen=True
+    sub = make_subscription(status='disabled', is_frozen=True, days_left=10)
+    db = AsyncMock()
+
+    with pytest.raises(FreezeNotAllowedError) as exc_info:
+        await service.freeze_subscription(user=user, subscription=sub, db=db)
+
+    assert exc_info.value.reason == 'already_frozen', (
+        f'Ожидалось already_frozen, получено: {exc_info.value.reason}'
+    )
