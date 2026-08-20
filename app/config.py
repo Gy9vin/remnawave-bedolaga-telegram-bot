@@ -1453,6 +1453,10 @@ class Settings(BaseSettings):
     CABINET_ENABLED: bool = False
     CABINET_JWT_SECRET: str | None = None
     CABINET_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    # Отдельный (длинный) TTL access-токена для админов/спец-ролей (role_level > 0):
+    # админскую панель держат открытой часами, и короткий access их выкидывал.
+    # 43200 мин = 30 дней. 0 = отключить особый TTL (использовать общий).
+    CABINET_ADMIN_ACCESS_TOKEN_EXPIRE_MINUTES: int = 43200
     CABINET_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     CABINET_ALLOWED_ORIGINS: str = ''
     CABINET_EMAIL_VERIFICATION_ENABLED: bool = True
@@ -4191,6 +4195,24 @@ class Settings(BaseSettings):
 
     def get_cabinet_access_token_expire_minutes(self) -> int:
         return max(1, self.CABINET_ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    def get_cabinet_admin_access_token_expire_minutes(self) -> int:
+        """TTL access-токена для админов/спец-ролей (role_level > 0).
+
+        Если настройка <= 0 — особый TTL отключён, используется общий
+        ``get_cabinet_access_token_expire_minutes``.
+        """
+        admin_minutes = int(self.CABINET_ADMIN_ACCESS_TOKEN_EXPIRE_MINUTES)
+        if admin_minutes <= 0:
+            return self.get_cabinet_access_token_expire_minutes()
+        return admin_minutes
+
+    def get_cabinet_access_token_expire_minutes_for_level(self, role_level: int) -> int:
+        """Единый источник TTL access-токена по уровню роли — чтобы сам токен
+        (jwt_handler) и сообщаемый клиенту ``expires_in`` не расходились."""
+        if role_level and role_level > 0:
+            return self.get_cabinet_admin_access_token_expire_minutes()
+        return self.get_cabinet_access_token_expire_minutes()
 
     def get_cabinet_refresh_token_expire_days(self) -> int:
         return max(1, self.CABINET_REFRESH_TOKEN_EXPIRE_DAYS)

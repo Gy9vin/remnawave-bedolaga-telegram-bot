@@ -50,7 +50,9 @@ def create_access_token(
     Returns:
         Encoded JWT access token
     """
-    expire_minutes = settings.get_cabinet_access_token_expire_minutes()
+    # Админов/спец-роли (role_level > 0) держат админ-панель открытой часами —
+    # для них длинный access-TTL, чтобы короткий срок не выкидывал из сессии.
+    expire_minutes = settings.get_cabinet_access_token_expire_minutes_for_level(role_level)
     expires = datetime.now(UTC) + timedelta(minutes=expire_minutes)
 
     payload = {
