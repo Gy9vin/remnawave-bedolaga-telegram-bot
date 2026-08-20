@@ -29,6 +29,30 @@ import pytest
 from app.services import expiry_fallback_service
 
 
+class _FakeAPICtx:
+    """Async-context для remnawave_service.get_api_client с bulk-чтением панели."""
+
+    def __init__(self, panel_users):
+        self._panel_users = panel_users
+
+    async def __aenter__(self):
+        return SimpleNamespace(get_all_users_stream=self._stream)
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def _stream(self, size=500):
+        return self._panel_users
+
+
+def _patch_fallback_panel(monkeypatch, panel_users):
+    """Подменяет remnawave_service так, что панель отдаёт заданный список юзеров."""
+    import app.services.remnawave_service as rw_mod
+
+    fake = SimpleNamespace(get_api_client=lambda: _FakeAPICtx(panel_users))
+    monkeypatch.setattr(rw_mod, 'remnawave_service', fake, raising=False)
+
+
 def _subscription(**overrides) -> SimpleNamespace:
     base = {
         'id': 555,
@@ -194,10 +218,10 @@ async def test_reconcile_picks_up_stuck_subscription_without_flags(monkeypatch):
         _FakeResult([stuck_sub]),
     ])
 
-    async def fake_get_remnawave_user(remna_id_hint, db=None, subscription=None):
-        return SimpleNamespace(active_internal_squads=['fallback-uuid'], expire_at=None, traffic_limit_bytes=None)
-
-    monkeypatch.setattr(expiry_fallback_service, '_get_remnawave_user', fake_get_remnawave_user)
+    # Панель-истина: юзер 4242 реально сидит в fallback-скваде.
+    _patch_fallback_panel(monkeypatch, [
+        SimpleNamespace(id=4242, active_internal_squads=['fallback-uuid']),
+    ])
 
     patch_calls = []
 
@@ -240,10 +264,10 @@ async def test_reconcile_skips_stuck_candidate_not_actually_in_fallback_squad(mo
         _FakeResult([not_stuck_sub]),
     ])
 
-    async def fake_get_remnawave_user(remna_id_hint, db=None, subscription=None):
-        return SimpleNamespace(active_internal_squads=['some-other-squad'], expire_at=None, traffic_limit_bytes=None)
-
-    monkeypatch.setattr(expiry_fallback_service, '_get_remnawave_user', fake_get_remnawave_user)
+    # Панель-истина: юзер 4343 НЕ в fallback-скваде → восстанавливать нечего.
+    _patch_fallback_panel(monkeypatch, [
+        SimpleNamespace(id=4343, active_internal_squads=['some-other-squad']),
+    ])
 
     patch_calls = []
 
