@@ -10,6 +10,7 @@ POST /subscription/trial
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -61,6 +62,12 @@ from .helpers import _subscription_to_response
 
 
 logger = structlog.get_logger(__name__)
+
+# Cap inline RemnaWave panel sync on user-facing cabinet requests. The product is
+# committed before the sync, so a slow/unavailable panel must not hold the HTTP
+# response open (the cabinet pay button is bound to the request and would spin
+# after delivery). Past this budget the sync is deferred to remnawave_retry_queue.
+REMNAWAVE_SYNC_TIMEOUT = 10.0
 
 router = APIRouter()
 
@@ -1154,21 +1161,25 @@ async def purchase_tariff(
             else:
                 _should_create = not getattr(user, 'remnawave_id', None)
 
-            if not _should_create:
-                await service.update_remnawave_user(
-                    db,
-                    subscription,
-                    reset_traffic=True,
-                    reset_reason='покупка тарифа (cabinet)',
-                    sync_squads=True,
-                )
-            else:
-                await service.create_remnawave_user(
-                    db,
-                    subscription,
-                    reset_traffic=True,
-                    reset_reason='покупка тарифа (cabinet)',
-                )
+            # Time-bounded (see REMNAWAVE_SYNC_TIMEOUT): the subscription is already
+            # committed, so a slow panel must not keep the cabinet pay button spinning;
+            # past the budget the sync is deferred to remnawave_retry_queue below.
+            async with asyncio.timeout(REMNAWAVE_SYNC_TIMEOUT):
+                if not _should_create:
+                    await service.update_remnawave_user(
+                        db,
+                        subscription,
+                        reset_traffic=True,
+                        reset_reason='покупка тарифа (cabinet)',
+                        sync_squads=True,
+                    )
+                else:
+                    await service.create_remnawave_user(
+                        db,
+                        subscription,
+                        reset_traffic=True,
+                        reset_reason='покупка тарифа (cabinet)',
+                    )
 
             # Реально восстанавливаем сквады в панели, если подписка была в fallback
             # (пустой connected_squads не гарантирует, что create/update выше отправили
