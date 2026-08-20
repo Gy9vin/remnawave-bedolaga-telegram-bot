@@ -95,6 +95,15 @@ logger = structlog.get_logger(__name__)
 # ============================================================================
 
 
+def _sub_end_date_in_future(end_date: datetime, now: datetime) -> bool:
+    """Истина, если подписка ещё не истекла (end_date строго после now).
+
+    Соответствует условию Subscription.end_date > datetime.now(UTC) в _fetch_candidates.
+    Вынесена отдельно для тестируемости без БД.
+    """
+    return end_date > now
+
+
 def calc_lost_days(renewal_ts: datetime, now: datetime | None = None) -> int:
     """Количество дней от оплаты продления до текущего момента.
 
@@ -188,6 +197,7 @@ async def _fetch_candidates(
     conditions = [
         Subscription.status == SubscriptionStatus.ACTIVE.value,
         Subscription.remnawave_id.isnot(None),
+        Subscription.end_date > datetime.now(UTC),
     ]
     if user_ids:
         conditions.append(Subscription.user_id.in_(user_ids))

@@ -12,6 +12,7 @@ import pytest
 
 from scripts.repair_stuck_fallback_compensate import (
     _build_fallback_squad_ids,
+    _sub_end_date_in_future,
     calc_lost_days,
     calc_server_refund_kopeks,
     choose_target_squads,
@@ -152,6 +153,30 @@ class TestCalcServerRefundKopeks:
 
     def test_one_record_of_three_returns_none(self):
         assert calc_server_refund_kopeks([100, 200, 300]) is None
+
+
+# ============================================================================
+# _sub_end_date_in_future  (отражает условие _fetch_candidates: end_date > now)
+# ============================================================================
+
+
+class TestSubEndDateInFuture:
+    def test_past_end_date_excluded(self):
+        """Истёкшая подписка (end_date в прошлом) — НЕ кандидат."""
+        now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+        past_end = datetime(2026, 8, 5, 0, 0, 0, tzinfo=UTC)
+        assert _sub_end_date_in_future(past_end, now) is False
+
+    def test_future_end_date_included(self):
+        """Активная подписка с end_date в будущем — кандидат."""
+        now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+        future_end = datetime(2026, 9, 15, 0, 0, 0, tzinfo=UTC)
+        assert _sub_end_date_in_future(future_end, now) is True
+
+    def test_exactly_now_is_not_future(self):
+        """end_date == now — не кандидат (строго больше)."""
+        now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+        assert _sub_end_date_in_future(now, now) is False
 
 
 # ============================================================================
