@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from scripts.repair_stuck_fallback_compensate import (
+    _build_fallback_squad_ids,
     calc_lost_days,
     calc_server_refund_kopeks,
     choose_target_squads,
@@ -151,3 +152,76 @@ class TestCalcServerRefundKopeks:
 
     def test_one_record_of_three_returns_none(self):
         assert calc_server_refund_kopeks([100, 200, 300]) is None
+
+
+# ============================================================================
+# _build_fallback_squad_ids
+# ============================================================================
+
+
+class _FakePanelUser:
+    """Минимальный stub RemnaWaveUser для тестов _build_fallback_squad_ids."""
+
+    def __init__(self, uid: int, squads: list):
+        self.id = uid
+        self.active_internal_squads = squads
+
+
+FALLBACK_UUID = 'fallback-squad-uuid-0000'
+
+
+class TestBuildFallbackSquadIds:
+    def test_empty_panel_returns_empty_set(self):
+        result = _build_fallback_squad_ids([], FALLBACK_UUID)
+        assert result == set()
+
+    def test_user_with_fallback_squad_dict_format(self):
+        users = [_FakePanelUser(1, [{'uuid': FALLBACK_UUID}])]
+        result = _build_fallback_squad_ids(users, FALLBACK_UUID)
+        assert result == {1}
+
+    def test_user_with_fallback_squad_str_format(self):
+        users = [_FakePanelUser(1, [FALLBACK_UUID])]
+        result = _build_fallback_squad_ids(users, FALLBACK_UUID)
+        assert result == {1}
+
+    def test_user_without_fallback_squad_excluded(self):
+        users = [_FakePanelUser(42, [{'uuid': 'other-squad-uuid'}])]
+        result = _build_fallback_squad_ids(users, FALLBACK_UUID)
+        assert result == set()
+
+    def test_mixed_users_only_fallback_included(self):
+        users = [
+            _FakePanelUser(1, [{'uuid': FALLBACK_UUID}, {'uuid': 'other'}]),
+            _FakePanelUser(2, [{'uuid': 'other-squad-uuid'}]),
+            _FakePanelUser(3, [{'uuid': FALLBACK_UUID}]),
+        ]
+        result = _build_fallback_squad_ids(users, FALLBACK_UUID)
+        assert result == {1, 3}
+
+    def test_user_with_empty_squads_excluded(self):
+        users = [_FakePanelUser(10, [])]
+        result = _build_fallback_squad_ids(users, FALLBACK_UUID)
+        assert result == set()
+
+    def test_user_with_none_squads_excluded(self):
+        users = [_FakePanelUser(10, None)]
+        result = _build_fallback_squad_ids(users, FALLBACK_UUID)
+        assert result == set()
+
+    def test_returns_set_of_ints(self):
+        users = [_FakePanelUser(7, [FALLBACK_UUID])]
+        result = _build_fallback_squad_ids(users, FALLBACK_UUID)
+        assert isinstance(result, set)
+        assert all(isinstance(v, int) for v in result)
+
+    def test_multiple_users_all_in_fallback(self):
+        users = [_FakePanelUser(i, [FALLBACK_UUID]) for i in range(1, 6)]
+        result = _build_fallback_squad_ids(users, FALLBACK_UUID)
+        assert result == {1, 2, 3, 4, 5}
+
+    def test_id_field_uuid_in_dict(self):
+        # active_internal_squads может использовать ключ 'id' вместо 'uuid'
+        users = [_FakePanelUser(99, [{'id': FALLBACK_UUID}])]
+        result = _build_fallback_squad_ids(users, FALLBACK_UUID)
+        assert result == {99}

@@ -54,8 +54,8 @@ SubscriptionServer с fallback-скватом и paid_price_kopeks > 0 (одно
 ============
 
 При --apply каждый пользователь обрабатывается в отдельном try/except.
-Если панель недоступна (_get_remnawave_user вернул None) — пользователь
-пропускается, компенсация НЕ начисляется.
+Если PATCH в панели вернул False (_patch_user_full) — транзакция откатывается,
+компенсация НЕ начисляется.
 
 Usage:
     python -m scripts.repair_stuck_fallback_compensate            # dry-run
@@ -82,15 +82,12 @@ from app.database.crud.subscription import extend_subscription
 from app.database.crud.user import add_user_balance
 from app.database.database import AsyncSessionLocal
 from app.database.models import ServerSquad, Subscription, SubscriptionServer, SubscriptionStatus, Transaction, TransactionType
-from app.services.expiry_fallback_service import _extract_squad_uuids, _get_remnawave_user, _patch_user_full
+from app.services.expiry_fallback_service import _extract_squad_uuids, _patch_user_full
 from app.services.notification_delivery_service import NotificationType, notification_delivery_service
 from app.services.system_settings_service import bot_configuration_service
 
 
 logger = structlog.get_logger(__name__)
-
-# Пауза между обращениями к панели — чтобы не заваливать RemnaWave.
-_SLEEP_BETWEEN = 0.3
 
 
 # ============================================================================
@@ -149,6 +146,23 @@ def calc_server_refund_kopeks(fallback_server_paid_prices: list[int]) -> int | N
     if price <= 0:
         return None
     return price
+
+
+def _build_fallback_squad_ids(
+    panel_users: list,
+    fallback_squad_uuid: str,
+) -> set[int]:
+    """Возвращает множество числовых remnawave_id пользователей панели,
+    чьи active_internal_squads содержат fallback_squad_uuid.
+
+    Чистая функция — тестируется без БД и без живой панели.
+    """
+    result: set[int] = set()
+    for pu in panel_users:
+        active_squads = _extract_squad_uuids(getattr(pu, 'active_internal_squads', None))
+        if fallback_squad_uuid in active_squads:
+            result.add(pu.id)
+    return result
 
 
 # ============================================================================
@@ -240,25 +254,6 @@ async def _get_fallback_server_paid_prices(
 
 
 # ============================================================================
-# Проверка панели
-# ============================================================================
-
-
-async def _is_in_fallback_squad(sub: Subscription, db: AsyncSession) -> bool:
-    """True, если в панели у юзера активен EXPIRY_FALLBACK_SQUAD_UUID."""
-    fallback_uuid = settings.EXPIRY_FALLBACK_SQUAD_UUID
-    if not fallback_uuid:
-        return False
-
-    panel_user = await _get_remnawave_user(sub.remnawave_id, db=db, subscription=sub)
-    if panel_user is None:
-        return False
-
-    active_squads = _extract_squad_uuids(getattr(panel_user, 'active_internal_squads', None))
-    return fallback_uuid in active_squads
-
-
-# ============================================================================
 # Вспомогательный вывод
 # ============================================================================
 
@@ -324,6 +319,22 @@ def _build_notification_text(
 async def _run(*, apply: bool, limit: int | None, user_ids: list[int] | None) -> int:
     await bot_configuration_service.initialize(sync_web_api_token=False)
 
+    fallback_uuid = settings.EXPIRY_FALLBACK_SQUAD_UUID
+    if not fallback_uuid:
+        logger.warning('repair_stuck_fallback_compensate: EXPIRY_FALLBACK_SQUAD_UUID не задан — нечего делать')
+        return 0
+
+    # --- Шаг 1: один обход панели (O(1) запросов), строим множество remnawave_id ---
+    from app.services.remnawave_service import remnawave_service  # noqa: PLC0415
+    async with remnawave_service.get_api_client() as api:
+        panel_users = await api.get_all_users_stream(size=500)
+    fallback_squad_ids: set[int] = _build_fallback_squad_ids(panel_users, fallback_uuid)
+    logger.info(
+        'repair_stuck_fallback_compensate: панель прочитана',
+        total_panel_users=len(panel_users),
+        in_fallback_squad=len(fallback_squad_ids),
+    )
+
     now = datetime.now(UTC)
     errors = 0
     applied = 0
@@ -336,10 +347,16 @@ async def _run(*, apply: bool, limit: int | None, user_ids: list[int] | None) ->
 
     try:
         async with AsyncSessionLocal() as db:
-            candidates = await _fetch_candidates(db, user_ids=user_ids, limit=limit)
+            # Загружаем все ACTIVE-подписки без лимита; фильтрация по squad-сету ниже
+            all_subs = await _fetch_candidates(db, user_ids=user_ids, limit=None)
+            # Оставляем только тех, чей remnawave_id присутствует в fallback-скваде панели
+            candidates = [c for c in all_subs if c.remnawave_id in fallback_squad_ids]
+            if limit is not None:
+                candidates = candidates[:limit]
             logger.info(
                 'repair_stuck_fallback_compensate: загружено подписок-кандидатов',
-                count=len(candidates),
+                total_active=len(all_subs),
+                in_fallback=len(candidates),
                 apply=apply,
             )
 
@@ -356,18 +373,7 @@ async def _run(*, apply: bool, limit: int | None, user_ids: list[int] | None) ->
                         skipped += 1
                         continue
 
-                    # 2. Проверить панель RemnaWave (обязательно — не начисляем вслепую)
-                    in_fallback = await _is_in_fallback_squad(sub, db)
-                    if not in_fallback:
-                        logger.debug(
-                            'repair_stuck_fallback_compensate: не в fallback-скваде — пропускаем',
-                            subscription_id=sub.id,
-                            user_id=sub.user_id,
-                        )
-                        skipped += 1
-                        continue
-
-                    # 3. Рассчитать lost_days, целевые сквады и возможный возврат за сервер
+                    # 2. Рассчитать lost_days, целевые сквады и возможный возврат за сервер
                     renewal_ts = txn.completed_at or txn.created_at
                     lost_days = calc_lost_days(renewal_ts, now)
                     target_squads = choose_target_squads(sub.connected_squads, settings.DEFAULT_SQUAD_UUID)
@@ -501,9 +507,6 @@ async def _run(*, apply: bool, limit: int | None, user_ids: list[int] | None) ->
                         error=str(exc),
                         exc_info=True,
                     )
-
-                finally:
-                    await asyncio.sleep(_SLEEP_BETWEEN)
 
     finally:
         if bot is not None:
