@@ -1099,7 +1099,7 @@ async def reconcile_fallback_subscriptions(db: AsyncSession) -> dict:
        - Если в Remnawave юзер уже не в fallback-скваде → admin вручную сменил → mark returned
        - Если expireAt в Remnawave вырос больше baseline+grace → внешнее продление → restore
        - Если trafficLimitBytes вырос больше baseline+grace → внешнее пополнение → restore
-       - Если grace expireAt уже прошёл и юзер всё ещё в fallback → продлеваем grace заново
+       - Если grace expireAt уже прошёл и юзер всё ещё в fallback → grace истёк → отключаем
        - Если суммарно сидит больше EXPIRY_FALLBACK_DAYS → полностью отключаем
 
     2. Для подписок со статусом EXPIRED/LIMITED в нашей БД, но БЕЗ active fallback:
@@ -1116,6 +1116,7 @@ async def reconcile_fallback_subscriptions(db: AsyncSession) -> dict:
         'extended_grace': 0,
         'moved_lost_webhook': 0,
         'cleaned_total_expired': 0,
+        'disabled_grace_expired': 0,
         'restored_stuck_no_flags': 0,
         'errors': 0,
     }
@@ -1316,6 +1317,62 @@ async def reconcile_fallback_subscriptions(db: AsyncSession) -> dict:
     return stats
 
 
+async def _disable_and_expire_fallback(
+    db: AsyncSession,
+    sub: Subscription,
+    stats: dict,
+    *,
+    stat_key: str,
+    log_msg: str,
+    **log_kw,
+) -> bool:
+    """Отключает юзера в панели, ставит EXPIRED, сбрасывает fallback-состояние и коммитит.
+
+    Идемпотентен: already-disabled / not-found / 404 в панели → debug, не ошибка.
+    Обновляет ``stats[stat_key]`` при успехе, ``stats['errors']`` при исключении.
+    Возвращает True при успехе, False при ошибке.
+    """
+    from app.external.remnawave_api import RemnaWaveAPIError
+    from app.services.remnawave_service import remnawave_service
+    try:
+        if sub.remnawave_id or sub.remnawave_short_uuid:
+            from app.services.remnawave_service import get_panel_user_ref
+            async with remnawave_service.get_api_client() as api:
+                _uuid, _remna_id = await get_panel_user_ref(
+                    api, db, subscription=sub, user=sub.user,
+                )
+                try:
+                    if _remna_id is not None:
+                        await api.disable_user(_remna_id)
+                except RemnaWaveAPIError as api_exc:
+                    # Идемпотентность: юзер уже DISABLED в Remnawave
+                    # (предыдущий cleanup, ручная блокировка админа,
+                    # 404 — юзер удалён в панели). Не ошибка, всё ок.
+                    msg = str(api_exc).lower()
+                    if (
+                        'already disabled' in msg
+                        or 'not found' in msg
+                        or getattr(api_exc, 'status_code', None) == 404
+                    ):
+                        logger.debug(
+                            'Reconcile cleanup: юзер уже DISABLED/удалён в Remnawave, продолжаем',
+                            subscription_id=sub.id,
+                            reason=msg[:120],
+                        )
+                    else:
+                        raise
+        sub.status = SubscriptionStatus.EXPIRED.value
+        _clear_fallback_state(sub)
+        await db.commit()
+        stats[stat_key] += 1
+        logger.info(log_msg, subscription_id=sub.id, **log_kw)
+        return True
+    except Exception as exc:
+        stats['errors'] += 1
+        logger.error('Reconcile cleanup error', subscription_id=sub.id, error=str(exc))
+        return False
+
+
 async def _reconcile_single_active_fallback(
     db: AsyncSession,
     sub: Subscription,
@@ -1339,49 +1396,13 @@ async def _reconcile_single_active_fallback(
     ):
         user = sub.user
         if not require_zero_balance or (user and (user.balance_kopeks or 0) == 0):
-            from app.external.remnawave_api import RemnaWaveAPIError
-            from app.services.remnawave_service import remnawave_service
-            try:
-                if sub.remnawave_id or sub.remnawave_short_uuid:
-                    from app.services.remnawave_service import get_panel_user_ref
-                    async with remnawave_service.get_api_client() as api:
-                        _uuid, _remna_id = await get_panel_user_ref(
-                            api, db, subscription=sub, user=sub.user,
-                        )
-                        try:
-                            if _remna_id is not None:
-                                await api.disable_user(_remna_id)
-                        except RemnaWaveAPIError as api_exc:
-                            # Идемпотентность: юзер уже DISABLED в Remnawave
-                            # (предыдущий cleanup, ручная блокировка админа,
-                            # 404 — юзер удалён в панели). Не ошибка, всё ок.
-                            msg = str(api_exc).lower()
-                            if (
-                                'already disabled' in msg
-                                or 'not found' in msg
-                                or getattr(api_exc, 'status_code', None) == 404
-                            ):
-                                logger.debug(
-                                    'Reconcile cleanup: юзер уже DISABLED/удалён в Remnawave, продолжаем',
-                                    subscription_id=sub.id,
-                                    reason=msg[:120],
-                                )
-                            else:
-                                raise
-                sub.status = SubscriptionStatus.EXPIRED.value
-                _clear_fallback_state(sub)
-                await db.commit()
-                stats['cleaned_total_expired'] += 1
-                logger.info(
-                    'Reconcile: подписка висит в fallback больше total_days, отключаем',
-                    subscription_id=sub.id,
-                    days=total_days,
-                )
-                return
-            except Exception as exc:
-                stats['errors'] += 1
-                logger.error('Reconcile cleanup error', subscription_id=sub.id, error=str(exc))
-                return
+            await _disable_and_expire_fallback(
+                db, sub, stats,
+                stat_key='cleaned_total_expired',
+                log_msg='Reconcile: подписка висит в fallback больше total_days, отключаем',
+                days=total_days,
+            )
+            return
 
     if not await _has_panel_identity(db, sub):
         return
@@ -1480,27 +1501,20 @@ async def _reconcile_single_active_fallback(
                 )
             return
 
-    # 4) Grace expireAt подходит к концу — продлеваем заново
-    if current_expire_at and current_expire_at - now < timedelta(days=1):
-        # Не чаще раза в час
-        last_extension = sub.expiry_fallback_started_at  # используем как метку последнего extend
-        # На самом деле это «когда начали» — но пока что используем как индикатор
-        # для предотвращения слишком частых продлений.
-        # Лучше отдельное поле, но пока обходимся.
-        new_grace_expire_at = now + timedelta(days=grace_days)
-        ok = await _patch_user_full(
-            sub.remnawave_id,
-            squads=[fallback_uuid],
-            expire_at=new_grace_expire_at,
-            traffic_limit_bytes=int(current_traffic_limit) if current_traffic_limit else None,
-            verify_squad_in=[fallback_uuid],
-            db=db,
-            subscription=sub,
-        )
-        if ok:
-            stats['extended_grace'] += 1
-            logger.info(
-                'Reconcile: продлили grace fallback',
-                subscription_id=sub.id,
-                new_expire=new_grace_expire_at,
-            )
+    # 4) Grace истёк и юзер не оплатил — отключаем.
+    # Grace задаётся ОДНАЖДЫ при переводе в fallback (move_to_fallback → now+grace_days)
+    # и больше не продлевается: истёк срок → отключение.
+    if sub.expiry_fallback_started_at is not None:
+        started_at = sub.expiry_fallback_started_at
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=UTC)
+        if (now - started_at) >= timedelta(days=grace_days):
+            user = sub.user
+            if not require_zero_balance or (user and (user.balance_kopeks or 0) == 0):
+                await _disable_and_expire_fallback(
+                    db, sub, stats,
+                    stat_key='disabled_grace_expired',
+                    log_msg='Reconcile: grace истёк без оплаты — отключаем',
+                    grace_days=grace_days,
+                    started_at=sub.expiry_fallback_started_at,
+                )
