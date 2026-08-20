@@ -4,7 +4,6 @@ import structlog
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.cabinet.routes.account_linking import needs_backup_login
 from app.config import settings
 from app.database.models import User
 
@@ -28,6 +27,7 @@ async def send_backup_login_nudge(bot: Bot, user: User) -> None:
     - CABINET_URL не настроен
     """
     try:
+        from app.cabinet.routes.account_linking import needs_backup_login  # lazy — avoids circular import via admin_broadcasts → broadcast_service
         if not needs_backup_login(user):
             return
         if not user.telegram_id:

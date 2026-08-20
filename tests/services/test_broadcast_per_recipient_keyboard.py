@@ -50,7 +50,7 @@ async def test_keyboard_factory_builds_personal_keyboard_per_recipient(monkeypat
         keyboard_factory=lambda telegram_id: _promo_keyboard(offers[telegram_id]),
     )
 
-    sent, failed, blocked, cancelled = await service._send_batched(
+    sent, failed, blocked, cancelled, _blocked_ids = await service._send_batched(
         1,
         list(offers),
         config,
@@ -81,7 +81,7 @@ async def test_blocked_recipients_counted_separately(monkeypatch):
 
     config = _config(recipient_ids=[101, 102], keyboard_factory=lambda telegram_id: _promo_keyboard(1))
 
-    sent, failed, blocked, cancelled = await service._send_batched(
+    sent, failed, blocked, cancelled, _blocked_ids = await service._send_batched(
         1,
         [101, 102],
         config,
@@ -108,7 +108,7 @@ async def test_without_factory_shared_keyboard_is_used(monkeypatch):
     monkeypatch.setattr('app.services.broadcast_service._TG_BATCH_DELAY', 0)
 
     shared = _promo_keyboard(1)
-    sent, _failed, _blocked, _cancelled = await service._send_batched(
+    sent, _failed, _blocked, _cancelled, _blocked_ids = await service._send_batched(
         1,
         [101, 102],
         _config(),
