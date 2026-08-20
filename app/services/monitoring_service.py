@@ -26,6 +26,7 @@ from app.database.crud.subscription import (
     extend_subscription,
     get_expired_subscriptions,
     get_expiring_subscriptions,
+    get_subscription_by_id,
     get_subscriptions_for_autopay,
     reactivate_subscription,
     get_subscriptions_for_auto_unfreeze,
@@ -645,9 +646,17 @@ class MonitoringService:
     async def _check_frozen_subscriptions_for_auto_unfreeze(self, db: AsyncSession) -> None:
         now = datetime.now(UTC)
         subscriptions = await get_subscriptions_for_auto_unfreeze(db, now)
-        for subscription in subscriptions:
-            user = subscription.user
+        # Capture IDs as plain ints so that a rollback's expire_all()
+        # does not poison the remaining iterations.
+        sub_ids = [s.id for s in subscriptions]
+        for sub_id in sub_ids:
             try:
+                # Reload fresh with user eagerly loaded so that expired ORM
+                # objects from a previous rollback never cause MissingGreenlet.
+                subscription = await get_subscription_by_id(db, sub_id)
+                if subscription is None or not subscription.is_frozen:
+                    continue
+                user = subscription.user
                 await self.subscription_service.unfreeze_subscription(
                     user=user, subscription=subscription, db=db, reason='auto'
                 )
@@ -655,7 +664,7 @@ class MonitoringService:
                 logger.info('Авто-разморозка выполнена', subscription_id=subscription.id)
             except Exception as e:
                 await db.rollback()
-                logger.error('Ошибка авто-разморозки', subscription_id=subscription.id, error=str(e))
+                logger.error('Ошибка авто-разморозки', subscription_id=sub_id, error=str(e))
 
     async def _check_expired_subscriptions(self, db: AsyncSession):
         try:
