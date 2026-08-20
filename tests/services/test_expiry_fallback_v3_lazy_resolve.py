@@ -63,6 +63,10 @@ class FakeApiV3:
     def __init__(self, *, resolve_by_short_uuid: dict[str, int] | None = None) -> None:
         self._resolve_by_short_uuid = resolve_by_short_uuid or {}
         self.calls: list[tuple[str, dict]] = []
+        # Панельное состояние сквадов: update_user применяет, get_user_by_id
+        # возвращает — как настоящая панель. Нужно для пост-PATCH верификации
+        # в _patch_user_full (happy-path сверяет, что сквад реально применён).
+        self._current_squads: list[str] = []
 
     async def resolve_user(self, *, user_id=None, short_uuid=None, username=None):
         if short_uuid is not None:
@@ -80,12 +84,15 @@ class FakeApiV3:
     async def get_user_by_id(self, user_id=None):
         self.calls.append(('get_user_by_id', {'user_id': user_id}))
         self._require_user_id(user_id)
-        return SimpleNamespace(id=user_id, active_internal_squads=[])
+        return SimpleNamespace(id=user_id, active_internal_squads=list(self._current_squads))
 
     async def update_user(self, user_id=None, **kwargs):
         self.calls.append(('update_user', {'user_id': user_id, **kwargs}))
         self._require_user_id(user_id)
-        return SimpleNamespace(id=user_id)
+        squads = kwargs.get('active_internal_squads')
+        if squads is not None:
+            self._current_squads = list(squads)
+        return SimpleNamespace(id=user_id, active_internal_squads=list(self._current_squads))
 
     async def reset_user_traffic(self, user_id=None):
         self.calls.append(('reset_user_traffic', {'user_id': user_id}))

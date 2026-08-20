@@ -318,6 +318,24 @@ async def _patch_user_full(
                 expire_at=expire_at,
                 traffic_limit_bytes=traffic_limit_bytes,
             )
+            # Панель иногда отвечает 200, но фактически НЕ применяет
+            # active_internal_squads (частичный PATCH). Тогда снимать fallback-флаги
+            # нельзя — иначе юзер застрянет в fallback-скваде, хотя в БД активен.
+            # Это и был корень прод-инцидента с застрявшими. При заданном
+            # verify_squad_in сверяем реальное состояние панели тем же чтением,
+            # что и в ветке 409, и считаем успех только при подтверждённом скваде.
+            if verify_squad_in:
+                verified = await api.get_user_by_id(remna_id)
+                actual = set(_extract_squad_uuids(getattr(verified, 'active_internal_squads', None)))
+                if not set(verify_squad_in).issubset(actual):
+                    logger.error(
+                        'PATCH вернул 200, но сквад не применился в панели — '
+                        'считаем неудачей, fallback-флаги НЕ снимаем',
+                        remna_id_hint=remna_id_hint,
+                        expected=sorted(verify_squad_in),
+                        actual=sorted(actual),
+                    )
+                    return False
         return True
     except Exception as exc:
         # Conflict 409 verify: возможно изменения уже применились
