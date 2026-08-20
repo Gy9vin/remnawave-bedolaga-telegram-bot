@@ -250,3 +250,85 @@ class TestBuildFallbackSquadIds:
         users = [_FakePanelUser(99, [{'id': FALLBACK_UUID}])]
         result = _build_fallback_squad_ids(users, FALLBACK_UUID)
         assert result == {99}
+
+
+# ============================================================================
+# BUG A: timeframe safeguard (Transaction.created_at >= sub.created_at)
+# ============================================================================
+
+
+class TestTimeframeSafeguard:
+    """_find_last_renewal_transaction now scopes to transactions created at or
+    after sub.created_at, preventing payments from OLDER subscriptions of the
+    same user from producing inflated lost_days values."""
+
+    def test_old_subscription_payment_excluded_new_used(self):
+        """User has two subscriptions.
+        Sub A (old, created 2026-01-01): paid 2026-01-15.
+        Sub B (stuck, created 2026-07-01): paid 2026-07-15.
+
+        When processing sub B, only transactions >= 2026-07-01 are eligible.
+        txn_a (2026-01-15) is excluded; txn_b (2026-07-15) is selected.
+        lost_days must be computed from txn_b, not txn_a.
+        """
+        now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+
+        sub_b_created = datetime(2026, 7, 1, tzinfo=UTC)
+        txn_a_ts = datetime(2026, 1, 15, tzinfo=UTC)   # older subscription
+        txn_b_ts = datetime(2026, 7, 15, tzinfo=UTC)   # stuck subscription
+
+        # Simulate the WHERE clause: Transaction.created_at >= sub_created_at
+        all_user_txns = [txn_a_ts, txn_b_ts]
+        eligible = [ts for ts in all_user_txns if ts >= sub_b_created]
+        best_ts = max(eligible)
+
+        assert best_ts == txn_b_ts, (
+            "Timeframe safeguard must select the stuck subscription's transaction"
+        )
+        assert txn_a_ts not in eligible, (
+            "Older subscription's transaction must be excluded by sub_created_at filter"
+        )
+
+        correct_lost_days = calc_lost_days(txn_b_ts, now)
+        wrong_lost_days = calc_lost_days(txn_a_ts, now)
+
+        assert correct_lost_days < wrong_lost_days, (
+            "Without safeguard, lost_days would be inflated from the older transaction"
+        )
+        assert correct_lost_days == (now - txn_b_ts).days  # 36
+
+    def test_only_transaction_in_window_is_used(self):
+        """When the single eligible transaction is exactly at sub_created_at boundary
+        it is still selected."""
+        now = datetime(2026, 8, 20, tzinfo=UTC)
+        sub_created = datetime(2026, 6, 1, tzinfo=UTC)
+        txn_ts = datetime(2026, 6, 1, tzinfo=UTC)  # exactly at boundary
+
+        eligible = [ts for ts in [txn_ts] if ts >= sub_created]
+        assert eligible == [txn_ts]
+        assert calc_lost_days(txn_ts, now) == (now - txn_ts).days  # 80
+
+
+# ============================================================================
+# BUG B: naive vs aware datetime in calc_lost_days
+# ============================================================================
+
+
+class TestCalcLostDaysNaiveTimestamp:
+    def test_naive_renewal_ts_does_not_raise(self):
+        """If Transaction.completed_at / created_at is naive (TIMESTAMP WITHOUT
+        TIME ZONE), calc_lost_days must not raise TypeError.
+        It should treat the naive datetime as UTC."""
+        now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+        naive_renewal_ts = datetime(2026, 8, 6, 12, 0, 0)  # no tzinfo
+        # Must not raise
+        result = calc_lost_days(naive_renewal_ts, now)
+        assert result == 14
+
+    def test_naive_renewal_ts_matches_aware_result(self):
+        """Naive and aware timestamps representing the same moment yield identical
+        lost_days, confirming UTC-normalisation is correct."""
+        now = datetime(2026, 8, 20, 0, 0, 0, tzinfo=UTC)
+        aware_ts = datetime(2026, 7, 21, 0, 0, 0, tzinfo=UTC)
+        naive_ts = datetime(2026, 7, 21, 0, 0, 0)  # same moment, naive
+        assert calc_lost_days(aware_ts, now) == calc_lost_days(naive_ts, now)

@@ -108,9 +108,14 @@ def calc_lost_days(renewal_ts: datetime, now: datetime | None = None) -> int:
     """Количество дней от оплаты продления до текущего момента.
 
     Минимум 1 день — чтобы не выдавать 0 при свежем застревании.
+
+    Если renewal_ts naive (без tzinfo) — трактуется как UTC (аналогично
+    normalize-паттерну в expiry_fallback_service.py).
     """
     if now is None:
         now = datetime.now(UTC)
+    if renewal_ts.tzinfo is None:
+        renewal_ts = renewal_ts.replace(tzinfo=UTC)
     delta = now - renewal_ts
     return max(1, delta.days)
 
@@ -218,14 +223,26 @@ async def _fetch_candidates(
 async def _find_last_renewal_transaction(
     db: AsyncSession,
     user_id: int,
+    sub_created_at: datetime,
 ) -> Transaction | None:
-    """Последняя успешная транзакция оплаты подписки для данного user_id."""
+    """Последняя успешная транзакция оплаты подписки для данного user_id,
+    созданная не ранее sub_created_at.
+
+    NOTE: Колонка subscription_id в таблице transactions отсутствует, поэтому
+    точно привязать транзакцию к конкретной подписке через JOIN невозможно.
+    В качестве безопасного ограничителя используется нижняя граница по времени:
+    рассматриваются только транзакции, созданные не ранее момента создания
+    данной подписки (sub_created_at). Это исключает платежи по более старым
+    подпискам того же пользователя, но не гарантирует точность в случае
+    нескольких подписок с очень близкими датами создания.
+    """
     result = await db.execute(
         select(Transaction)
         .where(
             Transaction.user_id == user_id,
             Transaction.type == TransactionType.SUBSCRIPTION_PAYMENT.value,
             Transaction.is_completed == True,  # noqa: E712
+            Transaction.created_at >= sub_created_at,
         )
         .order_by(Transaction.created_at.desc())
         .limit(1)
@@ -373,7 +390,7 @@ async def _run(*, apply: bool, limit: int | None, user_ids: list[int] | None) ->
             for sub in candidates:
                 try:
                     # 1. Найти последнюю успешную транзакцию продления
-                    txn = await _find_last_renewal_transaction(db, sub.user_id)
+                    txn = await _find_last_renewal_transaction(db, sub.user_id, sub.created_at)
                     if txn is None:
                         logger.debug(
                             'repair_stuck_fallback_compensate: нет транзакции — пропускаем',
