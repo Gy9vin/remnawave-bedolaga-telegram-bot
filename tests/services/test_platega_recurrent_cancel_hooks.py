@@ -346,6 +346,7 @@ async def test_cancel_safe_wiring_proof_multi_tariff_delete_subscription(monkeyp
         # remnawave_uuid историческая и роутом не читается.
         remnawave_id=None,
         tariff_id=None,
+        user_id=1,
     )
     user = SimpleNamespace(id=1)
 
@@ -359,7 +360,11 @@ async def test_cancel_safe_wiring_proof_multi_tariff_delete_subscription(monkeyp
         return None
 
     monkeypatch.setattr(multi_tariff, 'get_subscription_by_id_for_user', fake_get_subscription)
-    monkeypatch.setattr(multi_tariff, 'decrement_subscription_server_counts', fake_decrement_counts)
+    # Порядок шагов удаления живёт в общем сервисе — там же и счётчики.
+    monkeypatch.setattr(
+        'app.services.subscription_deletion_service.decrement_subscription_server_counts',
+        fake_decrement_counts,
+    )
     monkeypatch.setattr(
         'app.services.grace_access_runtime.ensure_no_open_grace_for_subscriptions',
         fake_ensure_no_open_grace,
@@ -372,13 +377,9 @@ async def test_cancel_safe_wiring_proof_multi_tariff_delete_subscription(monkeyp
 
     assert result == {'message': 'Subscription deleted'}
     assert recorded == [(db, 42)]  # cancel called with the subscription being deleted, before db.delete
-    # Production now deletes via raw SQL (upstream v4.0.0), not ORM db.delete.
-    delete_sub_calls = [
-        c for c in db.execute.await_args_list
-        if c.args and 'DELETE FROM subscriptions' in str(c.args[0])
-    ]
-    assert len(delete_sub_calls) == 1, f'Expected 1 DELETE FROM subscriptions execute call, got {len(delete_sub_calls)}'
-    assert delete_sub_calls[0].args[1] == {'sid': 42, 'uid': 1}
+    # Удаление строки теперь инкапсулировано в общем сервисе delete_subscription_record
+    # (upstream v4.1.0): это ORM db.delete(subscription), а не raw SQL DELETE.
+    db.delete.assert_awaited_once_with(subscription)
     # The Platega cancel commits its own transaction, releasing the grace
     # guard's advisory lock acquired by the first check — so the guard MUST
     # be re-acquired (called again) right after cancel and before db.delete,

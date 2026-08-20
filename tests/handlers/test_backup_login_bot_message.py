@@ -119,8 +119,10 @@ async def test_nudge_preflight_exception_does_not_raise():
     bot = AsyncMock()
     bot.send_message = AsyncMock()
 
+    # needs_backup_login импортируется лениво внутри функции (разрыв циклического
+    # импорта admin_broadcasts → broadcast_service), поэтому патчим источник.
     with patch(
-        'app.handlers.subscription.backup_login_nudge.needs_backup_login',
+        'app.cabinet.routes.account_linking.needs_backup_login',
         side_effect=AttributeError('unexpected user shape'),
     ):
         # Не должно выбрасывать исключение — вся функция best-effort

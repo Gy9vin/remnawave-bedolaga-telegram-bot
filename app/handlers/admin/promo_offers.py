@@ -2100,6 +2100,8 @@ async def _send_offer_to_users(
         и шлём письмо со ссылкой на кабинет.
         Юзеру без TG и без verified email → пропускаем.
         """
+        from app.utils.notification_prefs import is_promo_offers_enabled
+
         is_telegram_user = bool(user.telegram_id)
         is_email_user = bool(user.email and getattr(user, 'email_verified', False))
 
@@ -2146,6 +2148,17 @@ async def _send_offer_to_users(
                             'active_discount_hours': template.active_discount_hours,
                         },
                     )
+
+                    # Настройка уведомлений глушит СООБЩЕНИЕ, но не саму скидку:
+                    # оффер уже создан выше и остаётся доступным в кабинете и
+                    # миниаппе. Так же ведёт себя кабинетная рассылка
+                    # (`admin_promo_offers.broadcast`), и расходиться они не должны.
+                    if not settings.is_notifications_enabled() or not is_promo_offers_enabled(user):
+                        logger.debug(
+                            'Промо-оффер создан, уведомление подавлено настройками',
+                            user_id=user.id,
+                        )
+                        return True
 
                     if is_telegram_user:
                         user_texts = get_texts(user.language or db_user.language)

@@ -187,6 +187,12 @@ def create_unified_app(
     if payments_router:
         app.include_router(payments_router)
 
+        # ПЕРВЫМ в порядке shutdown: часть платёжных вебхуков отвечает 200 сразу
+        # и дорабатывает в фоне, а провайдер после 200 коллбек не повторит. Дренаж
+        # обязан отработать, пока живы и telegram-процессор (фон шлёт уведомление
+        # о зачислении), и пул БД — то есть до всех остановок ниже.
+        shutdown_handlers.append(payments.drain_webhook_bg_tasks)
+
     # Mount RemnaWave incoming webhook router
     remnawave_webhook_enabled = settings.is_remnawave_webhook_enabled()
     if remnawave_webhook_enabled:
@@ -217,6 +223,15 @@ def create_unified_app(
         'freekassa': settings.is_freekassa_enabled(),
         'riopay': settings.is_riopay_enabled(),
     }
+
+    # Маршруты вебхуков фиксируются на старте по учётным данным, а флаги
+    # включения переключают в рантайме. Провайдер, включённый уже после
+    # запуска и без кредов в конфиге, принимает оплату, но его коллбек падает
+    # в 404 — и увидеть это неоткуда, запрос до бота не доходит. Поэтому
+    # список смонтированных путей отдаётся в health рядом с флагами.
+    payment_webhook_paths = sorted(
+        {route.path for route in getattr(payments_router, 'routes', []) if getattr(route, 'path', None)}
+    )
 
     if enable_telegram_webhook:
         telegram_processor = telegram.TelegramWebhookProcessor(
@@ -263,19 +278,43 @@ def create_unified_app(
 
     @app.get(unified_health_path)
     async def unified_health() -> JSONResponse:
+        webhook_path = settings.get_telegram_webhook_path() if enable_telegram_webhook else None
+
+        telegram_state = {
+            'enabled': enable_telegram_webhook,
+            'running': bool(telegram_processor and telegram_processor.is_running),
+            'url': settings.get_telegram_webhook_url(),
+            'path': webhook_path,
+            'secret_configured': bool(settings.WEBHOOK_SECRET_TOKEN),
+            'queue_maxsize': settings.get_webhook_queue_maxsize(),
+            'workers': settings.get_webhook_worker_count(),
+        }
+
+        payment_state = {
+            'enabled': bool(payments_router),
+            'providers': payment_providers_state,
+            'mounted_paths': payment_webhook_paths,
+        }
+
+        miniapp_state = {
+            'mounted': miniapp_mounted,
+            'path': str(miniapp_path),
+        }
+
+        remnawave_webhook_state = {
+            'enabled': remnawave_webhook_enabled,
+            'path': settings.REMNAWAVE_WEBHOOK_PATH if remnawave_webhook_enabled else None,
+        }
+
         return JSONResponse(
             {
                 'status': 'ok',
                 'bot_run_mode': settings.get_bot_run_mode(),
                 'web_api_enabled': settings.is_web_api_enabled(),
-                'payment_webhooks': {'configured': bool(payments_router)},
-                'telegram_webhook': {
-                    'enabled': enable_telegram_webhook,
-                    'running': bool(telegram_processor and telegram_processor.is_running),
-                    'secret_configured': bool(settings.WEBHOOK_SECRET_TOKEN),
-                },
-                'remnawave_webhook': {'enabled': remnawave_webhook_enabled},
-                'miniapp_static': {'mounted': miniapp_mounted},
+                'payment_webhooks': payment_state,
+                'telegram_webhook': telegram_state,
+                'remnawave_webhook': remnawave_webhook_state,
+                'miniapp_static': miniapp_state,
             }
         )
 
