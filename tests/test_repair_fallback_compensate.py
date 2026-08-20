@@ -1,6 +1,7 @@
 """Юнит-тесты чистой логики repair_stuck_fallback_compensate.py.
 
-Проверяют calc_lost_days и choose_target_squads без поднятия БД/панели.
+Проверяют calc_lost_days, choose_target_squads и calc_server_refund_kopeks
+без поднятия БД/панели.
 Запуск:
     .venv/bin/python -m pytest tests/test_repair_fallback_compensate.py -v
 """
@@ -9,7 +10,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from scripts.repair_stuck_fallback_compensate import calc_lost_days, choose_target_squads
+from scripts.repair_stuck_fallback_compensate import (
+    calc_lost_days,
+    calc_server_refund_kopeks,
+    choose_target_squads,
+)
 
 
 # ============================================================================
@@ -108,3 +113,41 @@ class TestChooseTargetSquads:
     def test_default_squad_when_connected_squads_not_provided(self):
         result = choose_target_squads(None, 'fallback-squad-uuid')
         assert result == ['fallback-squad-uuid']
+
+
+# ============================================================================
+# calc_server_refund_kopeks
+# ============================================================================
+
+
+class TestCalcServerRefundKopeks:
+    def test_empty_list_returns_none(self):
+        # Нет SubscriptionServer-записей для fallback-сквада — не можем определить
+        assert calc_server_refund_kopeks([]) is None
+
+    def test_single_positive_price_returns_value(self):
+        # Ровно одна запись с положительной ценой — однозначно определяем
+        assert calc_server_refund_kopeks([500]) == 500
+
+    def test_single_zero_price_returns_none(self):
+        # Одна запись, но цена 0 — списания не было, возврат не нужен
+        assert calc_server_refund_kopeks([0]) is None
+
+    def test_single_negative_price_returns_none(self):
+        # Отрицательное значение — аномалия, не начисляем
+        assert calc_server_refund_kopeks([-1]) is None
+
+    def test_multiple_records_returns_none(self):
+        # Несколько записей (несколько циклов продления) — неоднозначно
+        assert calc_server_refund_kopeks([500, 600]) is None
+
+    def test_multiple_records_even_if_equal_returns_none(self):
+        # Одинаковые цены в нескольких записях — всё равно неоднозначно
+        assert calc_server_refund_kopeks([300, 300]) is None
+
+    def test_large_price_returns_correctly(self):
+        # Проверяем корректность для реалистичной суммы (напр. 30 000 копеек = 300 ₽)
+        assert calc_server_refund_kopeks([3000]) == 3000
+
+    def test_one_record_of_three_returns_none(self):
+        assert calc_server_refund_kopeks([100, 200, 300]) is None

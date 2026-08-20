@@ -4,16 +4,22 @@
 ПРОБЛЕМА
 ========
 
-Исторический баг (до коммита 9c8c01fa): при продлении подписки с непустым
-connected_squads флаги fallback снимались без восстановления сквадов в панели
-RemnaWave. После этого состояние такого пользователя:
+Исторический баг: при определённых путях продления подписки (в т.ч. автопокупка
+после пополнения) restore_fallback_after_purchase не вызывался, и пользователь
+оставался в fallback-скваде RemnaWave несмотря на успешную оплату.
 
-  - status=ACTIVE, expiry_fallback_active=False, traffic_fallback_active=False
-  - connected_squads=[...] (непустой — от тарифа, появился после застревания)
-  - В панели RemnaWave: active_internal_squads=[EXPIRY_FALLBACK_SQUAD_UUID]
+Признак застревания — совокупность условий:
+  1. status=ACTIVE в нашей БД;
+  2. remnawave_id известен (пользователь создан в панели);
+  3. В таблице transactions есть хотя бы одна завершённая запись типа
+     SUBSCRIPTION_PAYMENT (факт оплаты продления);
+  4. В панели RemnaWave active_internal_squads содержит EXPIRY_FALLBACK_SQUAD_UUID
+     (источник истины — не флаги в нашей БД, а сама панель).
 
-Этих пользователей не видит ни repair_stuck_fallback.py (требует флаги),
-ни reconcile раздел 3 (требует пустой connected_squads). Они застревают навсегда.
+Флаги expiry_fallback_active / traffic_fallback_active намеренно НЕ используются
+как фильтр: оба подслучая застревания (через автопокупку — флаги ещё стоят;
+через старый баг с connected_squads — флаги уже сброшены) выявляются единым
+критерием через панель.
 
 ЧТО ДЕЛАЕТ СКРИПТ
 =================
@@ -21,13 +27,28 @@ RemnaWave. После этого состояние такого пользов�
 DRY-RUN (по умолчанию):
   - Находит кандидатов (оплатили + в fallback-скваде в панели)
   - Печатает таблицу: telegram_id, дата платежа, сумма ₽, lost_days,
-    текущий end_date → новый end_date, целевые сквады
+    текущий end_date → новый end_date, целевые сквады, server_refund
   - Ничего не меняет, ничего не отправляет
 
 --apply:
   - extend_subscription(+lost_days+5) → обновляет end_date в БД
   - _patch_user_full(squads=target_squads, expire_at=new_end_date) → один PATCH в RemnaWave
+  - если server_refund_kopeks определён — add_user_balance(..., TransactionType.REFUND)
   - send_notification(SUBSCRIPTION_RENEWED) → Telegram и/или email
+
+ВОЗВРАТ ЗА СЕРВЕР
+=================
+
+При застревании восстановленный fallback-сквад мог тарифицироваться как платный
+сервер, увеличивая сумму следующего SUBSCRIPTION_PAYMENT. Скрипт пытается
+определить эту переплату из SubscriptionServer.paid_price_kopeks (запись создаётся
+в add_subscription_servers при каждом продлении).
+
+Надёжное определение возможно только когда для данной подписки ровно одна запись
+SubscriptionServer с fallback-скватом и paid_price_kopeks > 0 (однозначный
+единственный цикл). В остальных случаях (нет записей / несколько записей от
+нескольких продлений / цена 0) сумма помечается «н/д» и возврат не начисляется.
+При необходимости — вернуть вручную.
 
 БЕЗОПАСНОСТЬ
 ============
@@ -58,8 +79,9 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database.crud.subscription import extend_subscription
+from app.database.crud.user import add_user_balance
 from app.database.database import AsyncSessionLocal
-from app.database.models import Subscription, SubscriptionStatus, Transaction, TransactionType
+from app.database.models import ServerSquad, Subscription, SubscriptionServer, SubscriptionStatus, Transaction, TransactionType
 from app.services.expiry_fallback_service import _extract_squad_uuids, _get_remnawave_user, _patch_user_full
 from app.services.notification_delivery_service import NotificationType, notification_delivery_service
 from app.services.system_settings_service import bot_configuration_service
@@ -103,6 +125,32 @@ def choose_target_squads(
     return []
 
 
+def calc_server_refund_kopeks(fallback_server_paid_prices: list[int]) -> int | None:
+    """Консервативный расчёт суммы возврата за сервер.
+
+    Принимает список paid_price_kopeks из SubscriptionServer-записей,
+    соответствующих fallback-скваду данной подписки.
+
+    Возвращает сумму в копейках, только если она определяется однозначно:
+    ровно одна запись с paid_price_kopeks > 0 (один цикл продления, чёткая сумма).
+
+    Возвращает None во всех неоднозначных случаях:
+    - Нет записей (fallback-сквад не попал в add_subscription_servers).
+    - Несколько записей (несколько циклов продления; нельзя выделить последний).
+    - Одна запись с ценой <= 0 (списания не было).
+
+    На практике чаще всего возвращает None — fallback-сквад нередко
+    не фиксируется как add-on, а накопленные записи делают определение
+    ненадёжным. При None рекомендуется ручная проверка.
+    """
+    if len(fallback_server_paid_prices) != 1:
+        return None
+    price = fallback_server_paid_prices[0]
+    if price <= 0:
+        return None
+    return price
+
+
 # ============================================================================
 # Запросы к БД
 # ============================================================================
@@ -114,11 +162,17 @@ async def _fetch_candidates(
     user_ids: list[int] | None,
     limit: int | None,
 ) -> list[Subscription]:
-    """Подписки-кандидаты: ACTIVE, без fallback-флагов, с remnawave_id."""
+    """Подписки-кандидаты: ACTIVE + remnawave_id известен.
+
+    Флаги expiry_fallback_active / traffic_fallback_active намеренно НЕ фильтруются:
+    - застрявшие через путь автопокупки имеют флаги ЕЩЁ УСТАНОВЛЕННЫМИ
+      (автопокупка не вызвала restore_fallback_after_purchase);
+    - застрявшие через старый баг с connected_squads — флаги уже сброшены.
+    Оба под-случая ловятся одним запросом. Источник истины — панель RemnaWave
+    (проверяется позже через _is_in_fallback_squad).
+    """
     conditions = [
         Subscription.status == SubscriptionStatus.ACTIVE.value,
-        Subscription.expiry_fallback_active == False,  # noqa: E712
-        Subscription.traffic_fallback_active == False,  # noqa: E712
         Subscription.remnawave_id.isnot(None),
     ]
     if user_ids:
@@ -155,6 +209,36 @@ async def _find_last_renewal_transaction(
     return result.scalar_one_or_none()
 
 
+async def _get_fallback_server_paid_prices(
+    db: AsyncSession,
+    subscription_id: int,
+) -> list[int]:
+    """Возвращает список paid_price_kopeks из SubscriptionServer для fallback-сквада.
+
+    Используется для conservative-расчёта server_refund через calc_server_refund_kopeks.
+    Если EXPIRY_FALLBACK_SQUAD_UUID не настроен или сквад не найден в БД — возвращает [].
+    """
+    fallback_uuid = settings.EXPIRY_FALLBACK_SQUAD_UUID
+    if not fallback_uuid:
+        return []
+
+    squad_result = await db.execute(
+        select(ServerSquad.id).where(ServerSquad.squad_uuid == fallback_uuid)
+    )
+    squad_id = squad_result.scalar_one_or_none()
+    if squad_id is None:
+        return []
+
+    result = await db.execute(
+        select(SubscriptionServer.paid_price_kopeks)
+        .where(
+            SubscriptionServer.subscription_id == subscription_id,
+            SubscriptionServer.server_squad_id == squad_id,
+        )
+    )
+    return [row[0] for row in result.fetchall()]
+
+
 # ============================================================================
 # Проверка панели
 # ============================================================================
@@ -181,43 +265,55 @@ async def _is_in_fallback_squad(sub: Subscription, db: AsyncSession) -> bool:
 
 def _print_dry_run_table(rows: list[dict[str, Any]]) -> None:
     print()
-    print('=' * 95)
+    print('=' * 115)
     print('  DRY-RUN — ничего не изменено')
-    print('=' * 95)
+    print('=' * 115)
     if not rows:
         print('  Кандидатов не найдено.')
     else:
         header = (
             f"  {'user_id':>8}  {'tg_id':>12}  {'дата платежа':<13}  {'сумма':>8}  "
-            f"{'lost_d':>6}  {'текущий end':>12}  {'новый end':>12}  сквады"
+            f"{'lost_d':>6}  {'текущий end':>12}  {'новый end':>12}  {'srv_refund':>10}  сквады"
         )
         print()
         print(header)
-        print('  ' + '-' * 91)
+        print('  ' + '-' * 111)
         for r in rows:
             squads_short = ','.join(str(s)[:8] for s in (r['target_squads'] or [])[:2]) or '—'
+            srv_refund = r.get('server_refund_kopeks')
+            srv_refund_str = f'{srv_refund / 100:.0f}₽' if srv_refund is not None else 'н/д'
             print(
                 f"  {r['user_id']:>8}  {str(r.get('telegram_id') or '—'):>12}  "
                 f"{r['paid_at']:<13}  {r['amount_rub']:>7.0f}₽  "
                 f"{r['lost_days']:>6}  {r['end_date_cur']:>12}  {r['end_date_new']:>12}  "
-                f"{squads_short}"
+                f"{srv_refund_str:>10}  {squads_short}"
             )
     print()
     print(f'  Итого кандидатов: {len(rows)}')
     print()
     print('  DRY-RUN, изменения не применялись; для применения запусти с --apply')
-    print('=' * 95)
+    print('  Колонка srv_refund: сумма возврата за сервер или «н/д» (определить не удалось — проверить вручную)')
+    print('=' * 115)
     print()
 
 
-def _build_notification_text(lost_days: int, renewal_ts: datetime, new_end_date: datetime) -> str:
-    return (
+def _build_notification_text(
+    lost_days: int,
+    renewal_ts: datetime,
+    new_end_date: datetime,
+    server_refund_kopeks: int | None = None,
+) -> str:
+    base = (
         f'✅ Мы исправили техническую ошибку: вы оставались в резервном скваде после оплаты '
         f'{renewal_ts.strftime("%d.%m.%Y")}. '
         f'Вернули {lost_days} потерянных дней и начислили бонус 5 дней в качестве извинений. '
-        f'Новая дата окончания подписки: {new_end_date.strftime("%d.%m.%Y")}. '
-        f'Приятного пользования!'
+        f'Новая дата окончания подписки: {new_end_date.strftime("%d.%m.%Y")}.'
     )
+    if server_refund_kopeks and server_refund_kopeks > 0:
+        server_rub = server_refund_kopeks / 100
+        base += f' Также вернули ошибочно списанные {server_rub:.0f} ₽ за сервер на ваш баланс.'
+    base += ' Приятного пользования!'
+    return base
 
 
 # ============================================================================
@@ -271,7 +367,7 @@ async def _run(*, apply: bool, limit: int | None, user_ids: list[int] | None) ->
                         skipped += 1
                         continue
 
-                    # 3. Рассчитать lost_days и целевые сквады
+                    # 3. Рассчитать lost_days, целевые сквады и возможный возврат за сервер
                     renewal_ts = txn.completed_at or txn.created_at
                     lost_days = calc_lost_days(renewal_ts, now)
                     target_squads = choose_target_squads(sub.connected_squads, settings.DEFAULT_SQUAD_UUID)
@@ -285,6 +381,10 @@ async def _run(*, apply: bool, limit: int | None, user_ids: list[int] | None) ->
                         )
                         skipped += 1
                         continue
+
+                    # Консервативный расчёт возврата за сервер
+                    fallback_prices = await _get_fallback_server_paid_prices(db, sub.id)
+                    server_refund_kopeks = calc_server_refund_kopeks(fallback_prices)
 
                     total_days = lost_days + 5
                     end_date_cur = sub.end_date
@@ -300,6 +400,7 @@ async def _run(*, apply: bool, limit: int | None, user_ids: list[int] | None) ->
                             'end_date_cur': end_date_cur.strftime('%Y-%m-%d'),
                             'end_date_new': new_end_date_preview.strftime('%Y-%m-%d'),
                             'target_squads': target_squads,
+                            'server_refund_kopeks': server_refund_kopeks,
                         })
                         continue
 
@@ -312,6 +413,7 @@ async def _run(*, apply: bool, limit: int | None, user_ids: list[int] | None) ->
                         total_days=total_days,
                         target_squads=target_squads,
                         renewal_ts=str(renewal_ts),
+                        server_refund_kopeks=server_refund_kopeks,
                     )
 
                     # Продлить подписку в БД (без коммита — коммитим после patch)
@@ -346,8 +448,34 @@ async def _run(*, apply: bool, limit: int | None, user_ids: list[int] | None) ->
                         new_end_date=str(sub.end_date),
                     )
 
+                    # Возврат за ошибочно списанный сервер (если сумма определена)
+                    if server_refund_kopeks and server_refund_kopeks > 0:
+                        try:
+                            await add_user_balance(
+                                db,
+                                sub.user,
+                                amount_kopeks=server_refund_kopeks,
+                                description='Возврат ошибочно списанной платы за сервер (fallback-баг)',
+                                transaction_type=TransactionType.REFUND,
+                            )
+                            logger.info(
+                                'repair_stuck_fallback_compensate: возврат за сервер начислен',
+                                subscription_id=sub.id,
+                                user_id=sub.user_id,
+                                server_refund_kopeks=server_refund_kopeks,
+                            )
+                        except Exception as refund_exc:  # noqa: BLE001
+                            logger.warning(
+                                'repair_stuck_fallback_compensate: не удалось начислить возврат за сервер',
+                                subscription_id=sub.id,
+                                user_id=sub.user_id,
+                                error=str(refund_exc),
+                            )
+
                     # Уведомление (ошибка уведомления не отменяет компенсацию)
-                    notif_text = _build_notification_text(lost_days, renewal_ts, sub.end_date)
+                    notif_text = _build_notification_text(
+                        lost_days, renewal_ts, sub.end_date, server_refund_kopeks
+                    )
                     try:
                         await notification_delivery_service.send_notification(
                             user=sub.user,
