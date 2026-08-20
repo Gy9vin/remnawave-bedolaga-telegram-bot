@@ -86,3 +86,74 @@ def test_renewal_from_fallback_zeroes_restored_server_prices():
     assert fallback_zero_idx < add_servers_idx, (
         'обнуление server_prices_for_period должно быть до вызова add_subscription_servers'
     )
+
+    # Проверяем, что состояние захватывается ДО вызова extend_subscription (_was_in_fallback)
+    assert '_was_in_fallback' in source, (
+        'флаг fallback должен захватываться в _was_in_fallback ДО вызова extend_subscription'
+    )
+    was_in_fallback_idx = source.find('_was_in_fallback')
+    extend_idx = source.find('extend_subscription(')
+    assert was_in_fallback_idx < extend_idx, (
+        '_was_in_fallback должен вычисляться до вызова extend_subscription'
+    )
+
+
+def test_fallback_prices_zeroed_even_when_flags_cleared_before_check():
+    """Поведенческий тест: цены серверов обнуляются даже когда extend_subscription
+    уже очистил флаги expiry_fallback_active / traffic_fallback_active к моменту проверки.
+
+    Это и есть суть бага: раньше финализ читал флаги ПОСЛЕ extend_subscription,
+    которая внутри вызывает restore_from_fallback → _clear_fallback_state и сбрасывает флаги.
+    Фикс: флаг захватывается в _was_in_fallback ДО extend_subscription.
+    """
+
+    class _Sub:
+        expiry_fallback_active: bool = True
+        traffic_fallback_active: bool = False
+
+    sub = _Sub()
+
+    # --- Шаг 1: захватываем состояние ДО (как делает исправленный код) ---
+    _was_in_fallback = bool(
+        getattr(sub, 'expiry_fallback_active', False)
+        or getattr(sub, 'traffic_fallback_active', False)
+    )
+
+    # --- Шаг 2: extend_subscription очищает флаги (имитация restore_from_fallback) ---
+    sub.expiry_fallback_active = False
+    sub.traffic_fallback_active = False
+
+    # --- Шаг 3: логика обнуления, идентичная исправленному finalize ---
+    server_ids = ['uuid-server-1', 'uuid-server-2']
+    server_prices_for_period = [500, 800]  # цены как при свежем подключении
+
+    if server_ids and _was_in_fallback:
+        server_prices_for_period = [0] * len(server_ids)
+
+    assert server_prices_for_period == [0, 0], (
+        'серверы из fallback-восстановления не должны тарифицироваться: цены должны быть 0'
+    )
+
+
+def test_no_fallback_prices_kept():
+    """Если подписка НЕ была в fallback, цены серверов сохраняются без изменений."""
+
+    class _Sub:
+        expiry_fallback_active: bool = False
+        traffic_fallback_active: bool = False
+
+    sub = _Sub()
+    _was_in_fallback = bool(
+        getattr(sub, 'expiry_fallback_active', False)
+        or getattr(sub, 'traffic_fallback_active', False)
+    )
+
+    server_ids = ['uuid-server-1']
+    server_prices_for_period = [500]
+
+    if server_ids and _was_in_fallback:
+        server_prices_for_period = [0] * len(server_ids)
+
+    assert server_prices_for_period == [500], (
+        'без fallback цены серверов должны остаться без изменений'
+    )

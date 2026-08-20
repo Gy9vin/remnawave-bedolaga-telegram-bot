@@ -449,6 +449,11 @@ class SubscriptionRenewalService:
         was_expired = subscription_before.status in ('expired', 'disabled', 'limited') or (
             subscription_before.end_date is not None and subscription_before.end_date <= now
         )
+        # Capture fallback state BEFORE extend_subscription → restore_from_fallback clears the flags
+        _was_in_fallback = bool(
+            getattr(subscription_before, 'expiry_fallback_active', False)
+            or getattr(subscription_before, 'traffic_fallback_active', False)
+        )
 
         # Если подписка является триальной — нужно передать правильные paid-параметры,
         # чтобы extend_subscription корректно сбросил is_trial и обновил трафик/сквады.
@@ -559,9 +564,7 @@ class SubscriptionRenewalService:
             server_prices_for_period = breakdown.get('servers_individual_prices', [])
         # Сквады, восстанавливаемые из fallback, уже принадлежали пользователю —
         # не тарифицируем их как новые платные серверы при продлении из fallback.
-        if server_ids and (
-            subscription_before.expiry_fallback_active or subscription_before.traffic_fallback_active
-        ):
+        if server_ids and _was_in_fallback:
             server_prices_for_period = [0] * len(server_ids)
         if server_ids:
             try:
