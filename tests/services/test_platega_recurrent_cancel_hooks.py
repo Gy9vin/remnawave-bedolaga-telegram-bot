@@ -372,7 +372,13 @@ async def test_cancel_safe_wiring_proof_multi_tariff_delete_subscription(monkeyp
 
     assert result == {'message': 'Subscription deleted'}
     assert recorded == [(db, 42)]  # cancel called with the subscription being deleted, before db.delete
-    db.delete.assert_awaited_once_with(subscription)
+    # Production now deletes via raw SQL (upstream v4.0.0), not ORM db.delete.
+    delete_sub_calls = [
+        c for c in db.execute.await_args_list
+        if c.args and 'DELETE FROM subscriptions' in str(c.args[0])
+    ]
+    assert len(delete_sub_calls) == 1, f'Expected 1 DELETE FROM subscriptions execute call, got {len(delete_sub_calls)}'
+    assert delete_sub_calls[0].args[1] == {'sid': 42, 'uid': 1}
     # The Platega cancel commits its own transaction, releasing the grace
     # guard's advisory lock acquired by the first check — so the guard MUST
     # be re-acquired (called again) right after cancel and before db.delete,
@@ -438,7 +444,13 @@ async def test_cancel_safe_wiring_proof_my_subscriptions_delete_execute(monkeypa
     await my_subscriptions.handle_subscription_delete_execute(callback, db_user, db, state)
 
     assert recorded == [(db, 99)]  # cancel called with the subscription being deleted, before db.delete
-    db.delete.assert_awaited_once_with(subscription)
+    # Production now deletes via raw SQL (upstream v4.0.0), not ORM db.delete.
+    delete_sub_calls = [
+        c for c in db.execute.await_args_list
+        if c.args and 'DELETE FROM subscriptions' in str(c.args[0])
+    ]
+    assert len(delete_sub_calls) == 1, f'Expected 1 DELETE FROM subscriptions execute call, got {len(delete_sub_calls)}'
+    assert delete_sub_calls[0].args[1] == {'sid': 99, 'uid': 1}
     callback.answer.assert_awaited_once_with('Подписка удалена', show_alert=True)
     # Same ordering constraint as multi_tariff.delete_subscription: the
     # Platega cancel commits its own transaction, releasing the grace guard's

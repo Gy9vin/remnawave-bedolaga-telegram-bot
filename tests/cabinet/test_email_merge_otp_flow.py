@@ -36,7 +36,7 @@ def _attacker() -> SimpleNamespace:
 
 
 def _victim() -> SimpleNamespace:
-    return SimpleNamespace(id=2, email='victim@example.com', email_verified=True, status=UserStatus.ACTIVE.value)
+    return SimpleNamespace(id=2, email='victim@example.com', email_verified=True, status=UserStatus.ACTIVE.value, first_name='Victim', username='victim_user')
 
 
 def _auth(name: str, value: object):

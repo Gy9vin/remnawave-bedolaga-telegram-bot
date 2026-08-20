@@ -229,6 +229,7 @@ async def test_auto_purchase_saved_cart_after_topup_extension(monkeypatch):
     subscription = MagicMock()
     subscription.id = 99
     subscription.is_trial = False
+    subscription.is_frozen = False
     subscription.status = 'active'
     subscription.end_date = datetime.now(UTC)
     subscription.updated_at = None  # обходим 60-секундный race-guard
@@ -411,6 +412,7 @@ def _prepare_extend_race_guard_scenario(monkeypatch, *, recent_transactions: lis
     subscription = MagicMock()
     subscription.id = 82
     subscription.is_trial = False
+    subscription.is_frozen = False
     subscription.status = 'active'
     subscription.end_date = datetime.now(UTC) + timedelta(days=5)
     subscription.updated_at = datetime.now(UTC) - timedelta(seconds=10)  # свежий updated_at
@@ -604,6 +606,7 @@ async def test_auto_purchase_trial_preserved_on_insufficient_balance(monkeypatch
     subscription = MagicMock()
     subscription.id = 123
     subscription.is_trial = True  # Триальная подписка!
+    subscription.is_frozen = False
     subscription.status = 'active'
     subscription.end_date = datetime.now(UTC) + timedelta(days=2)  # Осталось 2 дня
     subscription.updated_at = None  # обходим 60-секундный race-guard
@@ -719,6 +722,7 @@ async def test_auto_purchase_trial_converted_after_successful_extension(monkeypa
     subscription = MagicMock()
     subscription.id = 456
     subscription.is_trial = True  # Триальная подписка!
+    subscription.is_frozen = False
     subscription.status = 'active'
     subscription.end_date = datetime.now(UTC) + timedelta(days=1)
     subscription.updated_at = None  # обходим 60-секундный race-guard
@@ -865,6 +869,7 @@ async def test_auto_purchase_trial_preserved_on_extension_failure(monkeypatch):
     subscription = MagicMock()
     subscription.id = 789
     subscription.is_trial = True  # Триальная подписка!
+    subscription.is_frozen = False
     subscription.status = 'active'
     subscription.end_date = datetime.now(UTC) + timedelta(days=3)
     subscription.updated_at = None  # обходим 60-секундный race-guard
@@ -1001,6 +1006,7 @@ async def test_auto_purchase_trial_remaining_days_transferred(monkeypatch):
     subscription = MagicMock()
     subscription.id = 321
     subscription.is_trial = True
+    subscription.is_frozen = False
     subscription.status = 'active'
     subscription.end_date = trial_end
     subscription.start_date = now - timedelta(days=1)  # Триал начался вчера
