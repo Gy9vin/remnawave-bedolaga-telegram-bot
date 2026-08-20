@@ -276,10 +276,10 @@ async def test_refund_applies_addon_discount_like_purchase(monkeypatch, reduce_e
 
 @pytest.mark.asyncio
 async def test_refund_kopeks_per_slot_matches_actual_refund(monkeypatch, reduce_env):
-    """Сумма, которую reduction-info показывает человеку за одно место
-    (`refund_kopeks_per_slot`), обязана совпадать с реально начисляемым
-    возвратом при уменьшении лимита ровно на 1 место — иначе цифра на экране
-    до нажатия кнопки разойдётся с тем, что придёт на баланс.
+    """Поле `refund_kopeks_per_slot` — цена за ОДНО место. Кабинет умножает его
+    на число освобождаемых слотов (refundPerSlot * freedSlots в
+    SimpleDeviceLimit.tsx). Реальное начисление обязано совпадать с этим
+    произведением — иначе цифра на экране разойдётся с тем, что придёт на баланс.
     """
     api, subscription, added = reduce_env(
         devices=[{'hwid': 'a'}], device_limit=3, min_limit=1, device_price=6000, days_left=30
@@ -292,16 +292,99 @@ async def test_refund_kopeks_per_slot_matches_actual_refund(monkeypatch, reduce_
         db=AsyncMock(),
     )
 
+    # freed_slots = device_limit(3) - new_limit(1) = 2
     result = await devices_routes.reduce_devices(
-        devices_routes.ReduceDevicesRequest(new_device_limit=2, hwids_to_remove=None),
+        devices_routes.ReduceDevicesRequest(new_device_limit=1, hwids_to_remove=None),
         subscription_id=None,
         user=SimpleNamespace(id=1),
         db=AsyncMock(),
     )
 
-    # device_limit=3 -> new_device_limit=2: freed_slots=1, то есть ровно то же
-    # количество мест, что и в reduction-info (slots=1).
-    assert result['refund_kopeks'] == info['refund_kopeks_per_slot']
+    freed_slots = 2
+    assert result['refund_kopeks'] == info['refund_kopeks_per_slot'] * freed_slots
+
+
+@pytest.mark.asyncio
+async def test_preview_x_freed_matches_actual_credit_floor_division_gap(monkeypatch, reduce_env):
+    """Показанная кабинетом сумма (refund_kopeks_per_slot * freedSlots) обязана
+    точно совпасть с реальным начислением даже когда floor-деление скидки даёт
+    остаток.
+
+    Корень исходного бага: превью считало скидку на ОДНО место, а реальный
+    возврат — на АГРЕГАТ freed_slots мест. Из-за floor-деления скидка агрегата
+    ≥ N × скидки_за_одно, поэтому начисление было на ≥1 копейку МЕНЬШЕ показа.
+    Исправление: обе стороны считают per-slot и умножают на freed_slots.
+
+    device_price=6013 → 6013 % 5 = 3, 20%-ная скидка даёт floor-остаток.
+    per_slot = 6013 - floor(6013*0.2) = 6013 - 1202 = 4811.
+    freed_slots=2 → показ 4811*2 = 9622, начисление 4811*2 = 9622 (совпадает).
+    """
+    api, subscription, added = reduce_env(
+        devices=[{'hwid': 'a'}],
+        device_limit=3,
+        min_limit=1,
+        device_price=6013,  # 6013 % 5 = 3 → floor-division gap с 20%-скидкой
+        days_left=30,
+    )
+    monkeypatch.setattr(devices_routes, '_apply_addon_discount', _fake_devices_discount_20pct)
+
+    info = await devices_routes.get_device_reduction_info(
+        subscription_id=None,
+        user=SimpleNamespace(id=1),
+        db=AsyncMock(),
+    )
+
+    result = await devices_routes.reduce_devices(
+        devices_routes.ReduceDevicesRequest(new_device_limit=1, hwids_to_remove=None),
+        subscription_id=None,
+        user=SimpleNamespace(id=1),
+        db=AsyncMock(),
+    )
+
+    freed_slots = 2
+    assert info['refund_kopeks_per_slot'] * freed_slots == result['refund_kopeks'], (
+        f"Показ {info['refund_kopeks_per_slot']}*{freed_slots} ≠ начисление {result['refund_kopeks']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_partial_reduction_preview_matches_actual_credit(monkeypatch, reduce_env):
+    """Ключевой кейс: человек уменьшает лимит НЕ до минимума (freed_slots <
+    can_reduce). Показ (per_slot * freed) обязан совпасть с начислением, а не
+    показывать возврат за максимально возможное уменьшение.
+
+    device_limit=5, min_limit=1 → can_reduce=4, но убираем только до 3 →
+    freed_slots=2. Со скидкой 20% и floor-остатком показ и факт должны
+    совпасть ровно (per_slot * 2).
+    """
+    api, subscription, added = reduce_env(
+        devices=[{'hwid': 'a'}],
+        device_limit=5,
+        min_limit=1,
+        device_price=6013,
+        days_left=30,
+    )
+    monkeypatch.setattr(devices_routes, '_apply_addon_discount', _fake_devices_discount_20pct)
+
+    info = await devices_routes.get_device_reduction_info(
+        subscription_id=None,
+        user=SimpleNamespace(id=1),
+        db=AsyncMock(),
+    )
+
+    # can_reduce=4, но уменьшаем лишь на 2 (до new_limit=3)
+    result = await devices_routes.reduce_devices(
+        devices_routes.ReduceDevicesRequest(new_device_limit=3, hwids_to_remove=None),
+        subscription_id=None,
+        user=SimpleNamespace(id=1),
+        db=AsyncMock(),
+    )
+
+    freed_slots = 2
+    per_slot = info['refund_kopeks_per_slot']
+    # per_slot считается за 1 место независимо от can_reduce
+    assert per_slot == 4811
+    assert result['refund_kopeks'] == per_slot * freed_slots == 9622
 
 
 @pytest.mark.asyncio

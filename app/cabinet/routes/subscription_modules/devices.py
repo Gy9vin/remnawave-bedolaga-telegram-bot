@@ -1461,6 +1461,10 @@ async def get_device_reduction_info(
         'min_device_limit': min_device_limit,
         'can_reduce': can_reduce,
         'connected_devices_count': connected_devices_count,
+        # Возврат за 1 слот: фронт умножает это значение на выбранное число
+        # освобождаемых слотов (refundPerSlot * freedSlots). Поэтому скидку
+        # считаем на один слот, а reduce_devices применяет ту же формулу
+        # (per-slot * freed_slots) — так показ точно совпадает с фактом.
         'refund_kopeks_per_slot': _apply_addon_discount(
             user,
             'devices',
@@ -1639,13 +1643,20 @@ async def reduce_devices(
         end_date = end_date.replace(tzinfo=UTC)
     days_left = max(0, math.ceil((end_date - now).total_seconds() / 86400)) if end_date else 0
     device_price_kopeks = await _resolve_device_price_kopeks(db, subscription)
-    raw_refund_kopeks = calculate_device_refund_kopeks(
-        device_price_kopeks, slots=freed_slots, days_left=days_left
-    )
     # Возврат обязан отражать ту же скидку промогруппы на устройства, что и
     # покупка (см. purchase_devices выше) — иначе человек со скидкой платит за
     # место дешевле, а получает возврат по полной цене.
-    refund_kopeks = _apply_addon_discount(user, 'devices', raw_refund_kopeks, days_left)['discounted']
+    # Считаем per-slot (slots=1) и умножаем на freed_slots — ровно та же
+    # формула, что показывает кабинет (refundPerSlot * freedSlots в
+    # SimpleDeviceLimit.tsx). Иначе floor-скидка на агрегат расходится с
+    # показанной суммой (превью завышает факт на копейки).
+    refund_per_slot_kopeks = _apply_addon_discount(
+        user,
+        'devices',
+        calculate_device_refund_kopeks(device_price_kopeks, slots=1, days_left=days_left),
+        days_left,
+    )['discounted']
+    refund_kopeks = refund_per_slot_kopeks * freed_slots
 
     old_device_limit = current_device_limit
     user_id = user.id  # save before potential rollback (expires ORM objects)
