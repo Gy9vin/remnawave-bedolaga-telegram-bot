@@ -1210,3 +1210,86 @@ async def test_auto_purchase_skipped_without_topup_intent(monkeypatch):
     result = await auto_purchase_saved_cart_after_topup(db_session, user, bot=AsyncMock())
 
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Fix: автопродление из fallback должно вызывать restore_fallback_after_purchase
+# ---------------------------------------------------------------------------
+
+
+async def test_auto_extend_subscription_calls_restore_fallback_after_purchase(monkeypatch):
+    """После успешного update_remnawave_user при автопродлении должен вызываться
+    restore_fallback_after_purchase, чтобы вытащить пользователя из fallback-сквада.
+
+    Root-cause: ручные пути покупки (9c8c01fa) уже зовут restore, но
+    _auto_extend_subscription — нет, поэтому при недоступности панели пользователь
+    оставался с expiry_fallback_active=True и застревал навсегда.
+    """
+    from types import SimpleNamespace
+
+    import app.services.subscription_auto_purchase_service as svc
+
+    monkeypatch.setattr(settings, 'AUTO_PURCHASE_AFTER_TOPUP_ENABLED', True)
+    monkeypatch.setattr(settings, 'SALES_MODE', 'classic')
+
+    # Подписка, которая реально была в fallback
+    sub = MagicMock()
+    sub.id = 77
+    sub.user_id = 42
+    sub.end_date = datetime.now(UTC) + timedelta(days=30)
+    sub.is_trial = False
+    sub.tariff_id = None
+    sub.status = 'active'
+    sub.expiry_fallback_active = True
+    sub.traffic_fallback_active = False
+    sub.connected_squads = []
+
+    prepared = SimpleNamespace(
+        subscription=sub,
+        period_days=30,
+        price_kopeks=0,
+        description='Продление подписки на 30 дней',
+        consume_promo_offer=False,
+        tariff_id=None,
+        tariff_name=None,
+        device_limit=None,
+        traffic_limit_gb=None,
+        squad_uuid=None,
+        allowed_squads=None,
+    )
+
+    monkeypatch.setattr(svc, '_prepare_auto_extend_context', AsyncMock(return_value=prepared))
+    monkeypatch.setattr(svc, 'subtract_user_balance', AsyncMock(return_value=True))
+    monkeypatch.setattr(svc, '_apply_extension_updates', MagicMock())
+    monkeypatch.setattr(svc, '_resolve_extend_traffic_limit_gb', AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, 'extend_subscription', AsyncMock(return_value=sub))
+    monkeypatch.setattr(svc, 'create_transaction', AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, '_delete_cart_for_subscription', AsyncMock())
+    monkeypatch.setattr(svc, 'clear_subscription_checkout_draft', AsyncMock())
+    monkeypatch.setattr(svc, 'get_texts', lambda lang: DummyTexts())
+    monkeypatch.setattr(svc, 'format_period_description', lambda days, lang: f'{days} дней')
+    monkeypatch.setattr(svc, 'format_local_datetime', lambda dt, fmt: '')
+    monkeypatch.setattr(svc, '_notify_email_user_auto_purchase', AsyncMock())
+
+    service_instance = MagicMock()
+    service_instance.update_remnawave_user = AsyncMock()
+    monkeypatch.setattr(svc, 'SubscriptionService', MagicMock(return_value=service_instance))
+
+    # Ключевой мок: restore_fallback_after_purchase в expiry_fallback_service
+    import app.services.expiry_fallback_service as efs
+    restore_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(efs, 'restore_fallback_after_purchase', restore_mock)
+
+    user = MagicMock(spec=User)
+    user.id = 42
+    user.telegram_id = None  # email-только, TG-уведомление пропускается
+    user.balance_kopeks = 0
+    user.language = 'ru'
+
+    db_session = AsyncMock(spec=AsyncSession)
+
+    result = await svc._auto_extend_subscription(db_session, user, {'cart_mode': 'extend'}, bot=None)
+
+    assert result is True
+    service_instance.update_remnawave_user.assert_awaited_once()
+    restore_mock.assert_awaited_once_with(db_session, sub)

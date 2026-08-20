@@ -50,3 +50,39 @@ def test_promo_offer_is_consumed_from_the_recipient():
 
     assert 'consume_promo_offer' in source
     assert 'promo_offer_discount_percent' in source
+
+
+# ---------------------------------------------------------------------------
+# Fix: продление из fallback не должно тарифицировать восстановленные сквады
+# ---------------------------------------------------------------------------
+
+
+def test_renewal_from_fallback_zeroes_restored_server_prices():
+    """При продлении подписки, которая была в fallback, сервер-сквады, возвращаемые
+    из pre_expiry-снапшота, НЕ должны тарифицироваться как новые платные серверы.
+
+    Фикс: в finalize() перед вызовом add_subscription_servers проверяем флаги
+    expiry_fallback_active / traffic_fallback_active и обнуляем server_prices_for_period,
+    чтобы в SubscriptionServer.paid_price_kopeks записывался 0, а не цена как при
+    свежем подключении сервера.
+    """
+    source = _finalize_source()
+
+    # Проверяем, что оба fallback-флага читаются в finalize
+    assert 'expiry_fallback_active' in source, (
+        'finalize должна читать expiry_fallback_active перед add_subscription_servers'
+    )
+    assert 'traffic_fallback_active' in source, (
+        'finalize должна читать traffic_fallback_active перед add_subscription_servers'
+    )
+    # Проверяем, что цены обнуляются при fallback
+    assert '[0] * len(server_ids)' in source, (
+        'server_prices_for_period должны обнуляться ([0] * len(server_ids)) при fallback'
+    )
+
+    # Позиционная проверка: обнуление идёт ПЕРЕД вызовом add_subscription_servers
+    fallback_zero_idx = source.find('[0] * len(server_ids)')
+    add_servers_idx = source.find('add_subscription_servers')
+    assert fallback_zero_idx < add_servers_idx, (
+        'обнуление server_prices_for_period должно быть до вызова add_subscription_servers'
+    )

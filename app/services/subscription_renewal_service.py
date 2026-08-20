@@ -557,6 +557,12 @@ class SubscriptionRenewalService:
             breakdown = pricing.breakdown or {}
             server_ids = breakdown.get('server_ids', [])
             server_prices_for_period = breakdown.get('servers_individual_prices', [])
+        # Сквады, восстанавливаемые из fallback, уже принадлежали пользователю —
+        # не тарифицируем их как новые платные серверы при продлении из fallback.
+        if server_ids and (
+            subscription_before.expiry_fallback_active or subscription_before.traffic_fallback_active
+        ):
+            server_prices_for_period = [0] * len(server_ids)
         if server_ids:
             try:
                 await add_subscription_servers(

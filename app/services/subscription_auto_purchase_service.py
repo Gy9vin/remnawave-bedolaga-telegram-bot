@@ -685,6 +685,17 @@ async def _auto_extend_subscription(
             reset_reason='смена тарифа' if is_tariff_change else 'продление подписки',
             sync_squads=True,
         )
+        # Восстанавливаем сквады в панели, если подписка была в fallback.
+        # Вложенный try/except — ошибка restore не должна рушить автопродление.
+        try:
+            from app.services.expiry_fallback_service import restore_fallback_after_purchase
+            await restore_fallback_after_purchase(db, updated_subscription)
+        except Exception as fallback_err:
+            logger.warning(
+                '⚠️ Автопокупка: не удалось вытащить из fallback после продления',
+                format_user_id=_format_user_id(user),
+                error=str(fallback_err),
+            )
     except Exception as error:  # pragma: no cover - defensive logging
         logger.error(
             '⚠️ Автопокупка: не удалось обновить RemnaWave пользователя после продления',
