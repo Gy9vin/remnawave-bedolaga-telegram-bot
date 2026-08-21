@@ -546,7 +546,7 @@ async def auth_telegram(
     # TTL or a replay guard would 401 every re-login on those clients. Forgery is
     # already prevented by the HMAC signature (bot token), and initData rides in the
     # request body — not the URL — so it can't leak via browser history / Referer.
-    user_data = validate_telegram_init_data(request.init_data, max_age_seconds=86400 * 30)
+    user_data = validate_telegram_init_data(request.init_data, max_age_seconds=settings.get_cabinet_telegram_initdata_max_age_seconds())
 
     if not user_data:
         raise HTTPException(

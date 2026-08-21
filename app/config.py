@@ -1452,6 +1452,13 @@ class Settings(BaseSettings):
     # Cabinet (Personal Account) settings
     CABINET_ENABLED: bool = False
     CABINET_JWT_SECRET: str | None = None
+    # Максимальный возраст auth_date в Telegram WebApp initData (дни) для входа
+    # в кабинет из miniapp. На Android Telegram WebView у части юзеров initData
+    # «залипает» и приходит недельной/месячной давности — строгий порог отвергал
+    # такой вход (цикл login → «требуется авторизация»). Подлинность гарантирует
+    # HMAC-подпись (bot_token), поэтому возраст можно ослабить. 0 — без проверки
+    # возраста (только подпись). По умолчанию 3650 дней (~10 лет).
+    CABINET_TELEGRAM_INITDATA_MAX_AGE_DAYS: int = 3650
     CABINET_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     # Отдельный (длинный) TTL access-токена для админов/спец-ролей (role_level > 0):
     # админскую панель держат открытой часами, и короткий access их выкидывал.
@@ -4192,6 +4199,13 @@ class Settings(BaseSettings):
             )
 
         return messages
+
+    def get_cabinet_telegram_initdata_max_age_seconds(self) -> int:
+        """Порог возраста initData (секунды) для miniapp-логина. 0 — без проверки."""
+        days = int(self.CABINET_TELEGRAM_INITDATA_MAX_AGE_DAYS)
+        if days <= 0:
+            return 0
+        return days * 86400
 
     def get_cabinet_access_token_expire_minutes(self) -> int:
         return max(1, self.CABINET_ACCESS_TOKEN_EXPIRE_MINUTES)

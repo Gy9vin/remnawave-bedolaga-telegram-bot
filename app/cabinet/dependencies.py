@@ -102,7 +102,7 @@ async def get_current_cabinet_user(
     if init_data_raw and user.telegram_id is not None:
         # Use generous max_age: Telegram Desktop caches initData
         # (https://github.com/telegramdesktop/tdesktop/issues/28303).
-        tg_user = validate_telegram_init_data(init_data_raw, max_age_seconds=86400 * 30)
+        tg_user = validate_telegram_init_data(init_data_raw, max_age_seconds=settings.get_cabinet_telegram_initdata_max_age_seconds())
         if tg_user is None:
             logger.warning(
                 'Telegram initData validation failed but header was present',

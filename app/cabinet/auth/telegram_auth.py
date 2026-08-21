@@ -105,7 +105,9 @@ def validate_telegram_init_data(init_data: str, max_age_seconds: int = 86400) ->
         try:
             auth_time = datetime.fromtimestamp(int(auth_date), tz=UTC)
             age = (datetime.now(UTC) - auth_time).total_seconds()
-            if age > max_age_seconds or age < -_MAX_CLOCK_SKEW_SECONDS:
+            # max_age_seconds <= 0 → проверку возраста не делаем (полагаемся на
+            # HMAC-подпись). Дату из будущего сверх допустимого дрейфа отвергаем всегда.
+            if (max_age_seconds > 0 and age > max_age_seconds) or age < -_MAX_CLOCK_SKEW_SECONDS:
                 logger.warning(
                     'Telegram initData rejected: too old',
                     age_hours=round(age / 3600, 1),
