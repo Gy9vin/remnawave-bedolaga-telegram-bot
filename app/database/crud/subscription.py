@@ -1040,6 +1040,34 @@ async def _is_free_source_tariff(db: AsyncSession, tariff_id: int) -> bool:
         return False
 
 
+async def _resolve_trial_paid_traffic_limit(
+    db: AsyncSession, subscription: Subscription, tariff_id: int | None
+) -> int | None:
+    """Платный лимит трафика при конверсии триала, когда путь продления не передал
+    ``traffic_limit_gb`` явно (автопродление/промокод/кампания/renewal-classic).
+
+    Иначе триальный лимит (напр. 10 ГБ) оставался бы на платной подписке, в т.ч.
+    на безлимитном тарифе (0). Возвращает ГБ (0 = безлимит) или None, если
+    источник определить нельзя (тогда трафик не трогаем).
+    """
+    tid = tariff_id if tariff_id is not None else subscription.tariff_id
+    if tid is not None:
+        try:
+            from app.database.crud.tariff import get_tariff_by_id
+
+            tariff = await get_tariff_by_id(db, tid)
+            if tariff is not None:
+                # 0 — легитимный безлимит, а не «не задано».
+                return tariff.traffic_limit_gb
+        except Exception as e:
+            logger.warning('Не удалось загрузить тариф для paid-трафика триала', tariff_id=tid, error=e)
+            return None
+    if settings.is_traffic_fixed():
+        return settings.get_fixed_traffic_limit()
+    # Selectable classic без тарифа — paid-значение по умолчанию (как в renewal).
+    return settings.DEFAULT_TRAFFIC_LIMIT_GB
+
+
 async def extend_subscription(
     db: AsyncSession,
     subscription: Subscription,
@@ -1183,6 +1211,42 @@ async def extend_subscription(
                 '🎓 Подписка конвертирована из триала в платную (классический режим)', subscription_id=subscription.id
             )
         logger.info('🔄 Статус подписки изменён с trial на ACTIVE', subscription_id=subscription.id)
+
+    # Универсальное снятие триала при любом реальном продлении.
+    # КРИТИЧНО: триал создаётся со status=ACTIVE (не TRIAL, см. create_trial_
+    # subscription), поэтому ветки по статусу выше его НЕ конвертируют, а
+    # tariff-ветка ниже срабатывает только при переданном tariff_id. В итоге
+    # продление БЕЗ tariff_id (автопродление на том же тарифе, renewal в
+    # классическом режиме) оставляло подписку триальной после оплаты
+    # (прод-баг: «продлил — не перевело из trial»). Любое реальное продление
+    # (days>0) снимает триальный флаг; исключение — бесплатный релейбл/смена
+    # тарифа без оплаты (convert_trial=False, баг #629889), где триал сохраняется.
+    if days > 0 and convert_trial and subscription.is_trial:
+        subscription.is_trial = False
+        # Transient marker (не персистится): purchase-хендлеры показывают платёж
+        # как конверсию триал→платно без изменения сигнатуры.
+        subscription._converted_from_trial = True
+        if subscription.status == SubscriptionStatus.TRIAL.value:
+            subscription.status = SubscriptionStatus.ACTIVE.value
+        logger.info(
+            '🎓 Триал конвертирован в платную при продлении',
+            subscription_id=subscription.id,
+            tariff_id=tariff_id,
+        )
+
+        # Если путь продления не передал traffic_limit_gb явно — подтягиваем
+        # платный лимит, иначе триальный трафик (напр. 10 ГБ) остался бы на
+        # платной подписке, в т.ч. на безлимитном (0) тарифе. traffic_limit_gb
+        # ниже обрабатывается штатными трафик-ветками как переданный.
+        if traffic_limit_gb is None:
+            _resolved_traffic = await _resolve_trial_paid_traffic_limit(db, subscription, tariff_id)
+            if _resolved_traffic is not None:
+                traffic_limit_gb = _resolved_traffic
+                logger.info(
+                    '📊 Триал→платно: подставлен платный лимит трафика',
+                    subscription_id=subscription.id,
+                    traffic_limit_gb=_resolved_traffic,
+                )
 
     # В classic mode tariff_id не должен висеть на подписке вообще —
     # тарифы используются только для пометки триала через is_trial_available.
